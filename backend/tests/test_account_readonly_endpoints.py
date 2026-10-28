@@ -183,7 +183,7 @@ def test_sync_account_failure_handling(client, db_session):
         encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
         is_enabled=True,
         is_demo=False,
-        auth_status="DISCONNECTED",
+        auth_status="CONNECTED",
         available_cash=50000.0
     )
     db_session.add(live_acc)

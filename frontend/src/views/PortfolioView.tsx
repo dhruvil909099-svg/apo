@@ -3,7 +3,7 @@ import {
   Users, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, RefreshCw,
   Search, Download, PieChart as PieChartIcon, BarChart3,
-  Layers, ArrowUpDown, X, CheckSquare, Square
+  Layers, ArrowUpDown, X, CheckSquare, Square, AlertTriangle
 } from 'lucide-react';
 import {
   ResponsiveContainer, PieChart, Pie, Cell,
@@ -294,6 +294,26 @@ export const PortfolioView: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Persistent Disconnection Banner */}
+      {allAccounts.some(a => !a.is_demo && a.auth_status !== 'CONNECTED') && (
+        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl flex items-start sm:items-center justify-between gap-3 text-amber-900 shadow-xs">
+          <div className="flex items-start sm:items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5 sm:mt-0" />
+            <div>
+              <p className="text-xs font-bold text-amber-950">
+                Historical data is available. Live updates and account modifications are disabled until reconnection.
+              </p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Displaying last saved verified ledger records. To resume live portfolio synchronization and order placement, reconnect disconnected accounts in the Accounts tab.
+              </p>
+            </div>
+          </div>
+          <span className="text-[10px] uppercase font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded border border-amber-300 shrink-0">
+            Last saved data — not live
+          </span>
+        </div>
+      )}
+
       {/* Top Portfolio Summary Ribbon (Angel One-Style) */}
       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">

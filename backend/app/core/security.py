@@ -90,6 +90,36 @@ def normalize_base32_secret(secret: str) -> str:
 
     # Standard Base32 clean: strip spaces, hyphens, tabs, newlines, and uppercase
     clean = clean.replace(" ", "").replace("-", "").replace("\t", "").replace("\n", "").replace("\r", "").upper()
+
+    # If the user pasted with a mobile number prefix (e.g. 757506636423VPIQU5UOZ3ZN5ODGMV2GDX4E)
+    # Check if string ends with a standard 26-character (Angel One) or 32-character Base32 secret
+    if len(clean) >= 26 and re.match(r'^[A-Z2-7]{26}$', clean[-26:]):
+        try:
+            import pyotp
+            pyotp.TOTP(clean[-26:]).now()
+            return clean[-26:]
+        except Exception:
+            pass
+
+    if len(clean) >= 32 and re.match(r'^[A-Z2-7]{32}$', clean[-32:]):
+        try:
+            import pyotp
+            pyotp.TOTP(clean[-32:]).now()
+            return clean[-32:]
+        except Exception:
+            pass
+
+    # Search for any valid contiguous 24-32 character Base32 sequence
+    m = re.search(r'[A-Z2-7]{24,32}', clean)
+    if m:
+        try:
+            import pyotp
+            cand = m.group(0)
+            pyotp.TOTP(cand).now()
+            return cand
+        except Exception:
+            pass
+
     return clean
 
 

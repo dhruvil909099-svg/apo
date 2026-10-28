@@ -72,6 +72,9 @@ class DataOrchestrator:
 
         stale_accounts: List[Account] = []
         for acc in active_accounts:
+            # Stop polling/live sync for disconnected or reauthentication-required accounts
+            if acc.auth_status in ("DISCONNECTED", "REAUTHENTICATION_REQUIRED"):
+                continue
             if force or not self.is_account_fresh(acc):
                 stale_accounts.append(acc)
 
@@ -170,7 +173,7 @@ class DataOrchestrator:
                 auth_res = adapter.authenticate(force_fresh=True)
                 if not auth_res.get("success"):
                     account.sync_status = "ERROR"
-                    account.auth_status = "EXPIRED" if auth_res.get("error_code") in ("AB1050", "AG8001") else "ERROR"
+                    account.auth_status = "REAUTHENTICATION_REQUIRED"
                     account.last_auth_error = auth_res.get("message")
                     account.consecutive_errors += 1
                     db.commit()

@@ -306,6 +306,13 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify(data),
   }),
+  reconnectAccount: (id: number, data: { client_code: string; api_key: string; pin: string; totp_secret: string }) => fetchJson<Account>(
+    `${getApiBase()}/accounts/${id}/reconnect`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }
+  ),
   deleteAccount: (id: number) => fetch(`${getApiBase()}/accounts/${id}`, { method: 'DELETE', headers: getAuthHeaders() }),
   testAccount: (id: number, totpCode?: string) => fetchJson<{ success: boolean; message: string; auth_status: string; ddpi_status: string }>(
     `${getApiBase()}/accounts/${id}/test`,

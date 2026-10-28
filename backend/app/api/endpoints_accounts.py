@@ -9,7 +9,7 @@ from app.models.audit import AuditLog
 from app.models.ipo import Allotment, IPO
 from app.models.order import Order
 from app.schemas.account import (
-    AccountCreate, AccountUpdate, AccountResponse, AccountTestResult, AccountTestPayload,
+    AccountCreate, AccountUpdate, AccountReconnectRequest, AccountResponse, AccountTestResult, AccountTestPayload,
     AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
     AccountOrderItem, AccountTradeItem, AccountSyncResponse
 )
@@ -258,14 +258,14 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
 
     if account_in.totp_secret is not None and account_in.totp_secret.strip():
         raw_secret_input = account_in.totp_secret.strip()
-        # If the user entered a 6-digit code in the totp_secret field:
         if raw_secret_input.isdigit() and len(raw_secret_input) == 6:
-            # Treat as temporary manual TOTP without overwriting permanent Base32 secret
-            manual_totp = raw_secret_input
-        else:
-            normalized_secret = normalize_base32_secret(raw_secret_input)
-            account.encrypted_totp_secret = cipher.encrypt(normalized_secret)
-            credentials_rotated = True
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid TOTP Secret. Please provide the permanent Base32 secret string (from Angel One 'Enable TOTP'), not a 6-digit temporary OTP."
+            )
+        normalized_secret = normalize_base32_secret(raw_secret_input)
+        account.encrypted_totp_secret = cipher.encrypt(normalized_secret)
+        credentials_rotated = True
 
     # If credentials were changed or manual_totp was provided, re-verify connectivity
     if (credentials_rotated or manual_totp) and not account.is_demo:
@@ -313,6 +313,130 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
         last_auth_error=account.last_auth_error,
         created_at=account.created_at
     )
+
+
+@router.post("/{account_id}/reconnect", response_model=AccountResponse)
+def reconnect_account_full_credentials(
+    account_id: int,
+    req: AccountReconnectRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Submits full Angel One credentials (client_code, api_key, pin, totp_secret)
+    to restore a disconnected, reauthentication-required, or degraded session.
+    Generates TOTP automatically from the permanent Base32 secret — never requires a 6-digit OTP.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    clean_code = req.client_code.strip().upper()
+    clean_key = req.api_key.strip()
+    clean_pin = req.pin.strip()
+    raw_totp = req.totp_secret.strip()
+
+    if raw_totp.isdigit() and len(raw_totp) == 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="6-digit OTP is not accepted. Please provide your permanent Base32 TOTP secret string from Angel One."
+        )
+
+    normalized_totp = normalize_base32_secret(raw_totp)
+
+    if not clean_code or not clean_key or not clean_pin or not normalized_totp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="All credentials (Client Code, API Key, PIN, and Base32 TOTP Secret) are required to reconnect."
+        )
+
+    # Demo account bypass
+    if account.is_demo:
+        account.client_code = clean_code
+        account.auth_status = "CONNECTED"
+        account.last_sync_time = datetime.utcnow()
+        account.last_auth_error = None
+        db.commit()
+        db.refresh(account)
+        persist_accounts_backup(db)
+        return AccountResponse.model_validate(account)
+
+    # Check for client code collision with another account
+    existing = db.query(Account).filter(Account.client_code == clean_code, Account.id != account.id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Client code {mask_client_id(clean_code)} is already assigned to account '{existing.nickname}'.")
+
+    # Securely encrypt and store credentials
+    account.client_code = clean_code
+    account.encrypted_api_key = cipher.encrypt(clean_key)
+    account.encrypted_pin = cipher.encrypt(clean_pin)
+    account.encrypted_totp_secret = cipher.encrypt(normalized_totp)
+    account.auth_status = "CONNECTING"
+    db.commit()
+
+    invalidate_adapter_for_account(account.id)
+    try:
+        adapter = get_adapter_for_account(
+            account.id, clean_key, clean_code, clean_pin, normalized_totp, force_new=True
+        )
+        auth_res = adapter.authenticate(force_fresh=True)
+        if auth_res.get("success"):
+            now = datetime.utcnow()
+            account.auth_status = "CONNECTED"
+            account.last_sync_time = now
+            account.last_auth_error = None
+            account.consecutive_errors = 0
+            rms = adapter.get_rms()
+            if rms:
+                cash = float(rms.get("availablecash", rms.get("net", account.available_cash)))
+                account.available_cash = round(cash, 2)
+
+            # Reconcile holdings without deleting existing historical data
+            try:
+                holdings = adapter.get_holdings()
+                if holdings:
+                    reconcile_broker_holdings(db, account, holdings, now)
+            except Exception as e:
+                logger.warning(f"Holdings fetch warning on reconnect for {account.id}: {e}")
+
+            db.commit()
+            db.refresh(account)
+            persist_accounts_backup(db)
+
+            db.add(AuditLog(
+                event_type="ACCOUNT_RECONNECTED",
+                account_id=account.id,
+                operator="ADMIN",
+                details_json=json.dumps({
+                    "account_id": account.id,
+                    "masked_client_code": account.masked_client_code,
+                    "success": True,
+                    "timestamp": now.isoformat()
+                })
+            ))
+            db.commit()
+            return AccountResponse.model_validate(account)
+        else:
+            account.auth_status = "REAUTHENTICATION_REQUIRED"
+            account.last_auth_error = auth_res.get("message") or "Authentication failed with provided credentials."
+            db.commit()
+            db.refresh(account)
+            persist_accounts_backup(db)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=account.last_auth_error
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        account.auth_status = "REAUTHENTICATION_REQUIRED"
+        account.last_auth_error = str(e)
+        db.commit()
+        db.refresh(account)
+        persist_accounts_backup(db)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Reconnection error: {str(e)}"
+        )
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -783,6 +907,15 @@ def sync_account_data(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    if not account.is_demo and account.auth_status in ("DISCONNECTED", "REAUTHENTICATION_REQUIRED"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_code": "BROKER_ACCOUNT_DISCONNECTED",
+                "message": f"Account '{account.nickname}' is {account.auth_status}. Live synchronization is disabled. Update full credentials to reconnect."
+            }
+        )
 
     now = datetime.utcnow()
     holdings_count = db.query(Allotment).filter(Allotment.account_id == account.id, Allotment.allotted_quantity > 0).count()

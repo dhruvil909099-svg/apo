@@ -69,8 +69,11 @@ class BulkOrderService:
             is_valid = True
             msg = "Validation passed"
 
-            # Check holding availability
-            if proposed_qty > holding_qty:
+            # Check holding availability and connection state
+            if not account.is_demo and account.auth_status != "CONNECTED":
+                is_valid = False
+                msg = f"BROKER_ACCOUNT_DISCONNECTED: Account '{account.nickname}' is {account.auth_status}. Reconnection required."
+            elif proposed_qty > holding_qty:
                 is_valid = False
                 msg = f"Insufficient shares: requested {proposed_qty}, only {holding_qty} available."
             elif not account.is_enabled:
@@ -204,6 +207,24 @@ class BulkOrderService:
                 order.rejection_reason = "Account missing"
                 db.commit()
                 failed_count += 1
+                continue
+
+            if not account.is_demo and account.auth_status != "CONNECTED":
+                order.status = "REJECTED"
+                order.rejection_reason = f"BROKER_ACCOUNT_DISCONNECTED: Account '{account.nickname}' is {account.auth_status}."
+                db.commit()
+                failed_count += 1
+                results.append({
+                    "account_id": account.id,
+                    "nickname": account.nickname,
+                    "masked_client_code": account.masked_client_code,
+                    "client_order_id": order.client_order_id,
+                    "broker_order_id": order.broker_order_id,
+                    "status": order.status,
+                    "filled_quantity": 0,
+                    "price": order.price,
+                    "rejection_reason": order.rejection_reason
+                })
                 continue
 
             order.status = "SUBMITTED"

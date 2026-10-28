@@ -170,6 +170,13 @@ export const TradeModal: React.FC<TradeModalProps> = ({
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
           {step === 'configure' && (
             <>
+              {selectedAccount && !selectedAccount.is_demo && selectedAccount.auth_status !== 'CONNECTED' && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>Account '{selectedAccount.nickname}' is {selectedAccount.auth_status}. Broker order placement is disabled until reconnection.</span>
+                </div>
+              )}
+
               {/* Buy / Sell Tabs */}
               <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl">
                 <button

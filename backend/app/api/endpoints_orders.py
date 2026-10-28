@@ -67,6 +67,11 @@ def preview_single_order(
     if not account.is_enabled:
         blocking_reasons.append(f"Account '{account.nickname}' is disabled.")
 
+    if not account.is_demo and account.auth_status != "CONNECTED":
+        blocking_reasons.append(
+            f"Account '{account.nickname}' is {account.auth_status}. Live broker orders are disabled until reconnection."
+        )
+
     risk = db.query(RiskLimit).filter(
         (RiskLimit.account_id == account.id) | (RiskLimit.account_id == None)
     ).first()
@@ -193,6 +198,15 @@ def place_single_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Account '{account.nickname}' is disabled. Cannot place orders."
+        )
+
+    if not account.is_demo and account.auth_status != "CONNECTED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_code": "BROKER_ACCOUNT_DISCONNECTED",
+                "message": f"Account '{account.nickname}' is {account.auth_status}. Broker order placement is disabled until reconnection."
+            }
         )
 
     clean_symbol = order_in.tradingsymbol.replace("-EQ", "").strip().upper()
@@ -322,6 +336,15 @@ def cancel_order(order_id: int, db: Session = Depends(get_db)):
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.account and not order.account.is_demo and order.account.auth_status != "CONNECTED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_code": "BROKER_ACCOUNT_DISCONNECTED",
+                "message": f"Account '{order.account.nickname}' is {order.account.auth_status}. Order cancellation is disabled until reconnection."
+            }
+        )
 
     if order.status not in ["ACCEPTED", "PREPARED"]:
         raise HTTPException(status_code=400, detail=f"Cannot cancel order in status '{order.status}'. Only open orders can be cancelled.")

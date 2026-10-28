@@ -26,8 +26,15 @@ class AccountUpdate(BaseModel):
     edis_authorized_today: Optional[bool] = None
 
 
+class AccountReconnectRequest(BaseModel):
+    client_code: str = Field(..., min_length=2, max_length=50, description="Angel One Client Code")
+    api_key: str = Field(..., min_length=3, description="SmartAPI Application API Key")
+    pin: str = Field(..., min_length=4, max_length=20, description="Trading PIN or MPIN")
+    totp_secret: str = Field(..., min_length=1, description="Permanent Base32 TOTP Secret Key")
+
+
 class AccountTestPayload(BaseModel):
-    totp_code: Optional[str] = Field(default=None, description="Optional live 6-digit TOTP code for test/reconnect")
+    totp_code: Optional[str] = Field(default=None, description="Deprecated: manual 6-digit TOTP codes are not requested")
 
 
 class AccountResponse(BaseModel):

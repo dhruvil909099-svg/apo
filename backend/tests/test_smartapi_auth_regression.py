@@ -308,7 +308,7 @@ def test_smartapi_ag8004_invalid_api_key_handling(client, db_session):
         encrypted_pin=cipher.encrypt("1234"),
         encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
         is_enabled=True,
-        auth_status="DISCONNECTED",
+        auth_status="CONNECTED",
         ddpi_status="ACTIVE",
         available_cash=50000.0
     )

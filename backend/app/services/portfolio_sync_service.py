@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from app.models.account import Account
 from app.models.ipo import IPO, Allotment
+
+logger = logging.getLogger(__name__)
 
 
 def reconcile_broker_holdings(
@@ -97,7 +100,7 @@ def reconcile_broker_holdings(
             allotment.verification_source = "ANGEL_ONE_HOLDINGS"
             allotment.verification_timestamp = sync_time
 
-    # Remove or zero out holdings that no longer exist in broker portfolio for this account
+    # Reconcile verified broker portfolio without wiping historical records on empty/failed responses
     if active_symbols:
         stale_allotments = db.query(Allotment).join(IPO).filter(
             Allotment.account_id == account.id,
@@ -107,12 +110,10 @@ def reconcile_broker_holdings(
         for sa in stale_allotments:
             sa.allotted_quantity = 0
     else:
-        stale_allotments = db.query(Allotment).filter(
-            Allotment.account_id == account.id,
-            Allotment.verification_source == "ANGEL_ONE_HOLDINGS"
-        ).all()
-        for sa in stale_allotments:
-            sa.allotted_quantity = 0
+        logger.warning(
+            f"No active symbols returned in broker snapshot for account {account.nickname}. "
+            "Preserving previously saved historical allotments without zeroing."
+        )
 
     db.commit()
     return valid_count
