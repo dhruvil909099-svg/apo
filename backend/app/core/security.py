@@ -54,6 +54,18 @@ SENSITIVE_KEYS = {
 }
 
 
+def normalize_base32_secret(secret: str) -> str:
+    """
+    Normalizes a Base32 secret string by stripping spaces/hyphens,
+    converting to uppercase, and mapping common OCR/typing aliases
+    according to RFC 4648 (e.g., '0' -> 'O', '1' -> 'I', '8' -> 'B').
+    """
+    if not secret:
+        return ""
+    clean = secret.replace(" ", "").replace("-", "").upper()
+    return clean.replace("0", "O").replace("1", "I").replace("8", "B")
+
+
 def generate_totp_token(secret: str, digits: int = 6, interval: int = 30) -> str:
     """
     Generates a current 6-digit TOTP code (RFC 6238) from a base32 TOTP secret.
@@ -62,27 +74,30 @@ def generate_totp_token(secret: str, digits: int = 6, interval: int = 30) -> str
     if not secret:
         return ""
     try:
+        clean_secret = normalize_base32_secret(secret)
         import pyotp
-        return pyotp.TOTP(secret).now()
+        return pyotp.TOTP(clean_secret).now()
     except Exception:
-        import struct
-        import time
-        import hmac
-        import hashlib
-        
-        # Strip spaces and ensure padding
-        clean_secret = secret.replace(" ", "").upper()
-        missing_padding = len(clean_secret) % 8
-        if missing_padding != 0:
-            clean_secret += "=" * (8 - missing_padding)
+        try:
+            import struct
+            import time
+            import hmac
+            import hashlib
             
-        key = base64.b32decode(clean_secret, casefold=True)
-        counter = int(time.time() // interval)
-        msg = struct.pack(">Q", counter)
-        h = hmac.new(key, msg, hashlib.sha1).digest()
-        o = h[19] & 15
-        token = (struct.unpack(">I", h[o:o+4])[0] & 0x7fffffff) % (10 ** digits)
-        return str(token).zfill(digits)
+            clean_secret = normalize_base32_secret(secret)
+            missing_padding = len(clean_secret) % 8
+            if missing_padding != 0:
+                clean_secret += "=" * (8 - missing_padding)
+                
+            key = base64.b32decode(clean_secret, casefold=True)
+            counter = int(time.time() // interval)
+            msg = struct.pack(">Q", counter)
+            h = hmac.new(key, msg, hashlib.sha1).digest()
+            o = h[19] & 15
+            token = (struct.unpack(">I", h[o:o+4])[0] & 0x7fffffff) % (10 ** digits)
+            return str(token).zfill(digits)
+        except Exception:
+            return ""
 
 
 def sanitize_dict_for_logging(data: Any) -> Any:

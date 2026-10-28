@@ -4,6 +4,7 @@ import {
   BulkOrderPreview, RiskLimit, AuditLog, DashboardSummary
 } from './types';
 
+const DEFAULT_API_BASE = 'https://apo-wubq.onrender.com/api/v1';
 const DEFAULT_KEY = 'ipopro-secure-master-key-2026';
 
 export function getApiBase(): string {
@@ -13,12 +14,12 @@ export function getApiBase(): string {
       return custom.trim().replace(/\/+$/, '');
     }
   }
-  return ((import.meta as any).env?.VITE_API_BASE as string) || '/api/v1';
+  return ((import.meta as any).env?.VITE_API_BASE as string) || DEFAULT_API_BASE;
 }
 
 export function setApiBase(url: string): void {
   if (typeof window !== 'undefined') {
-    if (!url || !url.trim() || url.trim() === '/api/v1') {
+    if (!url || !url.trim() || url.trim() === DEFAULT_API_BASE) {
       localStorage.removeItem('ipopro_api_base');
     } else {
       localStorage.setItem('ipopro_api_base', url.trim().replace(/\/+$/, ''));
