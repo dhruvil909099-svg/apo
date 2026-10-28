@@ -69,6 +69,9 @@ class IPO(Base):
     # Discovery & Synchronization Attribution
     source_name = Column(String(50), default="MANUAL", nullable=False)
     source_timestamp = Column(DateTime, nullable=True)
+    source_document_url = Column(String(255), nullable=True)
+    source_verified_at = Column(DateTime, nullable=True)
+    data_quality_status = Column(String(30), default="VERIFIED", nullable=False)  # VERIFIED, STALE, UNAVAILABLE, PENDING_VERIFICATION
     last_sync_at = Column(DateTime, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)

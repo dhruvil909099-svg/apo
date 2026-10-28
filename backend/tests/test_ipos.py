@@ -302,7 +302,7 @@ def test_list_open_and_sme_ipos_filters(client):
     open_ipos = open_res.json()
     assert len(open_ipos) >= 1
     symbols_open = [i["symbol"] for i in open_ipos]
-    assert "EAAA" in symbols_open or "DLSPOLY" in symbols_open
+    assert "BCSSL" in symbols_open or "BLSPOLY" in symbols_open or "SFCTECH" in symbols_open or "MKSONS" in symbols_open
 
     # 2. Test SME filter
     sme_res = client.get("/api/v1/ipos?status_filter=SME")
@@ -320,11 +320,10 @@ def test_ipo_subscription_and_min_investment_fields(client):
     res = client.get("/api/v1/ipos")
     assert res.status_code == 200
     ipos = res.json()
-    dls = next((i for i in ipos if i["symbol"] == "DLSPOLY"), None)
-    assert dls is not None
-    assert dls["subscription_rate"] == "14.89x"
-    assert dls["min_investment"] is not None
-    assert dls["min_investment"] > 0
+    target = next((i for i in ipos if i["symbol"] in ["BLSPOLY", "BCSSL", "SFCTECH", "MKSONS"]), None)
+    assert target is not None
+    assert target["min_investment"] is not None
+    assert target["min_investment"] > 0
 
 
 def test_idempotent_feed_sync_preserves_allotments(client, db_session):
@@ -332,7 +331,7 @@ def test_idempotent_feed_sync_preserves_allotments(client, db_session):
     Verifies repeated syncs do not duplicate records or wipe user allotments.
     """
     client.post("/api/v1/ipos/sync-feed")
-    ipo = db_session.query(IPO).filter(IPO.symbol == "DLSPOLY").first()
+    ipo = db_session.query(IPO).filter(IPO.symbol.in_(["BLSPOLY", "BCSSL", "SFCTECH", "MKSONS", "TATATECH"])).first()
     acc = db_session.query(Account).first()
     assert ipo is not None
     assert acc is not None

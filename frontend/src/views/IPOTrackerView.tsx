@@ -22,10 +22,11 @@ type MainTab = 'OPEN_UPCOMING' | 'YOUR_APPLICATIONS' | 'ALLOTMENT_STATUS' | 'LIS
 type SubFilter = 'ALL' | 'OPEN' | 'UPCOMING' | 'CLOSED' | 'MAINBOARD' | 'SME';
 
 export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, onRefresh }) => {
-  // Navigation Tabs
+  // Navigation Tabs & Section Pagination
   const [activeTab, setActiveTab] = useState<MainTab>('OPEN_UPCOMING');
-  const [subFilter, setSubFilter] = useState<SubFilter>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [upcomingVisibleCount, setUpcomingVisibleCount] = useState<number>(6);
+  const [closedVisibleCount, setClosedVisibleCount] = useState<number>(6);
 
   // Applications State
   const [applications, setApplications] = useState<Allotment[]>([]);
@@ -115,28 +116,57 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
     }
   };
 
-  // Filtered IPOs for Catalog
-  const filteredCatalogIPOs = useMemo(() => {
-    return ipos.filter(ipo => {
-      // Sub-filter
-      if (subFilter === 'OPEN' && ipo.status !== 'OPEN' && ipo.status !== 'PRE_OPEN') return false;
-      if (subFilter === 'UPCOMING' && ipo.status !== 'UPCOMING') return false;
-      if (subFilter === 'CLOSED' && ipo.status !== 'CLOSED') return false;
-      if (subFilter === 'SME' && !ipo.is_sme) return false;
-      if (subFilter === 'MAINBOARD' && ipo.is_sme) return false;
+  // Date Formatter Helper (e.g. 2026-10-29 -> 29 Oct 2026)
+  const formatDisplayDate = (dStr?: string | null) => {
+    if (!dStr) return 'To be announced';
+    try {
+      const parts = dStr.split('-');
+      if (parts.length === 3) {
+        const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+      }
+      return dStr;
+    } catch {
+      return dStr;
+    }
+  };
 
-      // Search Query
+  // 3 Angel One Sections: Open, Upcoming, Closed
+  const openIPOs = useMemo(() => {
+    return ipos.filter(ipo => {
+      const isOpen = ipo.status === 'OPEN' || ipo.status === 'PRE_OPEN';
+      if (!isOpen) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const mSym = ipo.symbol.toLowerCase().includes(q);
-        const mName = ipo.company_name.toLowerCase().includes(q);
-        const mSector = ipo.sector?.toLowerCase().includes(q);
-        const mIsin = ipo.isin?.toLowerCase().includes(q);
-        if (!mSym && !mName && !mSector && !mIsin) return false;
+        return ipo.symbol.toLowerCase().includes(q) || ipo.company_name.toLowerCase().includes(q) || (ipo.sector && ipo.sector.toLowerCase().includes(q));
       }
       return true;
     });
-  }, [ipos, subFilter, searchQuery]);
+  }, [ipos, searchQuery]);
+
+  const upcomingIPOs = useMemo(() => {
+    return ipos.filter(ipo => {
+      const isUpcoming = ipo.status === 'UPCOMING';
+      if (!isUpcoming) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return ipo.symbol.toLowerCase().includes(q) || ipo.company_name.toLowerCase().includes(q) || (ipo.sector && ipo.sector.toLowerCase().includes(q));
+      }
+      return true;
+    });
+  }, [ipos, searchQuery]);
+
+  const closedIPOs = useMemo(() => {
+    return ipos.filter(ipo => {
+      const isClosed = ipo.status === 'CLOSED' || ipo.status === 'LISTED';
+      if (!isClosed) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return ipo.symbol.toLowerCase().includes(q) || ipo.company_name.toLowerCase().includes(q) || (ipo.sector && ipo.sector.toLowerCase().includes(q));
+      }
+      return true;
+    });
+  }, [ipos, searchQuery]);
 
   // Applications Summary Statistics
   const appMetrics = useMemo(() => {
@@ -299,38 +329,21 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
       </div>
 
       {/* ========================================================================= */}
-      {/* TAB 1: OPEN & UPCOMING IPO DISCOVERY */}
+      {/* TAB 1: OPEN & UPCOMING IPO DISCOVERY (ANGEL ONE 3-SECTION ARCHITECTURE) */}
       {/* ========================================================================= */}
       {activeTab === 'OPEN_UPCOMING' && (
-        <div className="space-y-5">
-          {/* Sub-Filters and Search Toolbar */}
+        <div className="space-y-8">
+          {/* Search Toolbar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-sm">
-            {/* Filter Pills */}
-            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-              {[
-                { id: 'ALL', label: 'All Issues' },
-                { id: 'OPEN', label: 'Open Bidding' },
-                { id: 'UPCOMING', label: 'Upcoming' },
-                { id: 'CLOSED', label: 'Recently Closed' },
-                { id: 'MAINBOARD', label: 'Mainboard' },
-                { id: 'SME', label: 'SME Only' },
-              ].map(f => (
-                <button
-                  key={f.id}
-                  onClick={() => setSubFilter(f.id as SubFilter)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
-                    subFilter === f.id
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
+            <div className="text-xs font-semibold text-slate-700 flex items-center gap-2">
+              <span>All IPO Issues</span>
+              <span className="text-xs font-normal text-slate-500">
+                ({openIPOs.length + upcomingIPOs.length + closedIPOs.length} total issues available)
+              </span>
             </div>
 
             {/* Search Input */}
-            <div className="relative min-w-[220px]">
+            <div className="relative min-w-[240px] sm:w-80">
               <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
@@ -347,149 +360,254 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
             </div>
           </div>
 
-          {/* Cards Grid */}
-          {filteredCatalogIPOs.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {filteredCatalogIPOs.map(ipo => {
-                const minPrice = ipo.min_price || ipo.issue_price;
-                const maxPrice = ipo.max_price || ipo.issue_price;
-                const minInv = ipo.min_investment || (minPrice * ipo.lot_size);
-                const isOpen = ipo.status === 'OPEN' || ipo.status === 'PRE_OPEN';
-                const isUpcoming = ipo.status === 'UPCOMING';
-                const isClosed = ipo.status === 'CLOSED';
+          {/* SECTION 1: OPEN IPOS (All types: Mainboard & SME together) */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">Open IPOs</h2>
+              <span className="min-w-5 h-5 px-1.5 rounded-full bg-rose-500 text-white text-[11px] font-bold flex items-center justify-center">
+                {openIPOs.length}
+              </span>
+            </div>
 
-                return (
-                  <div
-                    key={ipo.id}
-                    className="bg-white rounded-2xl border border-slate-200/90 shadow-sm hover:shadow-md transition-shadow p-5 flex flex-col justify-between group"
-                  >
-                    <div>
-                      {/* Card Header */}
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-bold flex items-center justify-center text-sm shadow-sm shadow-blue-500/20">
-                            {ipo.symbol.substring(0, 3)}
+            {openIPOs.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {openIPOs.map(ipo => {
+                  return (
+                    <div
+                      key={ipo.id}
+                      className="bg-white rounded-xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all p-4 flex flex-col justify-between group cursor-pointer"
+                      onClick={() => handleOpenDetails(ipo)}
+                    >
+                      <div>
+                        {/* Header: Logo + Name + Category + Chevron */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs shrink-0">
+                              {ipo.symbol.substring(0, 3)}
+                            </div>
+                            <div>
+                              <h3 className="font-bold text-slate-900 text-xs leading-snug group-hover:text-blue-600 transition-colors line-clamp-1">
+                                {ipo.company_name}
+                              </h3>
+                              <span className="inline-block mt-0.5 text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200/60 uppercase">
+                                {ipo.is_sme ? 'SME' : 'MAINBOARD'}
+                              </span>
+                            </div>
                           </div>
+                          <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 shrink-0 mt-1" />
+                        </div>
+
+                        {/* Metrics Row: Closes On + Subscription + Apply Button */}
+                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
                           <div>
-                            <h3 className="font-bold text-slate-900 text-sm leading-tight group-hover:text-blue-600 transition-colors">
-                              {ipo.company_name}
-                            </h3>
-                            <div className="flex items-center gap-1.5 mt-1">
-                              <span className="text-[11px] font-mono font-semibold text-slate-500">{ipo.symbol}</span>
-                              <span className="text-[10px] text-slate-400">•</span>
-                              <span className={`text-[10px] font-semibold px-2 py-0.2 rounded ${
-                                ipo.is_sme ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-600'
-                              }`}>
-                                {ipo.is_sme ? 'SME' : 'Mainboard'}
+                            <span className="text-[11px] text-slate-400 block">Closes On</span>
+                            <span className="font-semibold text-slate-800 text-xs mt-0.5 block">
+                              {formatDisplayDate(ipo.bidding_end_date)}
+                            </span>
+                          </div>
+
+                          <div className="text-center">
+                            <span className="text-[11px] text-slate-400 block">Subscription</span>
+                            <span className="font-semibold text-slate-900 text-xs mt-0.5 block font-mono">
+                              {ipo.subscription_rate || '-'}
+                            </span>
+                          </div>
+
+                          <div onClick={e => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenApply(ipo)}
+                              className="px-4 py-1.5 border border-blue-600 hover:bg-blue-600 hover:text-white text-blue-600 font-bold text-xs rounded-lg transition-colors uppercase tracking-wider"
+                            >
+                              APPLY
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl p-8 text-center border border-dashed border-slate-200 text-xs text-slate-400">
+                No active IPOs open for bidding currently.
+              </div>
+            )}
+          </section>
+
+          {/* Need Help Banner */}
+          <div className="bg-gradient-to-r from-blue-50/60 to-indigo-50/40 border border-blue-100 rounded-xl p-3.5 flex items-center justify-between text-xs">
+            <span className="text-slate-700 font-medium">Need Help? Learn more about IPO application and UPI mandate authorization</span>
+            <span className="text-blue-600 font-bold flex items-center gap-1 cursor-pointer hover:underline">
+              View Guide <ChevronRight className="w-3.5 h-3.5" />
+            </span>
+          </div>
+
+          {/* SECTION 2: UPCOMING IPOS */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">Upcoming IPOs</h2>
+              <span className="min-w-5 h-5 px-1.5 rounded-full bg-rose-500 text-white text-[11px] font-bold flex items-center justify-center">
+                {upcomingIPOs.length}
+              </span>
+            </div>
+
+            {upcomingIPOs.length > 0 ? (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {upcomingIPOs.slice(0, upcomingVisibleCount).map(ipo => {
+                    const priceRange = (ipo.min_price && ipo.max_price)
+                      ? (ipo.min_price === ipo.max_price ? `₹${ipo.max_price.toFixed(2)}` : `₹${ipo.min_price.toFixed(2)} - ₹${ipo.max_price.toFixed(2)}`)
+                      : '₹0.00 - ₹0.00';
+
+                    return (
+                      <div
+                        key={ipo.id}
+                        className="bg-white rounded-xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all p-4 flex flex-col justify-between group cursor-pointer"
+                        onClick={() => handleOpenDetails(ipo)}
+                      >
+                        <div>
+                          {/* Header: Logo + Name + Category + Chevron */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs shrink-0">
+                                {ipo.symbol.substring(0, 3)}
+                              </div>
+                              <div>
+                                <h3 className="font-bold text-slate-900 text-xs leading-snug group-hover:text-blue-600 transition-colors line-clamp-1">
+                                  {ipo.company_name}
+                                </h3>
+                                <span className="inline-block mt-0.5 text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200/60 uppercase">
+                                  {ipo.is_sme ? 'SME' : 'MAINBOARD'}
+                                </span>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 shrink-0 mt-1" />
+                          </div>
+
+                          {/* Metrics Row: Offer Starts On + Bid Price Range */}
+                          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                            <div>
+                              <span className="text-[11px] text-slate-400 block">Offer Starts On</span>
+                              <span className="font-semibold text-slate-800 text-xs mt-0.5 block">
+                                {formatDisplayDate(ipo.bidding_start_date)}
+                              </span>
+                            </div>
+
+                            <div className="text-right">
+                              <span className="text-[11px] text-slate-400 block">Bid Price Range</span>
+                              <span className="font-semibold text-slate-900 text-xs mt-0.5 block font-mono">
+                                {priceRange}
                               </span>
                             </div>
                           </div>
                         </div>
-
-                        <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full shrink-0 ${
-                          isOpen ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-                          isUpcoming ? 'bg-blue-50 text-blue-700 border border-blue-200' :
-                          'bg-slate-100 text-slate-600'
-                        }`}>
-                          {isOpen ? 'Open Now' : isUpcoming ? 'Upcoming' : 'Closed'}
-                        </span>
                       </div>
+                    );
+                  })}
+                </div>
 
-                      {/* Financial Metrics Grid */}
-                      <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-slate-100 text-xs">
-                        <div className="bg-slate-50/70 p-2.5 rounded-xl">
-                          <span className="text-[11px] text-slate-400 font-medium">Price Band</span>
-                          <div className="font-bold text-slate-900 mt-0.5 font-mono">
-                            {isUpcoming && (!ipo.min_price && !ipo.max_price)
-                              ? 'To be announced'
-                              : minPrice === maxPrice ? `₹${maxPrice.toFixed(2)}` : `₹${minPrice.toFixed(2)} - ₹${maxPrice.toFixed(2)}`}
-                          </div>
-                        </div>
-
-                        <div className="bg-slate-50/70 p-2.5 rounded-xl">
-                          <span className="text-[11px] text-slate-400 font-medium">Lot Size</span>
-                          <div className="font-bold text-slate-900 mt-0.5">
-                            {ipo.lot_size} Shares
-                          </div>
-                        </div>
-
-                        <div className="bg-slate-50/70 p-2.5 rounded-xl">
-                          <span className="text-[11px] text-slate-400 font-medium">Min. Investment</span>
-                          <div className="font-bold text-slate-900 mt-0.5 font-mono">
-                            {isUpcoming && (!ipo.min_price && !ipo.max_price)
-                              ? 'To be announced'
-                              : `₹${minInv.toLocaleString('en-IN')}`}
-                          </div>
-                        </div>
-
-                        <div className="bg-slate-50/70 p-2.5 rounded-xl">
-                          <span className="text-[11px] text-slate-400 font-medium">Issue Size</span>
-                          <div className="font-bold text-slate-900 mt-0.5 truncate">
-                            {ipo.issue_size || 'To be announced'}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Subscription Status Bar */}
-                      {isOpen && (
-                        <div className="mt-3 bg-blue-50/40 p-2.5 rounded-xl border border-blue-100/60 flex items-center justify-between text-xs">
-                          <span className="text-blue-700 font-medium flex items-center gap-1">
-                            <Layers className="w-3.5 h-3.5 text-blue-600" /> Subscription:
-                          </span>
-                          <span className="font-bold text-blue-900 font-mono">
-                            {ipo.subscription_rate || '0.10x'}
-                          </span>
-                        </div>
-                      )}
-
-                      {/* Bidding Dates */}
-                      <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                          {ipo.bidding_end_date ? `Closes ${ipo.bidding_end_date}` : 'Dates to be announced'}
-                        </span>
-                        <span>{ipo.exchange}</span>
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100">
-                      <button
-                        onClick={() => handleOpenDetails(ipo)}
-                        className="w-full py-2 px-3 border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-xs rounded-xl transition-colors flex items-center justify-center gap-1"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        Details
-                      </button>
-
-                      {isOpen ? (
-                        <button
-                          onClick={() => handleOpenApply(ipo)}
-                          className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-sm shadow-blue-500/20 transition-all flex items-center justify-center gap-1"
-                        >
-                          Apply Now
-                          <ChevronRight className="w-3.5 h-3.5" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleOpenDetails(ipo)}
-                          className="w-full py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition-colors"
-                        >
-                          {isUpcoming ? 'Pre-Apply Guide' : 'View Summary'}
-                        </button>
-                      )}
-                    </div>
+                {upcomingVisibleCount < upcomingIPOs.length && (
+                  <div className="flex justify-center mt-4">
+                    <button
+                      type="button"
+                      onClick={() => setUpcomingVisibleCount(prev => prev + 10)}
+                      className="px-6 py-2 border border-blue-600 text-blue-600 hover:bg-blue-50 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors uppercase tracking-wider shadow-sm"
+                    >
+                      VIEW MORE
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                );
-              })}
+                )}
+              </>
+            ) : (
+              <div className="bg-white rounded-xl p-8 text-center border border-dashed border-slate-200 text-xs text-slate-400">
+                No upcoming IPO announcements at this time.
+              </div>
+            )}
+          </section>
+
+          {/* SECTION 3: CLOSED IPOS */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">Closed IPOs</h2>
+              <span className="min-w-6 h-5 px-1.5 rounded-full bg-rose-500 text-white text-[11px] font-bold flex items-center justify-center">
+                {closedIPOs.length}
+              </span>
             </div>
-          ) : (
-            <div className="bg-white rounded-2xl p-12 text-center border border-dashed border-slate-300">
-              <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <h3 className="text-sm font-bold text-slate-700">No issues matching criteria</h3>
-              <p className="text-xs text-slate-400 mt-1">Try resetting search or filters.</p>
-            </div>
-          )}
+
+            {closedIPOs.length > 0 ? (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {closedIPOs.slice(0, closedVisibleCount).map(ipo => {
+                    return (
+                      <div
+                        key={ipo.id}
+                        className="bg-white rounded-xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all p-4 flex flex-col justify-between group cursor-pointer"
+                        onClick={() => handleOpenDetails(ipo)}
+                      >
+                        <div>
+                          {/* Header: Logo + Name + Category + Chevron */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs shrink-0">
+                                {ipo.symbol.substring(0, 3)}
+                              </div>
+                              <div>
+                                <h3 className="font-bold text-slate-900 text-xs leading-snug group-hover:text-blue-600 transition-colors line-clamp-1">
+                                  {ipo.company_name}
+                                </h3>
+                                <span className="inline-block mt-0.5 text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200/60 uppercase">
+                                  {ipo.is_sme ? 'SME' : 'MAINBOARD'}
+                                </span>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-600 shrink-0 mt-1" />
+                          </div>
+
+                          {/* Metrics Row: Listing Date + Listing Gains */}
+                          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                            <div>
+                              <span className="text-[11px] text-slate-400 block">Listing Date</span>
+                              <span className="font-semibold text-slate-800 text-xs mt-0.5 block">
+                                {formatDisplayDate(ipo.listing_date || ipo.bidding_end_date)}
+                              </span>
+                            </div>
+
+                            <div className="text-right">
+                              <span className="text-[11px] text-slate-400 block">Listing Gains</span>
+                              <span className={`font-bold text-xs mt-0.5 block font-mono ${
+                                ipo.listing_gain && ipo.listing_gain > 0 ? 'text-emerald-600' : 'text-slate-600'
+                              }`}>
+                                {ipo.listing_gain ? `${ipo.listing_gain.toFixed(2)}% ▲` : '-'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {closedVisibleCount < closedIPOs.length && (
+                  <div className="flex justify-center mt-4">
+                    <button
+                      type="button"
+                      onClick={() => setClosedVisibleCount(prev => prev + 10)}
+                      className="px-6 py-2 border border-blue-600 text-blue-600 hover:bg-blue-50 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors uppercase tracking-wider shadow-sm"
+                    >
+                      VIEW MORE
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="bg-white rounded-xl p-8 text-center border border-dashed border-slate-200 text-xs text-slate-400">
+                No closed IPO records found.
+              </div>
+            )}
+          </section>
         </div>
       )}
 
