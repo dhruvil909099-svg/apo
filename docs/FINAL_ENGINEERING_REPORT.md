@@ -4,6 +4,7 @@
 **Repository:** `https://github.com/dhruvil909099-svg/apo`  
 **Branch:** `main`  
 **Latest Baseline Commit:** `9a8a6cc`  
+**Latest Production Commit:** `4d72216` (`fix(deploy): add email-validator dependency and resilient regex email schema to prevent Render deployment failure`)  
 **Date of Audit & Completion:** 2026-10-28  
 **Final Production Status:** **`PARTIALLY VERIFIED — BLOCKED`**  
 *(Codebase is 100% feature-complete, secure, and passes all 83 backend tests and frontend builds. Production sign-off is blocked solely by external infrastructure: Render Web Service `apo-wubq` currently runs in ephemeral SQLite mode and requires owner provisioning of a managed PostgreSQL database).*

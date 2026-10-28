@@ -13,7 +13,8 @@ This document tracks all files modified, created, or deleted across the applicat
 - `backend/app/models/notification.py`: Added `Notification` database model with `title`, `message`, `notification_type`, and `is_read`.
 - `backend/app/models/chat.py`: Added `ChatMessage` database model with `session_id`, `sender`, `content`, and `context_meta_json`.
 - `backend/app/models/__init__.py`: Exported all newly defined models.
-- `backend/app/schemas/user.py`: Defined Pydantic schemas for User creation, updates, and responses (excluding password hashes).
+- `backend/app/schemas/user.py`: Defined Pydantic schemas for User creation, updates, and responses (excluding password hashes) with resilient regex email validation to eliminate external email-validator import requirements.
+- `backend/requirements.txt`: Added `email-validator>=2.0.0` to resolve container startup dependency requirements on Render.
 - `backend/app/schemas/watchlist.py`: Defined Pydantic schemas for Watchlist and WatchlistItem CRUD.
 - `backend/app/schemas/portfolio_note.py`: Defined Pydantic schemas for PortfolioNote CRUD and tag filtering.
 - `backend/app/schemas/notification.py`: Defined Pydantic schemas for System Notifications.
