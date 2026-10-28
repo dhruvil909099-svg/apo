@@ -15,6 +15,7 @@ class AccountCreate(BaseModel):
 
 class AccountUpdate(BaseModel):
     nickname: Optional[str] = None
+    client_code: Optional[str] = None
     account_group: Optional[str] = None
     is_enabled: Optional[bool] = None
     api_key: Optional[str] = None

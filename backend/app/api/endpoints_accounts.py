@@ -159,14 +159,49 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
         account.ddpi_status = account_in.ddpi_status
     if account_in.edis_authorized_today is not None:
         account.edis_authorized_today = account_in.edis_authorized_today
+    if account_in.client_code is not None and account_in.client_code.strip():
+        new_code = account_in.client_code.strip()
+        if new_code != account.client_code:
+            existing = db.query(Account).filter(Account.client_code == new_code, Account.id != account.id).first()
+            if existing:
+                raise HTTPException(status_code=400, detail=f"Client code {mask_client_id(new_code)} already in use.")
+            account.client_code = new_code
+            account.masked_client_code = mask_client_id(new_code)
+            credentials_rotated = True
 
     # Optional credential rotation
+    credentials_rotated = False if not credentials_rotated else True
     if account_in.api_key:
         account.encrypted_api_key = cipher.encrypt(account_in.api_key.strip())
+        credentials_rotated = True
     if account_in.pin:
         account.encrypted_pin = cipher.encrypt(account_in.pin.strip())
+        credentials_rotated = True
     if account_in.totp_secret:
         account.encrypted_totp_secret = cipher.encrypt(account_in.totp_secret.strip())
+        credentials_rotated = True
+
+    if credentials_rotated and not account.is_demo:
+        try:
+            raw_key = cipher.decrypt(account.encrypted_api_key)
+            raw_pin = cipher.decrypt(account.encrypted_pin)
+            raw_totp = cipher.decrypt(account.encrypted_totp_secret)
+            adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
+            test_res = adapter.test_connection()
+            if test_res["success"]:
+                account.auth_status = "CONNECTED"
+                account.last_sync_time = datetime.utcnow()
+                account.last_auth_error = None
+                rms = adapter.get_rms()
+                if rms:
+                    cash = float(rms.get("availablecash", rms.get("net", account.available_cash)))
+                    account.available_cash = round(cash, 2)
+            else:
+                account.auth_status = "ERROR"
+                account.last_auth_error = test_res["message"]
+        except Exception as e:
+            account.auth_status = "ERROR"
+            account.last_auth_error = str(e)
 
     account.updated_at = datetime.utcnow()
     db.commit()

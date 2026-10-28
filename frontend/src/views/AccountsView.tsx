@@ -77,7 +77,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
   // Form State for Credential Rotation
   const [rotationAccount, setRotationAccount] = useState<Account | null>(null);
-  const [rotationData, setRotationData] = useState({ api_key: '', pin: '', totp_secret: '' });
+  const [rotationData, setRotationData] = useState({ client_code: '', api_key: '', pin: '', totp_secret: '' });
   const [isRotating, setIsRotating] = useState(false);
   const [rotationError, setRotationError] = useState<string | null>(null);
 
@@ -321,17 +321,22 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     setRotationError(null);
     try {
       const payload: any = {};
+      if (rotationData.client_code.trim()) payload.client_code = rotationData.client_code.trim();
       if (rotationData.api_key.trim()) payload.api_key = rotationData.api_key.trim();
       if (rotationData.pin.trim()) payload.pin = rotationData.pin.trim();
       if (rotationData.totp_secret.trim()) payload.totp_secret = rotationData.totp_secret.trim();
 
-      await api.updateAccount(rotationAccount.id, payload);
+      const res = await api.updateAccount(rotationAccount.id, payload);
       setRotationAccount(null);
-      setRotationData({ api_key: '', pin: '', totp_secret: '' });
+      setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
       onRefresh();
-      alert('Credentials updated securely. Please test connection.');
+      if (res.auth_status === 'CONNECTED') {
+        alert('Connected successfully! Credentials verified with Angel One SmartAPI.');
+      } else {
+        alert(`Angel One connection failed: ${res.last_auth_error || 'Invalid credentials'}`);
+      }
     } catch (err: any) {
-      setRotationError(err.message || 'Failed to rotate credentials.');
+      setRotationError(err.message || 'Failed to update credentials.');
     } finally {
       setIsRotating(false);
     }
@@ -653,18 +658,37 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                           </td>
 
                           <td className="py-3.5 px-4">
-                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                              acc.auth_status === 'CONNECTED'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : acc.auth_status === 'ERROR'
-                                ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                                : 'bg-slate-100 text-slate-600 border border-slate-200'
-                            }`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${
-                                acc.auth_status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-rose-500'
-                              }`} />
-                              {acc.auth_status}
-                            </span>
+                            <div className="flex flex-col items-start gap-1">
+                              <button
+                                onClick={() => {
+                                  if (acc.auth_status === 'ERROR' || acc.auth_status === 'EXPIRED') {
+                                    setRotationAccount(acc);
+                                    setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
+                                  }
+                                }}
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold transition-all ${
+                                  acc.auth_status === 'CONNECTED'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : acc.auth_status === 'ERROR'
+                                    ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 cursor-pointer'
+                                    : 'bg-slate-100 text-slate-600 border border-slate-200'
+                                }`}
+                                title={acc.auth_status === 'ERROR' ? 'Click to reconnect credentials' : undefined}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${
+                                  acc.auth_status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-rose-500'
+                                }`} />
+                                {acc.auth_status}
+                              </button>
+                              {acc.auth_status === 'ERROR' && acc.last_auth_error && (
+                                <span
+                                  className="text-[10px] text-rose-600 max-w-[170px] truncate leading-tight cursor-help font-medium"
+                                  title={acc.last_auth_error}
+                                >
+                                  {acc.last_auth_error}
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           <td className="py-3.5 px-4">
@@ -680,10 +704,10 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                           </td>
 
                           <td className="py-3.5 px-4 font-mono font-medium text-slate-800">
-                            {acc.available_cash !== null && acc.available_cash !== undefined ? (
+                            {acc.auth_status === 'CONNECTED' && acc.last_sync_time && acc.available_cash !== null && acc.available_cash !== undefined ? (
                               `₹${acc.available_cash.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
                             ) : (
-                              <span className="text-slate-400 font-normal">Unavailable</span>
+                              <span className="text-slate-400 font-normal italic text-[11px]">Unverified</span>
                             )}
                           </td>
 
@@ -700,15 +724,29 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => handleSyncAccount(acc.id)}
-                                disabled={isSyncing || hasCooldown}
-                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-semibold transition-colors flex items-center gap-1 disabled:opacity-50"
-                                title="Sync live RMS balance and holdings without placing orders"
-                              >
-                                <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
-                                <span>{isSyncing ? 'Syncing...' : hasCooldown ? 'Cooling' : 'Sync'}</span>
-                              </button>
+                              {acc.auth_status === 'ERROR' || acc.auth_status === 'EXPIRED' ? (
+                                <button
+                                  onClick={() => {
+                                    setRotationAccount(acc);
+                                    setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
+                                  }}
+                                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-xs"
+                                  title="Reconnect Angel One SmartAPI Credentials"
+                                >
+                                  <KeyRound className="w-3 h-3" />
+                                  <span>Reconnect</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleSyncAccount(acc.id)}
+                                  disabled={isSyncing || hasCooldown}
+                                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-semibold transition-colors flex items-center gap-1 disabled:opacity-50"
+                                  title="Sync live RMS balance and holdings without placing orders"
+                                >
+                                  <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                                  <span>{isSyncing ? 'Syncing...' : hasCooldown ? 'Cooling' : 'Sync'}</span>
+                                </button>
+                              )}
 
                               <button
                                 onClick={() => openAccountDrawer(acc)}
@@ -1023,7 +1061,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     <button
                       onClick={() => {
                         setRotationAccount(acc);
-                        setRotationData({ api_key: '', pin: '', totp_secret: '' });
+                        setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
                       }}
                       className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5"
                     >
@@ -1386,7 +1424,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                         <button
                           onClick={() => {
                             setRotationAccount(selectedAccountForDrawer);
-                            setRotationData({ api_key: '', pin: '', totp_secret: '' });
+                            setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
                           }}
                           className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors flex items-center gap-1.5"
                         >
@@ -1568,13 +1606,15 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
         </div>
       )}
 
-      {/* ROTATE CREDENTIALS MODAL */}
+      {/* ROTATE CREDENTIALS / RECONNECT MODAL */}
       {rotationAccount && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-900 tracking-tight">Rotate Credentials</h3>
+                <h3 className="text-base font-bold text-slate-900 tracking-tight">
+                  {rotationAccount.auth_status === 'ERROR' ? 'Reconnect Angel One Account' : 'Rotate Credentials'}
+                </h3>
                 <p className="text-xs text-slate-500">{rotationAccount.nickname} ({rotationAccount.masked_client_code})</p>
               </div>
               <button
@@ -1585,44 +1625,81 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </button>
             </div>
 
+            {rotationAccount.auth_status === 'ERROR' && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs space-y-1.5">
+                <div className="font-semibold text-rose-800 flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+                  <span>Angel One Authentication Rejection</span>
+                </div>
+                <p className="text-rose-700">
+                  Broker reported: <strong className="font-mono bg-rose-100/70 px-1 py-0.5 rounded">{rotationAccount.last_auth_error || 'Invalid credentials'}</strong>
+                </p>
+                <p className="text-slate-600 text-[11px] leading-relaxed">
+                  Enter your genuine SmartAPI API Key, 4-digit Account PIN, and the Base32 TOTP secret string from your Angel One authenticator setup (not the 6-digit expiring code).
+                </p>
+              </div>
+            )}
+
             {rotationError && (
-              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700">
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 font-medium">
                 {rotationError}
               </div>
             )}
 
             <form onSubmit={handleRotateCredentials} className="space-y-3.5 text-xs">
               <div>
-                <label className="block text-slate-700 font-medium mb-1">New SmartAPI API Key (optional)</label>
+                <label className="block text-slate-700 font-medium mb-1">
+                  Client Code <span className="text-slate-400 font-normal">(leave blank to keep current)</span>
+                </label>
                 <input
                   type="text"
-                  placeholder="Leave blank to keep existing key"
+                  placeholder={`Current: ${rotationAccount.masked_client_code}`}
+                  value={rotationData.client_code}
+                  onChange={(e) => setRotationData({ ...rotationData, client_code: e.target.value.toUpperCase() })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono uppercase"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">
+                  SmartAPI API Key <span className="text-slate-400 font-normal">(from smartapi.angelone.in)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter SmartAPI App API Key"
                   value={rotationData.api_key}
-                  onChange={(e) => setRotationData({ ...rotationData, api_key: e.target.value })}
+                  onChange={(e) => setRotationData({ ...rotationData, api_key: e.target.value.trim() })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-700 font-medium mb-1">New PIN / Password (optional)</label>
+                <label className="block text-slate-700 font-medium mb-1">
+                  Account PIN / Password <span className="text-slate-400 font-normal">(4-digit trading PIN)</span>
+                </label>
                 <input
                   type="password"
-                  placeholder="Leave blank to keep existing PIN"
+                  placeholder="Enter 4-digit Angel One PIN"
                   value={rotationData.pin}
-                  onChange={(e) => setRotationData({ ...rotationData, pin: e.target.value })}
+                  onChange={(e) => setRotationData({ ...rotationData, pin: e.target.value.trim() })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-700 font-medium mb-1">New TOTP Secret String (optional)</label>
+                <label className="block text-slate-700 font-medium mb-1">
+                  TOTP Secret Key (Base32) <span className="text-slate-400 font-normal">(Permanent setup key)</span>
+                </label>
                 <input
                   type="text"
-                  placeholder="Leave blank to keep existing TOTP secret"
+                  placeholder="e.g. JBSWY3DPEHPK3PXP (from authenticator setup)"
                   value={rotationData.totp_secret}
-                  onChange={(e) => setRotationData({ ...rotationData, totp_secret: e.target.value })}
+                  onChange={(e) => setRotationData({ ...rotationData, totp_secret: e.target.value.trim() })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
                 />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Important: Enter the permanent alphanumeric secret from "Enable External TOTP" in Angel One, NOT the 6-digit changing OTP code.
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
@@ -1638,7 +1715,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                   disabled={isRotating}
                   className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50"
                 >
-                  {isRotating ? 'Updating...' : 'Update Credentials'}
+                  {isRotating ? 'Verifying with Angel One...' : rotationAccount.auth_status === 'ERROR' ? 'Authorize & Reconnect' : 'Update Credentials'}
                 </button>
               </div>
             </form>
