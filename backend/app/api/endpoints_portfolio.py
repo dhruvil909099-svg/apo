@@ -6,6 +6,8 @@ from app.core.database import get_db
 from app.models.ipo import Allotment, IPO
 from app.models.account import Account
 from app.models.audit import AuditLog
+from app.services.smartapi_adapter import SmartAPIAdapter
+from app.core.security import cipher
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio & Holdings"])
 
@@ -215,8 +217,8 @@ def get_account_portfolios(db: Session = Depends(get_db)):
 @router.post("/sync")
 def trigger_portfolio_sync(db: Session = Depends(get_db)):
     """
-    Triggers holdings synchronization across all enabled accounts.
-    Updates last_sync_time and logs audit records.
+    Triggers real holdings and cash margin synchronization from Angel One SmartAPI
+    across all enabled accounts. Updates demat holdings and ledger balances.
     """
     accounts = db.query(Account).filter(Account.is_enabled == True).all()
     synced_count = 0
@@ -226,14 +228,114 @@ def trigger_portfolio_sync(db: Session = Depends(get_db)):
     for acc in accounts:
         try:
             acc.last_sync_time = now
-            # In paper/demo mode or if auth succeeds, mark synced
-            if acc.auth_status in ["CONNECTED", "ACTIVE"]:
-                synced_count += 1
-            else:
+            if acc.is_demo:
                 acc.auth_status = "CONNECTED"
                 synced_count += 1
-        except Exception:
+                continue
+
+            # Decrypt live credentials
+            raw_key = cipher.decrypt(acc.encrypted_api_key)
+            raw_pin = cipher.decrypt(acc.encrypted_pin)
+            raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
+
+            adapter = SmartAPIAdapter(
+                api_key=raw_key,
+                client_code=acc.client_code,
+                pin=raw_pin,
+                totp_secret=raw_totp
+            )
+            auth_res = adapter.authenticate()
+            if not auth_res.get("success"):
+                acc.auth_status = "ERROR"
+                acc.last_auth_error = auth_res.get("message", "Authentication failed")
+                failed_count += 1
+                continue
+
+            acc.auth_status = "CONNECTED"
+            acc.last_auth_error = None
+            acc.ddpi_status = "ACTIVE"
+
+            # 1. Fetch live RMS Margin & Cash Balance
+            rms_data = adapter.get_rms()
+            if rms_data:
+                cash_val = float(rms_data.get("availablecash", rms_data.get("net", 0.0)))
+                acc.available_cash = round(cash_val, 2)
+
+            # 2. Fetch live Demat Holdings
+            holdings = adapter.get_holdings()
+            for h in holdings:
+                raw_sym = h.get("tradingsymbol", "")
+                sym = raw_sym.replace("-EQ", "")
+                qty = int(h.get("quantity", h.get("realisedquantity", 0)))
+                avg_price = float(h.get("averageprice", 0.0))
+                ltp = float(h.get("ltp", avg_price))
+                close = float(h.get("close", ltp))
+                isin = h.get("isin", "")
+                token = str(h.get("symboltoken", ""))
+
+                if not sym or qty <= 0:
+                    continue
+
+                # Find or register Instrument in IPO table
+                ipo = db.query(IPO).filter(IPO.symbol == sym).first()
+                if not ipo:
+                    ipo = IPO(
+                        symbol=sym,
+                        company_name=sym,
+                        exchange=h.get("exchange", "NSE"),
+                        issue_price=avg_price,
+                        lot_size=1,
+                        isin=isin,
+                        symbol_token=token,
+                        current_ltp=ltp,
+                        previous_close=close,
+                        status="LISTED"
+                    )
+                    db.add(ipo)
+                    db.flush()
+                else:
+                    ipo.current_ltp = ltp
+                    ipo.previous_close = close
+                    if isin and not ipo.isin:
+                        ipo.isin = isin
+                    if token and not ipo.symbol_token:
+                        ipo.symbol_token = token
+
+                # Find or create Demat Allotment entry
+                allotment = db.query(Allotment).filter(
+                    Allotment.ipo_id == ipo.id,
+                    Allotment.account_id == acc.id
+                ).first()
+                if not allotment:
+                    allotment = Allotment(
+                        ipo_id=ipo.id,
+                        account_id=acc.id,
+                        applied_quantity=qty,
+                        allotted_quantity=qty,
+                        acquisition_cost=avg_price,
+                        allotment_status="ALLOTTED",
+                        demat_credit_status="CREDITED",
+                        status="DEMAT_CREDITED",
+                        demat_verified=True,
+                        verification_source="ANGEL_ONE_HOLDINGS",
+                        verification_timestamp=now
+                    )
+                    db.add(allotment)
+                else:
+                    allotment.allotted_quantity = qty
+                    allotment.applied_quantity = qty
+                    allotment.acquisition_cost = avg_price
+                    allotment.allotment_status = "ALLOTTED"
+                    allotment.demat_credit_status = "CREDITED"
+                    allotment.status = "DEMAT_CREDITED"
+                    allotment.demat_verified = True
+                    allotment.verification_source = "ANGEL_ONE_HOLDINGS"
+                    allotment.verification_timestamp = now
+
+            synced_count += 1
+        except Exception as e:
             failed_count += 1
+            acc.last_auth_error = str(e)
 
     db.commit()
 
@@ -241,7 +343,7 @@ def trigger_portfolio_sync(db: Session = Depends(get_db)):
     db.add(AuditLog(
         event_type="PORTFOLIO_SYNC",
         operator="SYSTEM",
-        details_json=json.dumps({"message": f"Holdings synchronization completed for {synced_count} accounts ({failed_count} failed)."})
+        details_json=json.dumps({"message": f"Live broker synchronization completed for {synced_count} accounts ({failed_count} failed)."})
     ))
     db.commit()
 

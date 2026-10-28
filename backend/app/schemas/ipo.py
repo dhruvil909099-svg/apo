@@ -8,12 +8,18 @@ class IPOCreate(BaseModel):
     company_name: str = Field(..., min_length=1, max_length=200)
     exchange: str = Field(default="NSE", max_length=10)
     issue_price: float = Field(..., gt=0)
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
     lot_size: int = Field(default=1, gt=0)
+    bidding_start_date: Optional[str] = None
+    bidding_end_date: Optional[str] = None
+    allotment_date: Optional[str] = None
     listing_date: Optional[str] = None
     isin: Optional[str] = None
     symbol_token: Optional[str] = None
     is_sme: bool = Field(default=False)
     status: str = Field(default="LISTED")
+    source_name: Optional[str] = "MANUAL"
 
 
 class IPOResponse(BaseModel):
@@ -24,7 +30,12 @@ class IPOResponse(BaseModel):
     company_name: str
     exchange: str
     issue_price: float
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
     lot_size: int
+    bidding_start_date: Optional[str] = None
+    bidding_end_date: Optional[str] = None
+    allotment_date: Optional[str] = None
     listing_date: Optional[str] = None
     isin: Optional[str] = None
     symbol_token: Optional[str] = None
@@ -32,6 +43,9 @@ class IPOResponse(BaseModel):
     current_ltp: Optional[float] = None
     previous_close: Optional[float] = None
     status: str
+    source_name: str = "MANUAL"
+    source_timestamp: Optional[datetime] = None
+    last_sync_at: Optional[datetime] = None
     total_allotted_shares: int = 0
     total_accounts_allotted: int = 0
     estimated_current_value: float = 0.0
@@ -44,16 +58,23 @@ class AllotmentCreate(BaseModel):
     ipo_id: int
     account_id: int
     application_no: Optional[str] = None
+    category: str = Field(default="RETAIL")
     applied_quantity: int = Field(default=0, ge=0)
     allotted_quantity: int = Field(default=0, ge=0)
     acquisition_cost: float = Field(..., gt=0)
+    pan_masked: Optional[str] = None
+    upi_id_masked: Optional[str] = None
+    mandate_status: str = Field(default="PENDING")
     status: str = Field(default="ALLOTTED")  # APPLIED, PENDING, ALLOTTED, NOT_ALLOTTED, DEMAT_CREDITED
 
 
 class AllotmentUpdate(BaseModel):
     allotted_quantity: Optional[int] = None
     status: Optional[str] = None
+    allotment_status: Optional[str] = None
+    demat_credit_status: Optional[str] = None
     demat_verified: Optional[bool] = None
+    conflict_note: Optional[str] = None
 
 
 class AllotmentResponse(BaseModel):
@@ -67,6 +88,7 @@ class AllotmentResponse(BaseModel):
     account_group: str
     ipo_symbol: str
     application_no: Optional[str] = None
+    category: str = "RETAIL"
     applied_quantity: int
     allotted_quantity: int
     acquisition_cost: float
@@ -74,8 +96,16 @@ class AllotmentResponse(BaseModel):
     market_value: float = 0.0
     unrealized_pnl: float = 0.0
     pnl_percentage: float = 0.0
+    pan_masked: Optional[str] = None
+    upi_id_masked: Optional[str] = None
+    mandate_status: str = "PENDING"
+    allotment_status: str = "PENDING"
+    demat_credit_status: str = "PENDING"
     status: str
     demat_verified: bool
+    verification_source: Optional[str] = None
+    verification_timestamp: Optional[datetime] = None
+    conflict_note: Optional[str] = None
     ddpi_status: str
     edis_authorized: bool
     created_at: datetime
@@ -83,6 +113,45 @@ class AllotmentResponse(BaseModel):
 
 class CSVImportSummary(BaseModel):
     imported_count: int
+    updated_count: int = 0
+    conflict_count: int = 0
     skipped_count: int
-    errors: List[str]
+    conflicts: List[str] = []
+    errors: List[str] = []
+
+
+class IPOPrepareApplicationRequest(BaseModel):
+    ipo_id: int
+    account_ids: List[int] = Field(..., min_length=1)
+    lots: int = Field(default=1, gt=0)
+    category: str = Field(default="RETAIL")
+    bid_price: Optional[float] = None
+
+
+class IPOApplicationPreparedItem(BaseModel):
+    account_id: int
+    account_nickname: str
+    account_masked_code: str
+    ipo_symbol: str
+    category: str
+    lots: int
+    shares: int
+    cut_off_price: float
+    total_amount: float
+    is_valid: bool
+    validation_message: Optional[str] = None
+    duplicate_warning: Optional[str] = None
+
+
+class IPOPrepareApplicationResponse(BaseModel):
+    ipo_id: int
+    ipo_symbol: str
+    company_name: str
+    lot_size: int
+    issue_price: float
+    total_accounts: int
+    total_shares: int
+    total_amount: float
+    applications: List[IPOApplicationPreparedItem]
+    all_valid: bool
 

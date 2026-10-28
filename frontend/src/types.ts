@@ -30,7 +30,12 @@ export interface IPO {
   company_name: string;
   exchange: string;
   issue_price: number;
+  min_price?: number;
+  max_price?: number;
   lot_size: number;
+  bidding_start_date?: string;
+  bidding_end_date?: string;
+  allotment_date?: string;
   listing_date?: string;
   isin?: string;
   symbol_token?: string;
@@ -38,6 +43,9 @@ export interface IPO {
   current_ltp?: number;
   previous_close?: number;
   status: 'UPCOMING' | 'PRE_OPEN' | 'LISTED' | 'CLOSED';
+  source_name?: string;
+  source_timestamp?: string;
+  last_sync_at?: string;
   total_allotted_shares: number;
   total_accounts_allotted: number;
   estimated_current_value: number;
@@ -55,6 +63,7 @@ export interface Allotment {
   account_group: string;
   ipo_symbol: string;
   application_no?: string;
+  category?: string;
   applied_quantity: number;
   allotted_quantity: number;
   acquisition_cost: number;
@@ -62,12 +71,58 @@ export interface Allotment {
   market_value: number;
   unrealized_pnl: number;
   pnl_percentage: number;
+  pan_masked?: string;
+  upi_id_masked?: string;
+  mandate_status?: string;
+  allotment_status?: string;
+  demat_credit_status?: string;
   status: string;
   demat_verified: boolean;
+  verification_source?: string;
+  verification_timestamp?: string;
+  conflict_note?: string;
   ddpi_status: string;
   edis_authorized: boolean;
   created_at: string;
 }
+
+export interface CSVImportSummary {
+  imported_count: number;
+  updated_count: number;
+  conflict_count: number;
+  skipped_count: number;
+  conflicts: string[];
+  errors: string[];
+}
+
+export interface IPOApplicationPreparedItem {
+  account_id: number;
+  account_nickname: string;
+  account_masked_code: string;
+  ipo_symbol: string;
+  category: string;
+  lots: number;
+  shares: number;
+  cut_off_price: number;
+  total_amount: number;
+  is_valid: boolean;
+  validation_message?: string;
+  duplicate_warning?: string;
+}
+
+export interface IPOPrepareApplicationResponse {
+  ipo_id: number;
+  ipo_symbol: string;
+  company_name: string;
+  lot_size: number;
+  issue_price: number;
+  total_accounts: number;
+  total_shares: number;
+  total_amount: number;
+  applications: IPOApplicationPreparedItem[];
+  all_valid: boolean;
+}
+
 
 export interface Order {
   id: number;

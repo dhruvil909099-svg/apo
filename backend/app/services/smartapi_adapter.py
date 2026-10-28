@@ -100,13 +100,23 @@ class SmartAPIAdapter:
             data = resp.json()
             if data.get("status"):
                 profile = data.get("data", {})
-                # Angel One profile returns client details and depository type
                 dp_type = profile.get("dpType", "CDSL")
+                # Angel One profile returns ddpi/poa in various keys (ddpiStatus, poaStatus, ddpi, poa)
+                is_ddpi = (
+                    str(profile.get("ddpiStatus", "")).upper() in ("ACTIVE", "Y", "YES", "TRUE", "1") or
+                    str(profile.get("poaStatus", "")).upper() in ("ACTIVE", "Y", "YES", "TRUE", "1") or
+                    str(profile.get("ddpi", "")).upper() in ("ACTIVE", "Y", "YES", "TRUE", "1") or
+                    str(profile.get("poa", "")).upper() in ("ACTIVE", "Y", "YES", "TRUE", "1") or
+                    profile.get("ddpiStatus") is True or
+                    profile.get("poaStatus") is True or
+                    profile.get("ddpi") is True or
+                    profile.get("poa") is True
+                )
                 return {
                     "success": True,
                     "message": "Connection verified with Angel One",
                     "jwt_acquired": True,
-                    "ddpi_status": "ACTIVE" if profile.get("ddpiStatus") == "ACTIVE" else "INACTIVE",
+                    "ddpi_status": "ACTIVE" if is_ddpi else "UNKNOWN",
                     "dp_type": dp_type
                 }
             return {
@@ -139,6 +149,22 @@ class SmartAPIAdapter:
         except Exception as e:
             logger.error(f"Failed to fetch holdings for {self.client_code}: {str(e)}")
             return []
+
+    def get_rms(self) -> Dict[str, Any]:
+        """
+        Retrieves funds & margin balances from /user/v1/getRMS (Rate limit: 1 req/sec).
+        """
+        self._enforce_rate_limit(1.0)
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/user/v1/getRMS"
+        try:
+            resp = requests.get(url, headers=self._get_headers(), timeout=10)
+            data = resp.json()
+            if data.get("status") and data.get("data"):
+                return data["data"]
+            return {}
+        except Exception as e:
+            logger.error(f"Failed to fetch RMS margin for {self.client_code}: {str(e)}")
+            return {}
 
     def get_candle_data(
         self,

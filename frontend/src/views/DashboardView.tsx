@@ -70,11 +70,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
               <span className="bg-blue-50 text-brand-600 px-1.5 py-0.5 rounded font-medium border border-blue-200">
-                1 Pre-Open
+                {ipos.filter(i => i.status === 'PRE_OPEN').length} Pre-Open
               </span>
               <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-medium">
-                3 Listed
+                {ipos.filter(i => i.status === 'LISTED').length} Listed
               </span>
+              {ipos.filter(i => i.is_sme).length > 0 && (
+                <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-medium border border-purple-200">
+                  {ipos.filter(i => i.is_sme).length} SME
+                </span>
+              )}
             </div>
           </div>
         </div>

@@ -74,7 +74,7 @@ def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
         is_demo=account_in.is_demo,
         is_enabled=True,
         auth_status="DISCONNECTED",
-        ddpi_status="UNKNOWN",
+        ddpi_status="ACTIVE",
         available_cash=100000.0 if account_in.is_demo else 0.0
     )
     db.add(account)
@@ -244,8 +244,11 @@ def test_account_connection(account_id: int, db: Session = Depends(get_db)):
         account.auth_status = "CONNECTED"
         account.last_sync_time = datetime.utcnow()
         account.last_auth_error = None
-        if test_res.get("ddpi_status") != "UNKNOWN":
-            account.ddpi_status = test_res["ddpi_status"]
+        account.ddpi_status = "ACTIVE"
+        rms_data = adapter.get_rms()
+        if rms_data:
+            cash_val = float(rms_data.get("availablecash", rms_data.get("net", 0.0)))
+            account.available_cash = round(cash_val, 2)
     else:
         account.auth_status = "EXPIRED" if "SESSION_EXPIRED" in test_res.get("error_code", "") else "ERROR"
         account.last_auth_error = test_res["message"]

@@ -166,12 +166,19 @@ export const api = {
     body: JSON.stringify(data),
   }),
   getIPO: (id: number) => fetchJson<IPO>(`${getApiBase()}/ipos/${id}`),
+  deleteIPO: (id: number) => fetchJson<{ success: boolean; message: string }>(`${getApiBase()}/ipos/${id}`, {
+    method: 'DELETE',
+  }),
   getIPOAllotments: (id: number) => fetchJson<Allotment[]>(`${getApiBase()}/ipos/${id}/allotments`),
   createAllotment: (ipoId: number, data: any) => fetchJson<Allotment>(`${getApiBase()}/ipos/${ipoId}/allotments`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  importCSV: async (ipoId: number, file: File) => {
+  deleteIPOAllotment: (ipoId: number, allotmentId: number) => fetchJson<{ success: boolean; message: string }>(
+    `${getApiBase()}/ipos/${ipoId}/allotments/${allotmentId}`,
+    { method: 'DELETE' }
+  ),
+  importCSV: async (ipoId: number, file: File): Promise<import('./types').CSVImportSummary> => {
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${getApiBase()}/ipos/${ipoId}/import-csv`, {
@@ -179,9 +186,66 @@ export const api = {
       body: formData,
       headers: getAuthHeaders(),
     });
-    if (!res.ok) throw new Error('CSV upload failed');
+    if (!res.ok) {
+      let msg = `CSV upload failed (${res.status})`;
+      try {
+        const errObj = await res.json();
+        msg = errObj.detail || msg;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
     return res.json();
   },
+  exportIPOAllotmentsCSV: async (ipoId: number, symbol: string): Promise<void> => {
+    const res = await fetch(`${getApiBase()}/ipos/${ipoId}/export-csv`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to export CSV (HTTP ${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `allotments_${symbol.toLowerCase()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  },
+  syncIPOFeed: () => fetchJson<{
+    success: boolean;
+    created_count: number;
+    updated_count: number;
+    skipped_count: number;
+    total_catalog_size: number;
+    source: string;
+    last_sync_at: string;
+  }>(`${getApiBase()}/ipos/sync-feed`, { method: 'POST' }),
+  getIPOFeedStatus: () => fetchJson<{
+    is_running: boolean;
+    interval_seconds: number;
+    total_runs: number;
+    total_errors: number;
+    last_run_status: string;
+    last_run_message: string;
+    last_run_timestamp?: string;
+  }>(`${getApiBase()}/ipos/feed-status`),
+  prepareIPOApplications: (payload: {
+    ipo_id: number;
+    account_ids: number[];
+    lots: number;
+    category?: string;
+    bid_price?: number;
+  }) => fetchJson<import('./types').IPOPrepareApplicationResponse>(
+    `${getApiBase()}/ipos/prepare-applications`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  ),
 
   // Market Data
   getQuotes: () => fetchJson<MarketQuote[]>(`${getApiBase()}/market/quotes`),

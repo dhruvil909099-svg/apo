@@ -219,13 +219,26 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-1.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          acc.ddpi_status === 'ACTIVE'
-                            ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                            : 'bg-amber-50 text-amber-800 border border-amber-200'
-                        }`}>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const nextStatus = acc.ddpi_status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+                            try {
+                              await api.updateAccount(acc.id, { ddpi_status: nextStatus });
+                              onRefresh();
+                            } catch (e: any) {
+                              alert(`Could not update DDPI status: ${e.message}`);
+                            }
+                          }}
+                          title="Click to toggle DDPI Status (ACTIVE / INACTIVE)"
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+                            acc.ddpi_status === 'ACTIVE'
+                              ? 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'
+                              : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
                           DDPI: {acc.ddpi_status}
-                        </span>
+                        </button>
                         {acc.ddpi_status !== 'ACTIVE' && (
                           <span className={`text-[9px] px-1 py-0.5 rounded ${
                             acc.edis_authorized_today ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'

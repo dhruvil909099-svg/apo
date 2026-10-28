@@ -4,9 +4,10 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
-from app.core.database import engine, Base, SessionLocal
+from app.core.database import engine, Base, SessionLocal, run_safe_migrations
 from app.api.api_v1 import api_v1_router
 from app.services.seed_data import seed_demo_data
+from app.services.scheduler_service import sync_manager
 
 # Configure structured logging
 logging.basicConfig(
@@ -18,20 +19,26 @@ logger = logging.getLogger("IPOPro")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure tables exist & seed demo fixtures
+    # Startup: Ensure tables exist & run non-destructive schema migrations
     logger.info("Initializing database tables...")
     Base.metadata.create_all(bind=engine)
+    run_safe_migrations()
     
     db = SessionLocal()
     try:
         seed_demo_data(db)
     finally:
         db.close()
+
+    # Start background scheduler for automated IPO discovery
+    sync_manager.start()
         
     logger.info(f"{settings.APP_NAME} started successfully in {settings.TRADING_MODE} mode.")
     yield
     # Shutdown
-    logger.info("Application shutting down.")
+    logger.info("Application shutting down. Stopping background sync scheduler...")
+    sync_manager.stop()
+    logger.info("Scheduler stopped cleanly.")
 
 
 app = FastAPI(
