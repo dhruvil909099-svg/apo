@@ -83,6 +83,16 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.get("/healthz")
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "trading_mode": settings.TRADING_MODE
+    }
+
+
 @app.get("/")
 def root_redirect():
     return {
