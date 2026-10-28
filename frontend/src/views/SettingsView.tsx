@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings, Shield, Download, FileText,
   AlertTriangle, CheckCircle2, ExternalLink, Lock,
-  Server, RefreshCw, Check, Globe
+  Server, RefreshCw, Check, Globe, Database, HardDrive
 } from 'lucide-react';
 import { DashboardSummary } from '../types';
 import { getApiBase, setApiBase, api } from '../api';
@@ -16,14 +16,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ summary }) => {
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [savedNotice, setSavedNotice] = useState<boolean>(false);
+  const [readiness, setReadiness] = useState<{
+    ok: boolean;
+    status: string;
+    database: string;
+    database_engine?: string;
+    storage_type?: string;
+    latencyMs: number;
+  } | null>(null);
+
+  useEffect(() => {
+    api.checkReadiness().then(setReadiness).catch(() => {});
+  }, []);
 
   const handleTestConnection = async () => {
     setIsTesting(true);
     setTestResult(null);
     try {
       const res = await api.checkHealth(apiBaseUrl.trim() || undefined);
+      const readyRes = await api.checkReadiness(apiBaseUrl.trim() || undefined);
+      setReadiness(readyRes);
       if (res.ok) {
-        setTestResult({ ok: true, message: `Connected successfully (${res.latencyMs}ms)` });
+        setTestResult({ ok: true, message: `Connected successfully (${res.latencyMs}ms) — DB: ${readyRes.database}` });
       } else {
         setTestResult({ ok: false, message: `Connection failed: ${res.status || res.detail || 'Offline'}` });
       }
@@ -158,6 +172,85 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ summary }) => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Database Storage & Persistence Architecture */}
+      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-blue-50 text-brand-600 rounded-lg">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 tracking-tight">Database Storage & Persistence Engine</h3>
+              <p className="text-xs text-slate-500">
+                Verifies account records survive application restarts and container replacement
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => api.checkReadiness().then(setReadiness).catch(() => {})}
+            className="text-xs text-brand-600 hover:text-brand-700 font-semibold flex items-center gap-1"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Recheck Readiness</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <span className="text-slate-500 block mb-1">Database Connectivity</span>
+            <div className={`font-bold text-sm flex items-center gap-1.5 ${
+              readiness?.database === 'CONNECTED' ? 'text-finGreen' : 'text-amber-600'
+            }`}>
+              <CheckCircle2 className="w-4 h-4" />
+              <span>{readiness?.database || 'CONNECTING...'}</span>
+            </div>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <span className="text-slate-500 block mb-1">SQL Dialect / Engine</span>
+            <div className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+              <Server className="w-4 h-4 text-slate-500" />
+              <span className="uppercase">{readiness?.database_engine || 'Detecting...'}</span>
+            </div>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <span className="text-slate-500 block mb-1">Storage Durability</span>
+            <div className={`font-bold text-sm flex items-center gap-1.5 ${
+              readiness?.storage_type === 'MANAGED_PERSISTENT' ? 'text-finGreen' : 'text-amber-700'
+            }`}>
+              <HardDrive className="w-4 h-4" />
+              <span>
+                {readiness?.storage_type === 'MANAGED_PERSISTENT'
+                  ? 'MANAGED PERSISTENT'
+                  : 'EPHEMERAL LOCAL'}
+              </span>
+            </div>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <span className="text-slate-500 block mb-1">Safe Migrations</span>
+            <div className="font-bold text-sm text-finGreen flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Non-Destructive Active</span>
+            </div>
+          </div>
+        </div>
+
+        {readiness?.storage_type === 'EPHEMERAL_LOCAL' && (
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 space-y-1">
+            <div className="flex items-center gap-1.5 font-bold">
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>Ephemeral Disk Warning (Render Free Tier)</span>
+            </div>
+            <p className="text-[11px] text-amber-800">
+              Your backend is currently using a local disk. On Render free instances, container restarts and redeployments wipe local files.
+              To ensure newly added accounts and settings persist indefinitely across restarts, add a managed PostgreSQL database in Render and set the <strong>DATABASE_URL</strong> environment variable in your Render dashboard.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Angel One SmartAPI Setup Guide */}

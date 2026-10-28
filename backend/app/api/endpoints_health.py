@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from fastapi import APIRouter, Depends, status, Response
 from sqlalchemy.orm import Session
@@ -31,8 +32,14 @@ def health_readiness(response: Response, db: Session = Depends(get_db)):
     """
     is_ready = True
     db_status = "CONNECTED"
+    engine_name = "unknown"
+    is_persistent = False
     try:
         db.execute(text("SELECT 1"))
+        bind = db.get_bind()
+        engine_name = bind.dialect.name if bind else "unknown"
+        # Managed PostgreSQL is persistent; SQLite with PERSISTENT_DATA_DIR is disk-backed
+        is_persistent = engine_name in ["postgresql", "postgres"] or bool(os.environ.get("PERSISTENT_DATA_DIR"))
     except Exception:
         is_ready = False
         db_status = "UNAVAILABLE"
@@ -44,5 +51,7 @@ def health_readiness(response: Response, db: Session = Depends(get_db)):
         "app_name": settings.APP_NAME,
         "trading_mode": settings.TRADING_MODE,
         "database": db_status,
+        "database_engine": engine_name,
+        "storage_type": "MANAGED_PERSISTENT" if is_persistent else "EPHEMERAL_LOCAL",
         "version": "1.0.0"
     }

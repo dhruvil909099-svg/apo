@@ -27,6 +27,8 @@ class SmartAPIAdapter:
         self.token_expiry_timestamp: float = 0
         self._last_request_time: float = 0
         self.last_sync_time: Optional[float] = None
+        self.last_error: Optional[str] = None
+        self.is_session_expired: bool = False
         self.session = requests.Session()
 
     def _get_headers(self) -> Dict[str, str]:
@@ -68,6 +70,11 @@ class SmartAPIAdapter:
                 else:
                     resp = self.session.post(url, json=json_payload, headers=headers, timeout=timeout)
 
+                if resp.status_code == 401:
+                    self.is_session_expired = True
+                    self.last_error = "Angel One session expired (HTTP 401)"
+                    return None
+
                 # Transient server error or rate-limit throttle -> retry if attempts remain
                 if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
                     logger.warning(
@@ -80,26 +87,36 @@ class SmartAPIAdapter:
                     data = resp.json()
                 except Exception:
                     logger.warning(f"Malformed non-JSON response from SmartAPI ({endpoint_name}) for {self.client_code}")
+                    self.last_error = f"Malformed non-JSON response from SmartAPI ({endpoint_name})"
                     return None
+
+                err_code = data.get("errorcode", "")
+                if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED"):
+                    self.is_session_expired = True
+                    self.last_error = data.get("message", "Broker session expired")
 
                 if data.get("status"):
                     self.last_sync_time = time.time()
+                    self.last_error = None
                 return data
 
             except requests.exceptions.Timeout:
                 logger.warning(f"SmartAPI timeout for {self.client_code} on {endpoint_name} (attempt {attempt}/{max_retries})")
+                self.last_error = f"SmartAPI timeout on {endpoint_name}"
                 if attempt < max_retries:
                     time.sleep(1.0)
                     continue
                 return None
             except requests.exceptions.RequestException as e:
                 logger.error(f"Network error calling {endpoint_name} for {self.client_code}: {str(e)}")
+                self.last_error = f"Network error on {endpoint_name}: {str(e)}"
                 if attempt < max_retries:
                     time.sleep(1.0)
                     continue
                 return None
             except Exception as e:
                 logger.error(f"Unexpected error in SmartAPI call {endpoint_name} for {self.client_code}: {str(e)}")
+                self.last_error = f"Unexpected error: {str(e)}"
                 return None
         return None
 
@@ -109,7 +126,8 @@ class SmartAPIAdapter:
         """
         totp_code = generate_totp_token(self.totp_secret)
         if not totp_code:
-            return {"success": False, "message": "Failed to generate valid TOTP code from secret", "error_code": "INVALID_TOTP"}
+            self.last_error = "Failed to generate valid TOTP code from secret"
+            return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
 
         url = f"{self.BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword"
         payload = {
@@ -129,6 +147,8 @@ class SmartAPIAdapter:
                 self.feed_token = token_data.get("feedToken")
                 self.token_expiry_timestamp = time.time() + 86400  # Valid for the trading day
                 self.last_sync_time = time.time()
+                self.last_error = None
+                self.is_session_expired = False
                 return {
                     "success": True,
                     "message": "Authentication successful",
@@ -137,11 +157,15 @@ class SmartAPIAdapter:
             else:
                 msg = data.get("message", "Authentication rejected by broker")
                 err_code = data.get("errorcode", "AUTH_FAILED")
+                self.last_error = msg
+                if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED") or "expired" in msg.lower():
+                    self.is_session_expired = True
                 logger.warning(f"Auth failed for {self.client_code}: {msg} (code: {err_code})")
                 return {"success": False, "message": msg, "error_code": err_code}
         except requests.RequestException as e:
             logger.error(f"Network error authenticating {self.client_code}: {str(e)}")
-            return {"success": False, "message": f"Connection error: {str(e)}", "error_code": "NETWORK_ERROR"}
+            self.last_error = f"Connection error: {str(e)}"
+            return {"success": False, "message": self.last_error, "error_code": "NETWORK_ERROR"}
 
     def test_connection(self) -> Dict[str, Any]:
         """
@@ -190,7 +214,11 @@ class SmartAPIAdapter:
         """Verifies active session or re-authenticates if token expired."""
         if not self.jwt_token or time.time() >= self.token_expiry_timestamp:
             auth_res = self.authenticate()
-            return auth_res.get("success", False)
+            if not auth_res.get("success", False):
+                self.last_error = auth_res.get("message", "Authentication failed")
+                if auth_res.get("error_code") in ("AG8001", "AB1004", "SESSION_EXPIRED") or "expired" in self.last_error.lower():
+                    self.is_session_expired = True
+                return False
         return True
 
     def get_holdings(self) -> List[Dict[str, Any]]:

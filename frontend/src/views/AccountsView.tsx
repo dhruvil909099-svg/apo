@@ -42,6 +42,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
   const [drawerTrades, setDrawerTrades] = useState<AccountTradeItem[]>([]);
   const [isLoadingDrawer, setIsLoadingDrawer] = useState<boolean>(false);
   const [drawerError, setDrawerError] = useState<string | null>(null);
+  const [drawerHoldingsError, setDrawerHoldingsError] = useState<string | null>(null);
+  const [drawerPositionsError, setDrawerPositionsError] = useState<string | null>(null);
+  const [drawerOrdersError, setDrawerOrdersError] = useState<string | null>(null);
+  const [drawerTradesError, setDrawerTradesError] = useState<string | null>(null);
+  const [isDrawerSessionExpired, setIsDrawerSessionExpired] = useState<boolean>(false);
 
   // Sync & Cooldown State (Rate limit protection)
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<number>>(new Set());
@@ -149,19 +154,62 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
   const fetchDrawerData = useCallback(async (account: Account) => {
     setIsLoadingDrawer(true);
     setDrawerError(null);
+    setDrawerHoldingsError(null);
+    setDrawerPositionsError(null);
+    setDrawerOrdersError(null);
+    setDrawerTradesError(null);
+    setIsDrawerSessionExpired(false);
+
     try {
-      const [ov, hd, pos, ord, tr] = await Promise.all([
-        api.getAccountOverview(account.id).catch(() => null),
-        api.getAccountHoldings(account.id).catch(() => []),
-        api.getAccountPositions(account.id).catch(() => []),
-        api.getAccountOrders(account.id).catch(() => []),
-        api.getAccountTrades(account.id).catch(() => []),
+      const [ovRes, hdRes, posRes, ordRes, trRes] = await Promise.allSettled([
+        api.getAccountOverview(account.id),
+        api.getAccountHoldings(account.id),
+        api.getAccountPositions(account.id),
+        api.getAccountOrders(account.id),
+        api.getAccountTrades(account.id),
       ]);
-      setDrawerOverview(ov);
-      setDrawerHoldings(hd);
-      setDrawerPositions(pos);
-      setDrawerOrders(ord);
-      setDrawerTrades(tr);
+
+      if (ovRes.status === 'fulfilled') {
+        setDrawerOverview(ovRes.value);
+      } else {
+        setDrawerOverview(null);
+      }
+
+      if (hdRes.status === 'fulfilled') {
+        setDrawerHoldings(hdRes.value);
+      } else {
+        setDrawerHoldings([]);
+        const errMsg = hdRes.reason?.message || 'Failed to load delivery holdings';
+        setDrawerHoldingsError(errMsg);
+        if (hdRes.reason?.status === 401 || errMsg.toLowerCase().includes('expired')) {
+          setIsDrawerSessionExpired(true);
+        }
+      }
+
+      if (posRes.status === 'fulfilled') {
+        setDrawerPositions(posRes.value);
+      } else {
+        setDrawerPositions([]);
+        const errMsg = posRes.reason?.message || 'Failed to load derivative positions';
+        setDrawerPositionsError(errMsg);
+        if (posRes.reason?.status === 401 || errMsg.toLowerCase().includes('expired')) {
+          setIsDrawerSessionExpired(true);
+        }
+      }
+
+      if (ordRes.status === 'fulfilled') {
+        setDrawerOrders(ordRes.value);
+      } else {
+        setDrawerOrders([]);
+        setDrawerOrdersError(ordRes.reason?.message || 'Failed to load order book');
+      }
+
+      if (trRes.status === 'fulfilled') {
+        setDrawerTrades(trRes.value);
+      } else {
+        setDrawerTrades([]);
+        setDrawerTradesError(trRes.reason?.message || 'Failed to load trade executions');
+      }
     } catch (err: any) {
       setDrawerError(err.message || 'Failed to fetch account drawer details.');
     } finally {
@@ -182,6 +230,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     setDrawerPositions([]);
     setDrawerOrders([]);
     setDrawerTrades([]);
+    setDrawerHoldingsError(null);
+    setDrawerPositionsError(null);
+    setDrawerOrdersError(null);
+    setDrawerTradesError(null);
+    setIsDrawerSessionExpired(false);
   };
 
   // Synchronize on-demand with rate limit protection
@@ -1226,7 +1279,39 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                         <span>Verified equity delivery shares in Demat ledger</span>
                         <span className="font-mono text-[11px] font-bold">{drawerHoldings.length} Positions</span>
                       </div>
-                      {drawerHoldings.length === 0 ? (
+                      {isDrawerSessionExpired ? (
+                        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between">
+                          <div>
+                            <div className="font-bold text-xs text-rose-800 flex items-center gap-1.5">
+                              <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                              <span>Angel One Session Expired</span>
+                            </div>
+                            <p className="text-[11px] text-rose-600 mt-0.5">
+                              SmartAPI token has expired. Reconnect credentials to refresh live delivery holdings.
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => {
+                              setRotationAccount(selectedAccountForDrawer);
+                              setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
+                            }}
+                            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-xs font-bold shadow-xs flex items-center gap-1.5"
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            <span>Reconnect</span>
+                          </button>
+                        </div>
+                      ) : drawerHoldingsError ? (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-xs text-amber-900">
+                          <span>{drawerHoldingsError}</span>
+                          <button
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : drawerHoldings.length === 0 ? (
                         <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <PieChart className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-semibold text-slate-600">No delivery holdings found</p>
@@ -1274,7 +1359,30 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                         <span>Intraday & F&O open positions (Strictly separated from Demat holdings)</span>
                         <span className="font-mono text-[11px] font-bold">{drawerPositions.length} Positions</span>
                       </div>
-                      {drawerPositions.length === 0 ? (
+                      {isDrawerSessionExpired ? (
+                        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between">
+                          <span className="text-xs text-rose-700 font-semibold">Angel One broker session expired. Reconnect credentials to view open intraday positions.</span>
+                          <button
+                            onClick={() => {
+                              setRotationAccount(selectedAccountForDrawer);
+                              setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
+                            }}
+                            className="px-2.5 py-1 bg-rose-600 text-white rounded text-[11px] font-bold"
+                          >
+                            Reconnect
+                          </button>
+                        </div>
+                      ) : drawerPositionsError ? (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
+                          <span>{drawerPositionsError}</span>
+                          <button
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : drawerPositions.length === 0 ? (
                         <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <Activity className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-semibold text-slate-600">No open derivative or intraday positions</p>
@@ -1317,7 +1425,17 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                   {drawerTab === 'orders' && (
                     <div className="space-y-3">
                       <div className="text-xs text-slate-500">Order book entries across all states</div>
-                      {drawerOrders.length === 0 ? (
+                      {drawerOrdersError ? (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
+                          <span>{drawerOrdersError}</span>
+                          <button
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : drawerOrders.length === 0 ? (
                         <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <Clock className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-semibold text-slate-600">No orders recorded for this account today</p>
@@ -1363,7 +1481,17 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                   {drawerTab === 'trades' && (
                     <div className="space-y-3">
                       <div className="text-xs text-slate-500">Confirmed executed fills only (Unexecuted orders strictly excluded)</div>
-                      {drawerTrades.length === 0 ? (
+                      {drawerTradesError ? (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
+                          <span>{drawerTradesError}</span>
+                          <button
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : drawerTrades.length === 0 ? (
                         <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <CheckCircle2 className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-semibold text-slate-600">No executed trade fills today</p>

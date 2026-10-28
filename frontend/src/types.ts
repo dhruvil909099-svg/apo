@@ -262,6 +262,7 @@ export interface AccountPortfolio {
   nickname: string;
   masked_client_code: string;
   account_group: string;
+  is_demo?: boolean;
   auth_status: string;
   ddpi_status: string;
   edis_authorized: boolean;

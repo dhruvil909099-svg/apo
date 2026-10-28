@@ -248,11 +248,23 @@ export const api = {
   // Readiness probe verifying database and dependencies
   checkReadiness: async (
     baseUrl?: string
-  ): Promise<{ ok: boolean; status: string; database: string; latencyMs: number }> => {
+  ): Promise<{
+    ok: boolean;
+    status: string;
+    database: string;
+    database_engine?: string;
+    storage_type?: string;
+    latencyMs: number;
+  }> => {
     const base = (baseUrl || getApiBase()).replace(/\/+$/, '');
     const start = performance.now();
     try {
-      const res = await fetchJson<{ status: string; database: string }>(`${base}/health/ready`, {
+      const res = await fetchJson<{
+        status: string;
+        database: string;
+        database_engine?: string;
+        storage_type?: string;
+      }>(`${base}/health/ready`, {
         timeoutMs: 15000,
         skipDeduplication: true,
         retries: 0,
@@ -261,6 +273,8 @@ export const api = {
         ok: res.status === 'READY',
         status: res.status,
         database: res.database || 'CONNECTED',
+        database_engine: res.database_engine,
+        storage_type: res.storage_type,
         latencyMs: Math.round(performance.now() - start),
       };
     } catch (err: any) {
@@ -410,8 +424,11 @@ export const api = {
   ),
 
   // Portfolio
-  getConsolidatedPortfolio: (accountIds?: number[]) => {
-    const query = accountIds && accountIds.length > 0 ? `?account_ids=${accountIds.join(',')}` : '';
+  getConsolidatedPortfolio: (accountIds?: number[], capitalType?: string) => {
+    const params = new URLSearchParams();
+    if (accountIds && accountIds.length > 0) params.append('account_ids', accountIds.join(','));
+    if (capitalType) params.append('capital_type', capitalType);
+    const query = params.toString() ? `?${params.toString()}` : '';
     return fetchJson<import('./types').ConsolidatedPortfolioResponse>(`${getApiBase()}/portfolio/consolidated${query}`);
   },
   getAccountPortfolios: () => fetchJson<AccountPortfolio[]>(`${getApiBase()}/portfolio/accounts`),

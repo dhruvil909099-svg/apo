@@ -17,6 +17,7 @@ const PIE_COLORS = ['#0284c7', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#3b8
 
 export const PortfolioView: React.FC = () => {
   const [viewMode, setViewMode] = useState<'consolidated' | 'accounts' | 'analytics'>('consolidated');
+  const [capitalFilter, setCapitalFilter] = useState<'live' | 'demo' | 'all'>('live');
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [consolidated, setConsolidated] = useState<ConsolidatedHolding[]>([]);
   const [accountPortfolios, setAccountPortfolios] = useState<AccountPortfolio[]>([]);
@@ -33,14 +34,23 @@ export const PortfolioView: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
+  // Accounts applicable to the current capital filter
+  const applicableAccounts = useMemo(() => {
+    if (capitalFilter === 'live') return allAccounts.filter(a => !a.is_demo);
+    if (capitalFilter === 'demo') return allAccounts.filter(a => a.is_demo);
+    return allAccounts;
+  }, [allAccounts, capitalFilter]);
+
   // Load initial accounts
   useEffect(() => {
     const loadAccounts = async () => {
       try {
         const accs = await api.getAccounts();
         setAllAccounts(accs);
-        // By default, select all accounts
-        setSelectedAccountIds(accs.map(a => a.id));
+        // By default, select live accounts if available, otherwise all
+        const liveAccs = accs.filter(a => !a.is_demo);
+        const initialSelected = liveAccs.length > 0 ? liveAccs.map(a => a.id) : accs.map(a => a.id);
+        setSelectedAccountIds(initialSelected);
       } catch (err) {
         console.error('Error loading accounts:', err);
       }
@@ -48,12 +58,27 @@ export const PortfolioView: React.FC = () => {
     loadAccounts();
   }, []);
 
-  // Load portfolio data whenever selectedAccountIds changes
+  // When capital filter changes, synchronize selected accounts
+  const handleCapitalFilterChange = (filter: 'live' | 'demo' | 'all') => {
+    setCapitalFilter(filter);
+    if (filter === 'live') {
+      setSelectedAccountIds(allAccounts.filter(a => !a.is_demo).map(a => a.id));
+    } else if (filter === 'demo') {
+      setSelectedAccountIds(allAccounts.filter(a => a.is_demo).map(a => a.id));
+    } else {
+      setSelectedAccountIds(allAccounts.map(a => a.id));
+    }
+  };
+
+  // Load portfolio data whenever selectedAccountIds or capitalFilter changes
   const loadPortfolioData = async () => {
     setIsLoading(true);
     try {
       const [consResp, accs] = await Promise.all([
-        api.getConsolidatedPortfolio(selectedAccountIds.length === allAccounts.length ? undefined : selectedAccountIds),
+        api.getConsolidatedPortfolio(
+          selectedAccountIds.length === applicableAccounts.length ? undefined : selectedAccountIds,
+          capitalFilter
+        ),
         api.getAccountPortfolios()
       ]);
       setSummary(consResp.summary);
@@ -70,7 +95,7 @@ export const PortfolioView: React.FC = () => {
     if (allAccounts.length > 0) {
       loadPortfolioData();
     }
-  }, [selectedAccountIds, allAccounts.length]);
+  }, [selectedAccountIds, allAccounts.length, capitalFilter]);
 
   const handleSyncNow = async () => {
     setIsSyncing(true);
@@ -231,22 +256,68 @@ export const PortfolioView: React.FC = () => {
         </div>
       </div>
 
-      {/* Account Filter Pills Bar */}
+      {/* Account & Capital Filter Toolbar */}
       {allAccounts.length > 0 && (
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 text-xs">
+          {/* Row 1: Capital Mode Selector */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400 font-semibold uppercase text-[10px]">Capital Mode:</span>
+              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg">
+                <button
+                  onClick={() => handleCapitalFilterChange('live')}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+                    capitalFilter === 'live'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-300" />
+                  <span>Live Demat (Real Capital)</span>
+                </button>
+                <button
+                  onClick={() => handleCapitalFilterChange('demo')}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+                    capitalFilter === 'demo'
+                      ? 'bg-slate-800 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  <span>Simulated / Paper</span>
+                </button>
+                <button
+                  onClick={() => handleCapitalFilterChange('all')}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                    capitalFilter === 'all'
+                      ? 'bg-brand-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  All Accounts Combined
+                </button>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-slate-400 font-medium">
+              Showing math for <strong className="text-slate-700">{selectedAccountIds.length}</strong> of {applicableAccounts.length} applicable accounts
+            </div>
+          </div>
+
+          {/* Row 2: Account Selection Checklist */}
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-slate-400 font-semibold uppercase text-[10px] mr-1">Filter Accounts:</span>
+            <span className="text-slate-400 font-semibold uppercase text-[10px] mr-1">Accounts:</span>
             <button
-              onClick={selectAllAccounts}
+              onClick={() => setSelectedAccountIds(applicableAccounts.map(a => a.id))}
               className={`px-2.5 py-1 rounded text-xs font-semibold border transition-colors ${
-                selectedAccountIds.length === allAccounts.length
+                selectedAccountIds.length === applicableAccounts.length
                   ? 'bg-slate-900 text-white border-slate-900'
                   : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
               }`}
             >
-              All Accounts ({allAccounts.length})
+              Select All ({applicableAccounts.length})
             </button>
-            {allAccounts.map(acc => {
+            {applicableAccounts.map(acc => {
               const isSelected = selectedAccountIds.includes(acc.id);
               return (
                 <button
@@ -261,13 +332,14 @@ export const PortfolioView: React.FC = () => {
                   {isSelected ? <CheckSquare className="w-3.5 h-3.5 text-brand-600" /> : <Square className="w-3.5 h-3.5 text-slate-400" />}
                   <span>{acc.nickname}</span>
                   <span className="font-mono text-[10px] text-slate-400">({acc.masked_client_code})</span>
+                  <span className={`text-[9px] px-1 py-0.2 rounded font-bold ${
+                    acc.is_demo ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                  }`}>
+                    {acc.is_demo ? 'SIM' : 'LIVE'}
+                  </span>
                 </button>
               );
             })}
-          </div>
-
-          <div className="text-[11px] text-slate-400 font-medium">
-            Showing math for <strong className="text-slate-700">{selectedAccountIds.length}</strong> selected accounts
           </div>
         </div>
       )}

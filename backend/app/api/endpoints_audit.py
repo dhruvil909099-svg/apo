@@ -62,8 +62,15 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
 
     total_ipos = db.query(IPO).count()
     
-    # Portfolio calculations
-    allotments = db.query(Allotment).join(IPO).all()
+    # Portfolio calculations: strictly exclude demo accounts in LIVE mode
+    allotment_query = db.query(Allotment).join(IPO).join(Account).filter(
+        Account.is_enabled == True,
+        Allotment.allotted_quantity > 0
+    )
+    if settings.TRADING_MODE == "LIVE":
+        allotment_query = allotment_query.filter(Account.is_demo == False)
+
+    allotments = allotment_query.all()
     total_shares = sum(a.allotted_quantity for a in allotments)
     total_val = 0.0
     total_cost = 0.0

@@ -15,12 +15,13 @@ router = APIRouter(prefix="/portfolio", tags=["Portfolio & Holdings"])
 @router.get("/consolidated")
 def get_consolidated_holdings(
     account_ids: Optional[str] = Query(None, description="Comma-separated list of account IDs to include"),
+    capital_type: Optional[str] = Query(None, description="Account type filter: 'live', 'demo', or 'all'"),
     db: Session = Depends(get_db)
 ):
     """
     Returns consolidated portfolio overview and itemized holdings across all or selected authorized accounts.
     Calculates weighted average cost basis, total market value, unrealized P&L, day's change,
-    and portfolio allocation percentages.
+    and portfolio allocation percentages. Excludes demo/simulated accounts from live totals.
     """
     # 1. Determine accounts filter
     account_query = db.query(Account).filter(Account.is_enabled == True)
@@ -31,6 +32,15 @@ def get_consolidated_holdings(
             account_query = account_query.filter(Account.id.in_(selected_ids))
         except ValueError:
             pass
+    elif capital_type == "demo":
+        account_query = account_query.filter(Account.is_demo == True)
+    elif capital_type == "live":
+        account_query = account_query.filter(Account.is_demo == False)
+    elif capital_type == "all":
+        pass
+    elif settings.TRADING_MODE == "LIVE":
+        # In LIVE mode: demo accounts excluded from real portfolio totals by default
+        account_query = account_query.filter(Account.is_demo == False)
 
     accounts = account_query.all()
     all_enabled_accounts = db.query(Account).filter(Account.is_enabled == True).all()
@@ -40,13 +50,13 @@ def get_consolidated_holdings(
     synced_accounts = sum(1 for a in accounts if a.auth_status in ["CONNECTED", "ACTIVE"])
     failed_accounts = total_selected - synced_accounts
 
-    # 2. Query matching allotments
+    # 2. Query matching allotments strictly for filtered accounts
+    target_account_ids = [a.id for a in accounts]
     allotment_query = db.query(Allotment).join(IPO).join(Account).filter(
         Account.is_enabled == True,
+        Account.id.in_(target_account_ids),
         Allotment.allotted_quantity > 0
     )
-    if selected_ids:
-        allotment_query = allotment_query.filter(Account.id.in_(selected_ids))
 
     allotments = allotment_query.all()
 
@@ -200,6 +210,7 @@ def get_account_portfolios(db: Session = Depends(get_db)):
             "nickname": acc.nickname,
             "masked_client_code": acc.masked_client_code,
             "account_group": acc.account_group,
+            "is_demo": acc.is_demo,
             "auth_status": acc.auth_status,
             "ddpi_status": acc.ddpi_status,
             "edis_authorized": acc.edis_authorized_today,

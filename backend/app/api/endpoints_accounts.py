@@ -376,7 +376,17 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
             adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
             live_holdings = adapter.get_holdings()
-            if live_holdings:
+            if adapter.is_session_expired:
+                account.auth_status = "EXPIRED"
+                account.last_auth_error = adapter.last_error or "Broker session expired"
+                db.commit()
+                persist_accounts_backup(db)
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
+                )
+
+            if live_holdings is not None and not adapter.last_error:
                 items = []
                 now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
                 for h in live_holdings:
@@ -402,6 +412,8 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
                         source_timestamp=now_str
                     ))
                 return items
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Live holdings fetch failed for {account.masked_client_code}, using verified ledger: {str(e)}")
 
@@ -453,7 +465,17 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
             adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
             live_pos = adapter.get_positions()
-            if live_pos:
+            if adapter.is_session_expired:
+                account.auth_status = "EXPIRED"
+                account.last_auth_error = adapter.last_error or "Broker session expired"
+                db.commit()
+                persist_accounts_backup(db)
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
+                )
+
+            if live_pos is not None and not adapter.last_error:
                 items = []
                 now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
                 for p in live_pos:
@@ -474,6 +496,8 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
                         source_timestamp=now_str
                     ))
                 return items
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Live positions fetch failed for {account.masked_client_code}: {str(e)}")
 
@@ -499,7 +523,17 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
             adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
             broker_orders = adapter.get_order_book()
-            if broker_orders:
+            if adapter.is_session_expired:
+                account.auth_status = "EXPIRED"
+                account.last_auth_error = adapter.last_error or "Broker session expired"
+                db.commit()
+                persist_accounts_backup(db)
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
+                )
+
+            if broker_orders is not None and not adapter.last_error:
                 results = []
                 for bo in broker_orders:
                     qty = int(bo.get("quantity", 0))
@@ -525,6 +559,8 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
                         is_paper_trade=False
                     ))
                 return results
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Live order book fetch failed for {account.masked_client_code}, returning local records: {str(e)}")
 
@@ -569,7 +605,17 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
             adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
             broker_trades = adapter.get_trade_book()
-            if broker_trades:
+            if adapter.is_session_expired:
+                account.auth_status = "EXPIRED"
+                account.last_auth_error = adapter.last_error or "Broker session expired"
+                db.commit()
+                persist_accounts_backup(db)
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
+                )
+
+            if broker_trades is not None and not adapter.last_error:
                 results = []
                 for bt in broker_trades:
                     fill_qty = int(bt.get("fillsize", 0))
@@ -587,6 +633,8 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
                         is_paper_trade=False
                     ))
                 return results
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Live trade book fetch failed for {account.masked_client_code}, returning local records: {str(e)}")
 

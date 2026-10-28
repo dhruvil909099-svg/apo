@@ -270,7 +270,10 @@ export const App: React.FC = () => {
                 summary={summary}
                 ipos={ipos}
                 orders={orders}
+                accounts={accounts}
                 onNavigate={(tab) => setCurrentTab(tab)}
+                onRefresh={handleManualRefresh}
+                lastUpdated={lastUpdated}
               />
             )}
             {currentTab === 'accounts' && (

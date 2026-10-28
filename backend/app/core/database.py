@@ -74,8 +74,8 @@ def run_safe_migrations():
         ("bidding_end_date", "VARCHAR(20)"),
         ("allotment_date", "VARCHAR(20)"),
         ("source_name", "VARCHAR(50) DEFAULT 'MANUAL'"),
-        ("source_timestamp", "DATETIME"),
-        ("last_sync_at", "DATETIME"),
+        ("source_timestamp", "TIMESTAMP"),
+        ("last_sync_at", "TIMESTAMP"),
         ("subscription_rate", "VARCHAR(30)"),
         ("min_investment", "FLOAT"),
         ("issue_size", "VARCHAR(50)"),
@@ -99,7 +99,7 @@ def run_safe_migrations():
         ("allotment_status", "VARCHAR(30) DEFAULT 'PENDING'"),
         ("demat_credit_status", "VARCHAR(30) DEFAULT 'PENDING'"),
         ("verification_source", "VARCHAR(50)"),
-        ("verification_timestamp", "DATETIME"),
+        ("verification_timestamp", "TIMESTAMP"),
         ("conflict_note", "VARCHAR(255)"),
     ]
 
@@ -110,6 +110,25 @@ def run_safe_migrations():
                 if col_name not in existing_cols:
                     logger.info(f"Adding missing column allotments.{col_name} ({col_type})")
                     conn.execute(text(f"ALTER TABLE allotments ADD COLUMN {col_name} {col_type};"))
+            conn.commit()
+
+    # Column definitions to verify for 'accounts'
+    account_columns_to_add = [
+        ("account_group", "VARCHAR(50) DEFAULT 'Family'"),
+        ("is_demo", "BOOLEAN DEFAULT FALSE"),
+        ("auth_status", "VARCHAR(30) DEFAULT 'DISCONNECTED'"),
+        ("ddpi_status", "VARCHAR(30) DEFAULT 'UNKNOWN'"),
+        ("edis_authorized_today", "BOOLEAN DEFAULT FALSE"),
+        ("last_auth_error", "VARCHAR(500)"),
+    ]
+
+    if "accounts" in existing_tables:
+        existing_cols = {col["name"] for col in inspector.get_columns("accounts")}
+        with engine.connect() as conn:
+            for col_name, col_type in account_columns_to_add:
+                if col_name not in existing_cols:
+                    logger.info(f"Adding missing column accounts.{col_name} ({col_type})")
+                    conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {col_name} {col_type};"))
             conn.commit()
 
     logger.info("Schema verification and safe migrations completed.")
