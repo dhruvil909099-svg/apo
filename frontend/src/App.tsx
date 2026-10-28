@@ -16,7 +16,7 @@ import { BulkOperationsView } from './views/BulkOperationsView';
 import { StockExplorerView } from './views/StockExplorerView';
 import { ExportCenterView } from './views/ExportCenterView';
 import { DashboardSummary, Account, IPO, Order, MarketQuote } from './types';
-import { api } from './api';
+import { api, getWebSocketUrl } from './api';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
@@ -53,8 +53,7 @@ export const App: React.FC = () => {
     refreshAllData();
 
     // WebSocket connection for live tick streaming
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/market/ws`;
+    const wsUrl = getWebSocketUrl();
     let ws: WebSocket;
 
     try {

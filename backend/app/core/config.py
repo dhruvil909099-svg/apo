@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     
     # CORS
     ALLOWED_ORIGINS: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000",
+        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,https://ipo.emperialcabs.com",
         description="Comma-separated allowed origins"
     )
     
@@ -49,7 +49,10 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> List[str]:
-        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
+        origins = [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
+        if "https://ipo.emperialcabs.com" not in origins:
+            origins.append("https://ipo.emperialcabs.com")
+        return origins
 
 
 settings = Settings()

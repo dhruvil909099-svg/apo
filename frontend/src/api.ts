@@ -4,8 +4,38 @@ import {
   BulkOrderPreview, RiskLimit, AuditLog, DashboardSummary
 } from './types';
 
-const API_BASE = '/api/v1';
 const DEFAULT_KEY = 'ipopro-secure-master-key-2026';
+
+export function getApiBase(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('ipopro_api_base');
+    if (custom && custom.trim()) {
+      return custom.trim().replace(/\/+$/, '');
+    }
+  }
+  return ((import.meta as any).env?.VITE_API_BASE as string) || '/api/v1';
+}
+
+export function setApiBase(url: string): void {
+  if (typeof window !== 'undefined') {
+    if (!url || !url.trim() || url.trim() === '/api/v1') {
+      localStorage.removeItem('ipopro_api_base');
+    } else {
+      localStorage.setItem('ipopro_api_base', url.trim().replace(/\/+$/, ''));
+    }
+  }
+}
+
+export function getWebSocketUrl(): string {
+  const base = getApiBase();
+  if (base.startsWith('http://') || base.startsWith('https://')) {
+    const wsBase = base.replace(/^http/, 'ws');
+    return `${wsBase}/market/ws`;
+  }
+  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = typeof window !== 'undefined' ? window.location.host : 'localhost';
+  return `${protocol}//${host}${base}/market/ws`;
+}
 
 export function getAuthHeaders(): Record<string, string> {
   const stored = typeof window !== 'undefined' ? localStorage.getItem('ipopro_api_key') : null;
@@ -23,32 +53,81 @@ export function setApiKey(key: string): void {
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-      ...options?.headers,
-    },
-    ...options,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+        ...options?.headers,
+      },
+      ...options,
+    });
+  } catch (netErr: any) {
+    throw new Error(`Unable to reach backend server at "${url}". Please verify your network connection or Backend API URL in Settings.`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  const isHtml = contentType.includes('text/html');
 
   if (!response.ok) {
     let errorDetail = `Request failed with status ${response.status}`;
-    try {
-      const errObj = await response.json();
-      errorDetail = errObj.detail || errObj.message || errorDetail;
-    } catch {
-      // ignore
+    if (isHtml) {
+      errorDetail = `Backend API server not found at "${url}" (HTTP ${response.status}). Hostinger returned an HTML page instead of API JSON. Please configure your live Backend API URL in Settings.`;
+    } else {
+      try {
+        const errObj = await response.json();
+        errorDetail = errObj.detail || errObj.message || errorDetail;
+      } catch {
+        // ignore
+      }
     }
     throw new Error(errorDetail);
+  }
+
+  if (isHtml) {
+    const text = await response.text();
+    if (text.trim().startsWith('<') || text.includes('<!doctype') || text.includes('<html')) {
+      throw new Error(
+        `Backend API server is not running on Hostinger. The server returned index.html instead of FastAPI JSON. Please configure your live Backend API URL in Settings.`
+      );
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Invalid non-JSON response from backend server at "${url}".`);
+    }
   }
 
   return response.json();
 }
 
 export const api = {
+  // Health & connectivity check
+  checkHealth: async (baseUrl?: string): Promise<{ ok: boolean; statusText: string; latencyMs: number }> => {
+    const base = baseUrl || getApiBase();
+    const start = performance.now();
+    try {
+      const res = await fetch(`${base}/audit/summary`, {
+        headers: getAuthHeaders(),
+      });
+      const latencyMs = Math.round(performance.now() - start);
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok) {
+        return { ok: false, statusText: `HTTP ${res.status}`, latencyMs };
+      }
+      if (contentType.includes('text/html')) {
+        return { ok: false, statusText: 'Returned HTML (FastAPI not found)', latencyMs };
+      }
+      await res.json();
+      return { ok: true, statusText: 'Online', latencyMs };
+    } catch (err: any) {
+      return { ok: false, statusText: err.message || 'Offline', latencyMs: Math.round(performance.now() - start) };
+    }
+  },
+
   // Dashboard Summary KPI
-  getSummary: () => fetchJson<DashboardSummary>(`${API_BASE}/audit/summary`),
+  getSummary: () => fetchJson<DashboardSummary>(`${getApiBase()}/audit/summary`),
 
   // Accounts
   getAccounts: (group?: string, status?: string) => {
@@ -56,70 +135,71 @@ export const api = {
     if (group && group !== 'All') params.append('group', group);
     if (status) params.append('status_filter', status);
     const query = params.toString() ? `?${params.toString()}` : '';
-    return fetchJson<Account[]>(`${API_BASE}/accounts${query}`);
+    return fetchJson<Account[]>(`${getApiBase()}/accounts${query}`);
   },
-  createAccount: (data: AccountCreatePayload) => fetchJson<Account>(`${API_BASE}/accounts`, {
+  createAccount: (data: AccountCreatePayload) => fetchJson<Account>(`${getApiBase()}/accounts`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  updateAccount: (id: number, data: Partial<Account>) => fetchJson<Account>(`${API_BASE}/accounts/${id}`, {
+  updateAccount: (id: number, data: Partial<Account>) => fetchJson<Account>(`${getApiBase()}/accounts/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   }),
-  deleteAccount: (id: number) => fetch(`${API_BASE}/accounts/${id}`, { method: 'DELETE', headers: getAuthHeaders() }),
+  deleteAccount: (id: number) => fetch(`${getApiBase()}/accounts/${id}`, { method: 'DELETE', headers: getAuthHeaders() }),
   testAccount: (id: number) => fetchJson<{ success: boolean; message: string; auth_status: string; ddpi_status: string }>(
-    `${API_BASE}/accounts/${id}/test`,
+    `${getApiBase()}/accounts/${id}/test`,
     { method: 'POST' }
   ),
   batchCreateDemoAccounts: (count: number = 10) => fetchJson<{ message: string; count: number }>(
-    `${API_BASE}/accounts/batch-create-demo?count=${count}`,
+    `${getApiBase()}/accounts/batch-create-demo?count=${count}`,
     { method: 'POST' }
   ),
 
   // IPOs
   getIPOs: (status?: string) => {
     const query = status && status !== 'ALL' ? `?status_filter=${status}` : '';
-    return fetchJson<IPO[]>(`${API_BASE}/ipos${query}`);
+    return fetchJson<IPO[]>(`${getApiBase()}/ipos${query}`);
   },
-  createIPO: (data: Partial<IPO>) => fetchJson<IPO>(`${API_BASE}/ipos`, {
+  createIPO: (data: Partial<IPO>) => fetchJson<IPO>(`${getApiBase()}/ipos`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  getIPO: (id: number) => fetchJson<IPO>(`${API_BASE}/ipos/${id}`),
-  getIPOAllotments: (id: number) => fetchJson<Allotment[]>(`${API_BASE}/ipos/${id}/allotments`),
-  createAllotment: (ipoId: number, data: any) => fetchJson<Allotment>(`${API_BASE}/ipos/${ipoId}/allotments`, {
+  getIPO: (id: number) => fetchJson<IPO>(`${getApiBase()}/ipos/${id}`),
+  getIPOAllotments: (id: number) => fetchJson<Allotment[]>(`${getApiBase()}/ipos/${id}/allotments`),
+  createAllotment: (ipoId: number, data: any) => fetchJson<Allotment>(`${getApiBase()}/ipos/${ipoId}/allotments`, {
     method: 'POST',
     body: JSON.stringify(data),
   }),
   importCSV: async (ipoId: number, file: File) => {
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch(`${API_BASE}/ipos/${ipoId}/import-csv`, {
+    const res = await fetch(`${getApiBase()}/ipos/${ipoId}/import-csv`, {
       method: 'POST',
       body: formData,
+      headers: getAuthHeaders(),
     });
     if (!res.ok) throw new Error('CSV upload failed');
     return res.json();
   },
 
   // Market Data
-  getQuotes: () => fetchJson<MarketQuote[]>(`${API_BASE}/market/quotes`),
+  getQuotes: () => fetchJson<MarketQuote[]>(`${getApiBase()}/market/quotes`),
   getMarketCandles: (symbol: string, interval = 'ONE_DAY', rangePeriod = '1M') => fetchJson<import('./types').MarketCandleResponse>(
-    `${API_BASE}/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&range_period=${rangePeriod}`
+    `${getApiBase()}/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&range_period=${rangePeriod}`
   ),
   updatePrice: (symbol: string, price: number) => fetchJson<any>(
-    `${API_BASE}/market/update-price?symbol=${encodeURIComponent(symbol)}&price=${price}`,
+    `${getApiBase()}/market/update-price?symbol=${encodeURIComponent(symbol)}&price=${price}`,
     { method: 'POST' }
   ),
 
   // Portfolio
   getConsolidatedPortfolio: (accountIds?: number[]) => {
     const query = accountIds && accountIds.length > 0 ? `?account_ids=${accountIds.join(',')}` : '';
-    return fetchJson<import('./types').ConsolidatedPortfolioResponse>(`${API_BASE}/portfolio/consolidated${query}`);
+    return fetchJson<import('./types').ConsolidatedPortfolioResponse>(`${getApiBase()}/portfolio/consolidated${query}`);
   },
-  getAccountPortfolios: () => fetchJson<AccountPortfolio[]>(`${API_BASE}/portfolio/accounts`),
+  getAccountPortfolios: () => fetchJson<AccountPortfolio[]>(`${getApiBase()}/portfolio/accounts`),
   syncPortfolio: () => fetchJson<{ success: boolean; accounts_synced: number; accounts_failed: number; timestamp: string }>(
-    `${API_BASE}/portfolio/sync`,
+    `${getApiBase()}/portfolio/sync`,
     { method: 'POST' }
   ),
 
@@ -131,30 +211,30 @@ export const api = {
     if (params?.symbol) sp.append('symbol', params.symbol);
     if (params?.batch_id) sp.append('batch_id', params.batch_id);
     const query = sp.toString() ? `?${sp.toString()}` : '';
-    return fetchJson<Order[]>(`${API_BASE}/orders${query}`);
+    return fetchJson<Order[]>(`${getApiBase()}/orders${query}`);
   },
-  placeSingleOrder: (order: any) => fetchJson<Order>(`${API_BASE}/orders/single`, {
+  placeSingleOrder: (order: any) => fetchJson<Order>(`${getApiBase()}/orders/single`, {
     method: 'POST',
     body: JSON.stringify(order),
   }),
-  prepareBulkOrders: (payload: any) => fetchJson<BulkOrderPreview>(`${API_BASE}/orders/bulk-prepare`, {
+  prepareBulkOrders: (payload: any) => fetchJson<BulkOrderPreview>(`${getApiBase()}/orders/bulk-prepare`, {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
-  executeBulkOrders: (batchId: string, confirmed: boolean) => fetchJson<any>(`${API_BASE}/orders/bulk-execute`, {
+  executeBulkOrders: (batchId: string, confirmed: boolean) => fetchJson<any>(`${getApiBase()}/orders/bulk-execute`, {
     method: 'POST',
     body: JSON.stringify({ batch_id: batchId, operator_confirmed: confirmed }),
   }),
-  cancelOrder: (id: number) => fetchJson<any>(`${API_BASE}/orders/${id}/cancel`, { method: 'POST' }),
+  cancelOrder: (id: number) => fetchJson<any>(`${getApiBase()}/orders/${id}/cancel`, { method: 'POST' }),
 
   // Risk Management
-  getRiskLimits: () => fetchJson<RiskLimit>(`${API_BASE}/risk`),
-  updateRiskLimits: (data: Partial<RiskLimit>) => fetchJson<RiskLimit>(`${API_BASE}/risk`, {
+  getRiskLimits: () => fetchJson<RiskLimit>(`${getApiBase()}/risk`),
+  updateRiskLimits: (data: Partial<RiskLimit>) => fetchJson<RiskLimit>(`${getApiBase()}/risk`, {
     method: 'PUT',
     body: JSON.stringify(data),
   }),
   toggleEmergencyHalt: () => fetchJson<{ emergency_trading_disabled: boolean; message: string }>(
-    `${API_BASE}/risk/emergency-halt`,
+    `${getApiBase()}/risk/emergency-halt`,
     { method: 'POST' }
   ),
 
@@ -162,6 +242,6 @@ export const api = {
   getAuditLogs: (limit: number = 50, offset: number = 0, eventType?: string) => {
     const sp = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
     if (eventType) sp.append('event_type', eventType);
-    return fetchJson<AuditLog[]>(`${API_BASE}/audit/logs?${sp.toString()}`);
+    return fetchJson<AuditLog[]>(`${getApiBase()}/audit/logs?${sp.toString()}`);
   },
 };

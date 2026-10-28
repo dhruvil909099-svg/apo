@@ -1,17 +1,128 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Settings, Shield, Download, FileText,
-  AlertTriangle, CheckCircle2, ExternalLink, Lock
+  AlertTriangle, CheckCircle2, ExternalLink, Lock,
+  Server, RefreshCw, Check, Globe
 } from 'lucide-react';
 import { DashboardSummary } from '../types';
+import { getApiBase, setApiBase, api } from '../api';
 
 interface SettingsViewProps {
   summary: DashboardSummary | null;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ summary }) => {
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => getApiBase());
+  const [isTesting, setIsTesting] = useState<boolean>(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [savedNotice, setSavedNotice] = useState<boolean>(false);
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await api.checkHealth(apiBaseUrl.trim() || undefined);
+      if (res.ok) {
+        setTestResult({ ok: true, message: `Connected successfully (${res.latencyMs}ms)` });
+      } else {
+        setTestResult({ ok: false, message: `Connection failed: ${res.statusText}` });
+      }
+    } catch (e: any) {
+      setTestResult({ ok: false, message: e.message || 'Cannot reach endpoint' });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const handleSaveApiBase = () => {
+    setApiBase(apiBaseUrl);
+    setSavedNotice(true);
+    setTimeout(() => {
+      window.location.reload();
+    }, 800);
+  };
+
   return (
     <div className="space-y-6">
+      {/* Backend Connection Configuration */}
+      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-brand-50 text-brand-600 rounded-lg">
+              <Server className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 tracking-tight">FastAPI Backend Service Connection</h3>
+              <p className="text-xs text-slate-500">
+                Connect this Hostinger frontend to your Python FastAPI backend (Render, VPS, or Local Tunnel)
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200">
+            Active: {getApiBase()}
+          </span>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Backend API Base URL (must end with /api/v1)
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                placeholder="e.g. https://your-app.onrender.com/api/v1 or /api/v1"
+                value={apiBaseUrl}
+                onChange={(e) => setApiBaseUrl(e.target.value)}
+                className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTesting}
+                className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
+                <span>{isTesting ? 'Testing...' : 'Test Connection'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveApiBase}
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center justify-center gap-1.5"
+              >
+                {savedNotice ? <Check className="w-3.5 h-3.5" /> : null}
+                <span>{savedNotice ? 'Saved! Reloading...' : 'Save & Connect'}</span>
+              </button>
+            </div>
+          </div>
+
+          {testResult && (
+            <div className={`p-2.5 rounded-lg text-xs font-medium border flex items-center gap-2 ${
+              testResult.ok
+                ? 'bg-finGreen-bg text-finGreen-text border-finGreen-border'
+                : 'bg-finRed-bg text-finRed-text border-finRed-border'
+            }`}>
+              {testResult.ok ? (
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-finGreen" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 text-finRed" />
+              )}
+              <span>{testResult.message}</span>
+            </div>
+          )}
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600 space-y-1">
+            <span className="font-bold text-slate-800 block">Why is this needed?</span>
+            <p>
+              Hostinger shared hosting only serves static HTML/JS. The Python FastAPI engine handles encryption, TOTP token generation, Angel One SmartAPI authentication, and database isolation.
+            </p>
+            <p className="text-slate-500">
+              Deploy the <code>backend/</code> folder to Render (Free) or run <code>uvicorn app.main:app</code> locally with a tunnel, then paste the URL above.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* System Status & Architecture Overview */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <h3 className="text-sm font-bold text-slate-900 tracking-tight">System Environment & Operational Mode</h3>
