@@ -80,8 +80,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Form State for Credential Rotation
+  // Form State for Credential Rotation & Reconnect
   const [rotationAccount, setRotationAccount] = useState<Account | null>(null);
+  const [rotationTab, setRotationTab] = useState<'quick' | 'full'>('quick');
+  const [quickTotp, setQuickTotp] = useState('');
+  const [isQuickVerifying, setIsQuickVerifying] = useState(false);
   const [rotationData, setRotationData] = useState({ client_code: '', api_key: '', pin: '', totp_secret: '' });
   const [isRotating, setIsRotating] = useState(false);
   const [rotationError, setRotationError] = useState<string | null>(null);
@@ -266,21 +269,62 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     }
   };
 
-  // Test SmartAPI connectivity
-  const handleTestConnection = async (accId: number) => {
+  // Test SmartAPI connectivity with rate-limiting and optional TOTP
+  const handleTestConnection = async (accId: number, totpCode?: string) => {
+    const now = Date.now();
+    if (cooldowns[accId] && cooldowns[accId] > now) {
+      const remainingSec = Math.ceil((cooldowns[accId] - now) / 1000);
+      alert(`Rate limit protection active. Please wait ${remainingSec}s before retrying.`);
+      return;
+    }
+
     setTestingAccountId(accId);
     setTestResult(null);
     try {
-      const res = await api.testAccount(accId);
+      const res = await api.testAccount(accId, totpCode);
       setTestResult({ id: accId, success: res.success, msg: res.message });
+      setCooldowns((prev) => ({ ...prev, [accId]: Date.now() + 3000 }));
       onRefresh();
       if (selectedAccountForDrawer?.id === accId) {
         fetchDrawerData(selectedAccountForDrawer);
       }
+      return res;
     } catch (err: any) {
       setTestResult({ id: accId, success: false, msg: err.message });
+      return { success: false, message: err.message };
     } finally {
       setTestingAccountId(null);
+    }
+  };
+
+  const handleQuickReconnect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rotationAccount) return;
+    const cleanTotp = quickTotp.trim();
+    if (!cleanTotp || cleanTotp.length !== 6 || !/^\d{6}$/.test(cleanTotp)) {
+      setRotationError('Please enter a valid 6-digit numeric TOTP code.');
+      return;
+    }
+    setIsQuickVerifying(true);
+    setRotationError(null);
+    try {
+      const res = await api.testAccount(rotationAccount.id, cleanTotp);
+      if (res.success) {
+        setRotationAccount(null);
+        setQuickTotp('');
+        setRotationError(null);
+        alert('Connected successfully! Angel One session established.');
+        onRefresh();
+        if (selectedAccountForDrawer?.id === rotationAccount.id) {
+          fetchDrawerData(rotationAccount);
+        }
+      } else {
+        setRotationError(res.message);
+      }
+    } catch (err: any) {
+      setRotationError(err.message || 'Failed to reconnect with TOTP code.');
+    } finally {
+      setIsQuickVerifying(false);
     }
   };
 
@@ -1114,12 +1158,15 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     <button
                       onClick={() => {
                         setRotationAccount(acc);
+                        setRotationTab(acc.auth_status === 'CONNECTED' ? 'full' : 'quick');
+                        setQuickTotp('');
+                        setRotationError(null);
                         setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
                       }}
                       className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5"
                     >
                       <Lock className="w-3.5 h-3.5" />
-                      <span>Rotate Credentials</span>
+                      <span>{acc.auth_status === 'CONNECTED' ? 'Rotate Credentials' : 'Reconnect'}</span>
                     </button>
                     <button
                       onClick={() => handleTestConnection(acc.id)}
@@ -1293,6 +1340,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                           <button
                             onClick={() => {
                               setRotationAccount(selectedAccountForDrawer);
+                              setRotationTab('quick');
+                              setQuickTotp('');
+                              setRotationError(null);
                               setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
                             }}
                             className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-xs font-bold shadow-xs flex items-center gap-1.5"
@@ -1741,7 +1791,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                  {rotationAccount.auth_status === 'ERROR' ? 'Reconnect Angel One Account' : 'Rotate Credentials'}
+                  {rotationAccount.auth_status === 'ERROR' || rotationAccount.auth_status === 'EXPIRED'
+                    ? 'Reconnect Angel One Account'
+                    : 'Manage Account Credentials'}
                 </h3>
                 <p className="text-xs text-slate-500">{rotationAccount.nickname} ({rotationAccount.masked_client_code})</p>
               </div>
@@ -1753,17 +1805,40 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </button>
             </div>
 
-            {rotationAccount.auth_status === 'ERROR' && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs space-y-1.5">
+            {/* Modal Tabs: Quick Reconnect vs Full Rotation */}
+            <div className="flex border-b border-slate-200 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => { setRotationTab('quick'); setRotationError(null); }}
+                className={`flex-1 py-2 text-center border-b-2 transition-all ${
+                  rotationTab === 'quick'
+                    ? 'border-brand-600 text-brand-600 font-bold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Quick OTP Reconnect
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRotationTab('full'); setRotationError(null); }}
+                className={`flex-1 py-2 text-center border-b-2 transition-all ${
+                  rotationTab === 'full'
+                    ? 'border-brand-600 text-brand-600 font-bold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Full Credential Rotation
+              </button>
+            </div>
+
+            {rotationAccount.last_auth_error && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs space-y-1">
                 <div className="font-semibold text-rose-800 flex items-center gap-1.5">
                   <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
-                  <span>Angel One Authentication Rejection</span>
+                  <span>Last Broker Diagnostic</span>
                 </div>
-                <p className="text-rose-700">
-                  Broker reported: <strong className="font-mono bg-rose-100/70 px-1 py-0.5 rounded">{rotationAccount.last_auth_error || 'Invalid credentials'}</strong>
-                </p>
-                <p className="text-slate-600 text-[11px] leading-relaxed">
-                  Enter your genuine SmartAPI API Key, 4-digit Account PIN, and the Base32 TOTP secret string from your Angel One authenticator setup (not the 6-digit expiring code).
+                <p className="text-rose-700 font-mono text-[11px] leading-relaxed break-words">
+                  {rotationAccount.last_auth_error}
                 </p>
               </div>
             )}
@@ -1774,79 +1849,118 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </div>
             )}
 
-            <form onSubmit={handleRotateCredentials} className="space-y-3.5 text-xs">
-              <div>
-                <label className="block text-slate-700 font-medium mb-1">
-                  Client Code <span className="text-slate-400 font-normal">(leave blank to keep current)</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder={`Current: ${rotationAccount.masked_client_code}`}
-                  value={rotationData.client_code}
-                  onChange={(e) => setRotationData({ ...rotationData, client_code: e.target.value.toUpperCase() })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono uppercase"
-                />
-              </div>
+            {rotationTab === 'quick' ? (
+              <form onSubmit={handleQuickReconnect} className="space-y-4 text-xs">
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-[11px] leading-relaxed">
+                  Enter the live 6-digit TOTP code currently shown on your mobile Authenticator app (Google Authenticator / Angel One) to verify credentials and establish an active broker session immediately.
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1.5">
+                    Current 6-Digit TOTP Code
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    placeholder="e.g. 583921"
+                    value={quickTotp}
+                    onChange={(e) => setQuickTotp(e.target.value.replace(/\D/g, ''))}
+                    className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-center tracking-widest text-lg font-mono font-bold text-slate-900 focus:ring-2 focus:ring-brand-500 outline-none"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setRotationAccount(null)}
+                    className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isQuickVerifying || quickTotp.length !== 6}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>{isQuickVerifying ? 'Verifying with Angel One...' : 'Verify & Connect'}</span>
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleRotateCredentials} className="space-y-3.5 text-xs">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Client Code <span className="text-slate-400 font-normal">(leave blank to keep current)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={`Current: ${rotationAccount.masked_client_code}`}
+                    value={rotationData.client_code}
+                    onChange={(e) => setRotationData({ ...rotationData, client_code: e.target.value.toUpperCase() })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono uppercase"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-slate-700 font-medium mb-1">
-                  SmartAPI API Key <span className="text-slate-400 font-normal">(from smartapi.angelone.in)</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Enter SmartAPI App API Key"
-                  value={rotationData.api_key}
-                  onChange={(e) => setRotationData({ ...rotationData, api_key: e.target.value.trim() })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
-                />
-              </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    SmartAPI API Key <span className="text-slate-400 font-normal">(from smartapi.angelone.in)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Enter SmartAPI App API Key"
+                    value={rotationData.api_key}
+                    onChange={(e) => setRotationData({ ...rotationData, api_key: e.target.value.trim() })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-slate-700 font-medium mb-1">
-                  Account PIN / Password <span className="text-slate-400 font-normal">(4-digit trading PIN)</span>
-                </label>
-                <input
-                  type="password"
-                  placeholder="Enter 4-digit Angel One PIN"
-                  value={rotationData.pin}
-                  onChange={(e) => setRotationData({ ...rotationData, pin: e.target.value.trim() })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none"
-                />
-              </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Account PIN / Password <span className="text-slate-400 font-normal">(4-digit trading PIN)</span>
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="Enter 4-digit Angel One PIN"
+                    value={rotationData.pin}
+                    onChange={(e) => setRotationData({ ...rotationData, pin: e.target.value.trim() })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-slate-700 font-medium mb-1">
-                  TOTP Secret Key (Base32) <span className="text-slate-400 font-normal">(Permanent setup key)</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. JBSWY3DPEHPK3PXP (from authenticator setup)"
-                  value={rotationData.totp_secret}
-                  onChange={(e) => setRotationData({ ...rotationData, totp_secret: e.target.value.trim() })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
-                />
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Important: Enter the permanent alphanumeric secret from "Enable External TOTP" in Angel One, NOT the 6-digit changing OTP code.
-                </p>
-              </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    TOTP Secret Key (Base32) <span className="text-slate-400 font-normal">(Permanent setup key)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. JBSWY3DPEHPK3PXP (from authenticator setup)"
+                    value={rotationData.totp_secret}
+                    onChange={(e) => setRotationData({ ...rotationData, totp_secret: e.target.value.trim() })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Enter the permanent alphanumeric secret or OTPAuth URL from Angel One authenticator setup. (If a temporary 6-digit code is entered, it will be used for one-time verification without replacing your stored secret).
+                  </p>
+                </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setRotationAccount(null)}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isRotating}
-                  className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50"
-                >
-                  {isRotating ? 'Verifying with Angel One...' : rotationAccount.auth_status === 'ERROR' ? 'Authorize & Reconnect' : 'Update Credentials'}
-                </button>
-              </div>
-            </form>
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setRotationAccount(null)}
+                    className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isRotating}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50"
+                  >
+                    {isRotating ? 'Verifying with Angel One...' : 'Update & Reconnect'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

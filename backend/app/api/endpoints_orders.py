@@ -115,36 +115,40 @@ def place_single_order(
     else:
         # Live order execution via SmartAPI adapter
         from app.core.security import cipher
-        from app.services.smartapi_adapter import SmartAPIAdapter
+        import time
+        from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account
         try:
-            adapter = SmartAPIAdapter(
+            adapter = get_adapter_for_account(
+                account_id=account.id,
                 api_key=cipher.decrypt(account.encrypted_api_key),
                 client_code=account.client_code,
                 pin=cipher.decrypt(account.encrypted_pin),
                 totp_secret=cipher.decrypt(account.encrypted_totp_secret)
             )
-            auth_res = adapter.authenticate()
-            if not auth_res["success"]:
-                order.status = "REJECTED"
-                order.rejection_reason = auth_res["message"]
-            else:
-                live_res = adapter.place_order({
-                    "variety": order.variety,
-                    "tradingsymbol": order.tradingsymbol,
-                    "symbol_token": order.symbol_token,
-                    "transaction_type": order.transaction_type,
-                    "exchange": order.exchange,
-                    "order_type": order.order_type,
-                    "product_type": order.product_type,
-                    "price": order.price,
-                    "quantity": order.quantity
-                })
-                if live_res["success"]:
-                    order.status = "ACCEPTED"
-                    order.broker_order_id = live_res["broker_order_id"]
-                else:
+            if not (adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired):
+                auth_res = adapter.authenticate()
+                if not auth_res["success"]:
                     order.status = "REJECTED"
-                    order.rejection_reason = live_res["message"]
+                    order.rejection_reason = auth_res["message"]
+                    db.commit()
+                    return order
+            live_res = adapter.place_order({
+                "variety": order.variety,
+                "tradingsymbol": order.tradingsymbol,
+                "symbol_token": order.symbol_token,
+                "transaction_type": order.transaction_type,
+                "exchange": order.exchange,
+                "order_type": order.order_type,
+                "product_type": order.product_type,
+                "price": order.price,
+                "quantity": order.quantity
+            })
+            if live_res["success"]:
+                order.status = "ACCEPTED"
+                order.broker_order_id = live_res["broker_order_id"]
+            else:
+                order.status = "REJECTED"
+                order.rejection_reason = live_res["message"]
             db.commit()
         except Exception as e:
             order.status = "REJECTED"

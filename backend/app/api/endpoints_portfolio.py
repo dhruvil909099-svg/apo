@@ -6,7 +6,8 @@ from app.core.database import get_db
 from app.models.ipo import Allotment, IPO
 from app.models.account import Account
 from app.models.audit import AuditLog
-from app.services.smartapi_adapter import SmartAPIAdapter
+import time
+from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account
 from app.core.security import cipher
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio & Holdings"])
@@ -249,18 +250,24 @@ def trigger_portfolio_sync(db: Session = Depends(get_db)):
             raw_pin = cipher.decrypt(acc.encrypted_pin)
             raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
 
-            adapter = SmartAPIAdapter(
+            adapter = get_adapter_for_account(
+                account_id=acc.id,
                 api_key=raw_key,
                 client_code=acc.client_code,
                 pin=raw_pin,
                 totp_secret=raw_totp
             )
-            auth_res = adapter.authenticate()
-            if not auth_res.get("success"):
-                acc.auth_status = "ERROR"
-                acc.last_auth_error = auth_res.get("message", "Authentication failed")
-                failed_count += 1
-                continue
+            if not (adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired):
+                auth_res = adapter.authenticate()
+                if not auth_res.get("success"):
+                    if adapter.is_session_expired:
+                        invalidate_adapter_for_account(acc.id)
+                        acc.auth_status = "EXPIRED"
+                    else:
+                        acc.auth_status = "ERROR"
+                    acc.last_auth_error = auth_res.get("message", "Authentication failed")
+                    failed_count += 1
+                    continue
 
             acc.auth_status = "CONNECTED"
             acc.last_auth_error = None

@@ -21,8 +21,13 @@ class AccountUpdate(BaseModel):
     api_key: Optional[str] = None
     pin: Optional[str] = None
     totp_secret: Optional[str] = None
+    manual_totp: Optional[str] = Field(default=None, description="Current live 6-digit TOTP code for immediate authentication without replacing stored secret")
     ddpi_status: Optional[str] = None
     edis_authorized_today: Optional[bool] = None
+
+
+class AccountTestPayload(BaseModel):
+    totp_code: Optional[str] = Field(default=None, description="Optional live 6-digit TOTP code for test/reconnect")
 
 
 class AccountResponse(BaseModel):

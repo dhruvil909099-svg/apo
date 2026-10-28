@@ -10,7 +10,8 @@ from app.models.audit import AuditLog
 from app.core.config import settings
 from app.core.security import cipher, sanitize_dict_for_logging
 from app.services.paper_trading_service import PaperTradingService
-from app.services.smartapi_adapter import SmartAPIAdapter
+import time
+from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account
 
 
 class BulkOrderService:
@@ -229,26 +230,28 @@ class BulkOrderService:
             else:
                 # Live Execution via SmartAPI adapter
                 try:
-                    adapter = SmartAPIAdapter(
+                    adapter = get_adapter_for_account(
+                        account_id=account.id,
                         api_key=cipher.decrypt(account.encrypted_api_key),
                         client_code=account.client_code,
                         pin=cipher.decrypt(account.encrypted_pin),
                         totp_secret=cipher.decrypt(account.encrypted_totp_secret)
                     )
-                    auth_res = adapter.authenticate()
-                    if not auth_res["success"]:
-                        order.status = "REJECTED"
-                        order.rejection_reason = f"Authentication failure: {auth_res['message']}"
-                        db.commit()
-                        failed_count += 1
-                        results.append({
-                            "account_id": account.id,
-                            "nickname": account.nickname,
-                            "client_order_id": order.client_order_id,
-                            "status": "REJECTED",
-                            "rejection_reason": order.rejection_reason
-                        })
-                        continue
+                    if not (adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired):
+                        auth_res = adapter.authenticate()
+                        if not auth_res["success"]:
+                            order.status = "REJECTED"
+                            order.rejection_reason = f"Authentication failure: {auth_res['message']}"
+                            db.commit()
+                            failed_count += 1
+                            results.append({
+                                "account_id": account.id,
+                                "nickname": account.nickname,
+                                "client_order_id": order.client_order_id,
+                                "status": "REJECTED",
+                                "rejection_reason": order.rejection_reason
+                            })
+                            continue
 
                     live_res = adapter.place_order({
                         "variety": order.variety,

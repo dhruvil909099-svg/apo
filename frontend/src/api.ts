@@ -302,14 +302,17 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  updateAccount: (id: number, data: Partial<Account>) => fetchJson<Account>(`${getApiBase()}/accounts/${id}`, {
+  updateAccount: (id: number, data: Record<string, any>) => fetchJson<Account>(`${getApiBase()}/accounts/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   }),
   deleteAccount: (id: number) => fetch(`${getApiBase()}/accounts/${id}`, { method: 'DELETE', headers: getAuthHeaders() }),
-  testAccount: (id: number) => fetchJson<{ success: boolean; message: string; auth_status: string; ddpi_status: string }>(
+  testAccount: (id: number, totpCode?: string) => fetchJson<{ success: boolean; message: string; auth_status: string; ddpi_status: string }>(
     `${getApiBase()}/accounts/${id}/test`,
-    { method: 'POST' }
+    {
+      method: 'POST',
+      body: JSON.stringify(totpCode ? { totp_code: totpCode } : {})
+    }
   ),
   batchCreateDemoAccounts: (count: number = 10) => fetchJson<{ message: string; count: number }>(
     `${getApiBase()}/accounts/batch-create-demo?count=${count}`,

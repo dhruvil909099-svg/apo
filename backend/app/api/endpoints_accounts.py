@@ -3,17 +3,17 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.security import cipher, mask_client_id, sanitize_dict_for_logging
+from app.core.security import cipher, mask_client_id, sanitize_dict_for_logging, normalize_base32_secret
 from app.models.account import Account
 from app.models.audit import AuditLog
 from app.models.ipo import Allotment, IPO
 from app.models.order import Order
 from app.schemas.account import (
-    AccountCreate, AccountUpdate, AccountResponse, AccountTestResult,
+    AccountCreate, AccountUpdate, AccountResponse, AccountTestResult, AccountTestPayload,
     AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
     AccountOrderItem, AccountTradeItem, AccountSyncResponse
 )
-from app.services.smartapi_adapter import SmartAPIAdapter
+from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account
 from app.services.account_persistence import persist_accounts_backup
 import json
 
@@ -56,22 +56,33 @@ def list_accounts(
 
 @router.post("", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
 def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
-    # Check for duplicate client code
-    existing = db.query(Account).filter(Account.client_code == account_in.client_code.strip()).first()
+    # Standardize client code (strictly uppercase without whitespace)
+    clean_client_code = account_in.client_code.strip().upper()
+    existing = db.query(Account).filter(Account.client_code == clean_client_code).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Account with client code {mask_client_id(account_in.client_code)} already exists."
+            detail=f"Account with client code {mask_client_id(clean_client_code)} already exists."
+        )
+
+    clean_api_key = account_in.api_key.strip()
+    clean_pin = account_in.pin.strip()
+    raw_totp = normalize_base32_secret(account_in.totp_secret.strip())
+
+    if raw_totp.isdigit() and len(raw_totp) == 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account registration requires the permanent Base32 secret string from Angel One 'Enable TOTP', not a 6-digit temporary code."
         )
 
     # Encrypt sensitive credentials using AES-256 Fernet
-    encrypted_key = cipher.encrypt(account_in.api_key.strip())
-    encrypted_pin = cipher.encrypt(account_in.pin.strip())
-    encrypted_totp = cipher.encrypt(account_in.totp_secret.strip())
+    encrypted_key = cipher.encrypt(clean_api_key)
+    encrypted_pin = cipher.encrypt(clean_pin)
+    encrypted_totp = cipher.encrypt(raw_totp)
 
     account = Account(
         nickname=account_in.nickname.strip(),
-        client_code=account_in.client_code.strip(),
+        client_code=clean_client_code,
         account_group=account_in.account_group.strip() or "Family",
         encrypted_api_key=encrypted_key,
         encrypted_pin=encrypted_pin,
@@ -159,9 +170,12 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
         account.ddpi_status = account_in.ddpi_status
     if account_in.edis_authorized_today is not None:
         account.edis_authorized_today = account_in.edis_authorized_today
+
     credentials_rotated = False
+    manual_totp: Optional[str] = None
+
     if account_in.client_code is not None and account_in.client_code.strip():
-        new_code = account_in.client_code.strip()
+        new_code = account_in.client_code.strip().upper()
         if new_code != account.client_code:
             existing = db.query(Account).filter(Account.client_code == new_code, Account.id != account.id).first()
             if existing:
@@ -170,23 +184,38 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
             credentials_rotated = True
 
     # Optional credential rotation
-    if account_in.api_key:
+    if account_in.api_key is not None and account_in.api_key.strip():
         account.encrypted_api_key = cipher.encrypt(account_in.api_key.strip())
         credentials_rotated = True
-    if account_in.pin:
+    if account_in.pin is not None and account_in.pin.strip():
         account.encrypted_pin = cipher.encrypt(account_in.pin.strip())
         credentials_rotated = True
-    if account_in.totp_secret:
-        account.encrypted_totp_secret = cipher.encrypt(account_in.totp_secret.strip())
-        credentials_rotated = True
 
-    if credentials_rotated and not account.is_demo:
+    if account_in.manual_totp is not None and account_in.manual_totp.strip():
+        manual_totp = account_in.manual_totp.strip()
+
+    if account_in.totp_secret is not None and account_in.totp_secret.strip():
+        raw_secret_input = account_in.totp_secret.strip()
+        # If the user entered a 6-digit code in the totp_secret field:
+        if raw_secret_input.isdigit() and len(raw_secret_input) == 6:
+            # Treat as temporary manual TOTP without overwriting permanent Base32 secret
+            manual_totp = raw_secret_input
+        else:
+            normalized_secret = normalize_base32_secret(raw_secret_input)
+            account.encrypted_totp_secret = cipher.encrypt(normalized_secret)
+            credentials_rotated = True
+
+    # If credentials were changed or manual_totp was provided, re-verify connectivity
+    if (credentials_rotated or manual_totp) and not account.is_demo:
+        invalidate_adapter_for_account(account.id)
         try:
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
-            adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
-            test_res = adapter.test_connection()
+            adapter = get_adapter_for_account(
+                account.id, raw_key, account.client_code, raw_pin, raw_totp, force_new=True
+            )
+            test_res = adapter.test_connection(manual_totp=manual_totp)
             if test_res["success"]:
                 account.auth_status = "CONNECTED"
                 account.last_sync_time = datetime.utcnow()
@@ -230,16 +259,23 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    invalidate_adapter_for_account(account_id)
     db.delete(account)
     db.commit()
     persist_accounts_backup(db)
 
 
 @router.post("/{account_id}/test", response_model=AccountTestResult)
-def test_account_connection(account_id: int, db: Session = Depends(get_db)):
+def test_account_connection(
+    account_id: int,
+    payload: Optional[AccountTestPayload] = None,
+    db: Session = Depends(get_db)
+):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    manual_totp = (payload.totp_code.strip() if payload and payload.totp_code and payload.totp_code.strip() else None)
 
     # If it is a demo account, simulate successful connection
     if account.is_demo:
@@ -278,24 +314,33 @@ def test_account_connection(account_id: int, db: Session = Depends(get_db)):
             ddpi_status="UNKNOWN"
         )
 
-    # Test via SmartAPIAdapter
-    adapter = SmartAPIAdapter(api_key=raw_key, client_code=account.client_code, pin=raw_pin, totp_secret=raw_totp)
-    test_res = adapter.test_connection()
+    # Get adapter from pool (forcing fresh session if manual TOTP provided)
+    adapter = get_adapter_for_account(
+        account.id,
+        api_key=raw_key,
+        client_code=account.client_code,
+        pin=raw_pin,
+        totp_secret=raw_totp,
+        force_new=bool(manual_totp)
+    )
+    test_res = adapter.test_connection(manual_totp=manual_totp)
 
     if test_res["success"]:
         account.auth_status = "CONNECTED"
         account.last_sync_time = datetime.utcnow()
         account.last_auth_error = None
-        account.ddpi_status = "ACTIVE"
+        account.ddpi_status = test_res.get("ddpi_status", "ACTIVE")
         rms_data = adapter.get_rms()
         if rms_data:
             cash_val = float(rms_data.get("availablecash", rms_data.get("net", 0.0)))
             account.available_cash = round(cash_val, 2)
     else:
-        account.auth_status = "EXPIRED" if "SESSION_EXPIRED" in test_res.get("error_code", "") else "ERROR"
+        err_code = test_res.get("error_code", "")
+        account.auth_status = "EXPIRED" if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED") else "ERROR"
         account.last_auth_error = test_res["message"]
 
     db.commit()
+    persist_accounts_backup(db)
 
     return AccountTestResult(
         account_id=account.id,
@@ -304,7 +349,7 @@ def test_account_connection(account_id: int, db: Session = Depends(get_db)):
         success=test_res["success"],
         message=test_res["message"],
         auth_status=account.auth_status,
-        jwt_acquired=test_res["jwt_acquired"],
+        jwt_acquired=test_res.get("jwt_acquired", False),
         ddpi_status=account.ddpi_status
     )
 
@@ -374,9 +419,10 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
-            adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
+            adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
             live_holdings = adapter.get_holdings()
             if adapter.is_session_expired:
+                invalidate_adapter_for_account(account.id)
                 account.auth_status = "EXPIRED"
                 account.last_auth_error = adapter.last_error or "Broker session expired"
                 db.commit()
@@ -463,9 +509,10 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
-            adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
+            adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
             live_pos = adapter.get_positions()
             if adapter.is_session_expired:
+                invalidate_adapter_for_account(account.id)
                 account.auth_status = "EXPIRED"
                 account.last_auth_error = adapter.last_error or "Broker session expired"
                 db.commit()
@@ -521,9 +568,10 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
-            adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
+            adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
             broker_orders = adapter.get_order_book()
             if adapter.is_session_expired:
+                invalidate_adapter_for_account(account.id)
                 account.auth_status = "EXPIRED"
                 account.last_auth_error = adapter.last_error or "Broker session expired"
                 db.commit()
@@ -603,9 +651,10 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
             raw_totp = cipher.decrypt(account.encrypted_totp_secret)
-            adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
+            adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
             broker_trades = adapter.get_trade_book()
             if adapter.is_session_expired:
+                invalidate_adapter_for_account(account.id)
                 account.auth_status = "EXPIRED"
                 account.last_auth_error = adapter.last_error or "Broker session expired"
                 db.commit()
@@ -708,8 +757,11 @@ def sync_account_data(account_id: int, db: Session = Depends(get_db)):
         raw_key = cipher.decrypt(account.encrypted_api_key)
         raw_pin = cipher.decrypt(account.encrypted_pin)
         raw_totp = cipher.decrypt(account.encrypted_totp_secret)
-        adapter = SmartAPIAdapter(raw_key, account.client_code, raw_pin, raw_totp)
-        auth_res = adapter.authenticate()
+        adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
+        if adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired:
+            auth_res = {"success": True, "message": "Using authenticated session"}
+        else:
+            auth_res = adapter.authenticate()
 
         if auth_res["success"]:
             account.auth_status = "CONNECTED"
@@ -722,7 +774,11 @@ def sync_account_data(account_id: int, db: Session = Depends(get_db)):
             msg = "Account synchronized successfully with Angel One."
             success = True
         else:
-            account.auth_status = "ERROR"
+            if adapter.is_session_expired:
+                invalidate_adapter_for_account(account.id)
+                account.auth_status = "EXPIRED"
+            else:
+                account.auth_status = "ERROR"
             account.last_auth_error = auth_res["message"]
             msg = f"Broker sync warning: {auth_res['message']}"
             success = False

@@ -54,50 +54,85 @@ SENSITIVE_KEYS = {
 }
 
 
+import urllib.parse
+import re
+
+
 def normalize_base32_secret(secret: str) -> str:
     """
-    Normalizes a Base32 secret string by stripping spaces/hyphens,
-    converting to uppercase, and mapping common OCR/typing aliases
-    according to RFC 4648 (e.g., '0' -> 'O', '1' -> 'I', '8' -> 'B').
+    Normalizes a Base32 secret string safely:
+    - Extracts secret parameter if an otpauth:// URI was pasted
+    - If already a 6-digit numeric TOTP code, preserves it untouched
+    - Strips all whitespace, tabs, newlines, and hyphens
+    - Converts to uppercase
+    - Does NOT alter valid characters or arbitrarily replace digits
     """
     if not secret:
         return ""
-    clean = secret.replace(" ", "").replace("-", "").upper()
-    return clean.replace("0", "O").replace("1", "I").replace("8", "B")
+    clean = secret.strip()
+
+    # Check if this is an otpauth URI: otpauth://totp/...secret=XXX...
+    if "secret=" in clean.lower():
+        try:
+            parsed = urllib.parse.urlparse(clean)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "secret" in qs and qs["secret"]:
+                clean = qs["secret"][0]
+        except Exception:
+            m = re.search(r"secret=([A-Za-z2-7=]+)", clean, re.IGNORECASE)
+            if m:
+                clean = m.group(1)
+
+    # Check if this is directly a 6-digit TOTP code
+    stripped_digits = clean.replace(" ", "").replace("-", "")
+    if stripped_digits.isdigit() and len(stripped_digits) == 6:
+        return stripped_digits
+
+    # Standard Base32 clean: strip spaces, hyphens, tabs, newlines, and uppercase
+    clean = clean.replace(" ", "").replace("-", "").replace("\t", "").replace("\n", "").replace("\r", "").upper()
+    return clean
 
 
 def generate_totp_token(secret: str, digits: int = 6, interval: int = 30) -> str:
     """
     Generates a current 6-digit TOTP code (RFC 6238) from a base32 TOTP secret.
-    Works independently using standard library hmac/hashlib, with pyotp fallback.
+    - If secret is already a 6-digit code, returns it directly without alteration.
+    - Uses pyotp where available, with RFC 6238 HMAC-SHA1 fallback.
+    - Ensures proper base32 padding.
     """
     if not secret:
         return ""
+    clean_secret = normalize_base32_secret(secret)
+    if clean_secret.isdigit() and len(clean_secret) == 6:
+        return clean_secret
+
     try:
-        clean_secret = normalize_base32_secret(secret)
         import pyotp
-        return pyotp.TOTP(clean_secret).now()
+        return pyotp.TOTP(clean_secret, digits=digits, interval=interval).now()
     except Exception:
-        try:
-            import struct
-            import time
-            import hmac
-            import hashlib
-            
-            clean_secret = normalize_base32_secret(secret)
-            missing_padding = len(clean_secret) % 8
-            if missing_padding != 0:
-                clean_secret += "=" * (8 - missing_padding)
-                
-            key = base64.b32decode(clean_secret, casefold=True)
-            counter = int(time.time() // interval)
-            msg = struct.pack(">Q", counter)
-            h = hmac.new(key, msg, hashlib.sha1).digest()
-            o = h[19] & 15
-            token = (struct.unpack(">I", h[o:o+4])[0] & 0x7fffffff) % (10 ** digits)
-            return str(token).zfill(digits)
-        except Exception:
-            return ""
+        pass
+
+    try:
+        import struct
+        import time
+        import hmac
+        import hashlib
+
+        # Standard base32 padding
+        padded = clean_secret
+        missing_padding = len(padded) % 8
+        if missing_padding != 0:
+            padded += "=" * (8 - missing_padding)
+
+        key = base64.b32decode(padded, casefold=True)
+        counter = int(time.time() // interval)
+        msg = struct.pack(">Q", counter)
+        h = hmac.new(key, msg, hashlib.sha1).digest()
+        o = h[19] & 15
+        token = (struct.unpack(">I", h[o:o+4])[0] & 0x7fffffff) % (10 ** digits)
+        return str(token).zfill(digits)
+    except Exception:
+        return ""
 
 
 def sanitize_dict_for_logging(data: Any) -> Any:
