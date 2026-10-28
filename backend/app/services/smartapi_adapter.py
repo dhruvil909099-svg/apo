@@ -29,8 +29,9 @@ class SmartAPIAdapter:
         self.token_expiry_timestamp: float = 0
         self._last_request_time: float = 0
         self.last_sync_time: Optional[float] = None
-        self.last_error: Optional[str] = None
         self.is_session_expired: bool = False
+        self.consecutive_errors: int = 0
+        self.circuit_open_until: Optional[float] = None
         self.session = requests.Session()
         self._auth_lock = threading.RLock()
 
@@ -56,12 +57,18 @@ class SmartAPIAdapter:
         json_payload: Optional[Dict[str, Any]] = None,
         timeout: float = 10.0,
         rate_limit_seconds: float = 1.0,
-        max_retries: int = 2
+        max_retries: int = 2,
+        _is_reauth_attempt: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
         Executes an HTTP request against SmartAPI with per-endpoint rate-limiting,
-        bounded retries on transient errors, and sanitized error reporting.
+        bounded retries on transient errors, circuit breaker, and automatic self-healing re-auth.
         """
+        if self.circuit_open_until and time.time() < self.circuit_open_until:
+            wait_left = int(self.circuit_open_until - time.time())
+            self.last_error = f"Upstream broker temporarily throttled (Circuit breaker open for {wait_left}s). Serving last verified data."
+            return None
+
         self._enforce_rate_limit(rate_limit_seconds)
         endpoint_name = url.split("/")[-1]
         
@@ -73,7 +80,19 @@ class SmartAPIAdapter:
                 else:
                     resp = self.session.post(url, json=json_payload, headers=headers, timeout=timeout)
 
+                # Session expired: Attempt transparent self-healing re-authentication
                 if resp.status_code == 401:
+                    if not _is_reauth_attempt and self.totp_secret and self.api_key and self.pin and self.api_key != "AUTO_RESTORED_KEY":
+                        logger.info(f"SmartAPI session expired (HTTP 401) for {self.client_code}. Self-healing re-auth triggered...")
+                        self.is_session_expired = True
+                        reauth = self.authenticate(force_fresh=True)
+                        if reauth.get("success"):
+                            logger.info(f"Self-healing re-auth succeeded for {self.client_code}. Retrying {endpoint_name}...")
+                            return self._send_request(
+                                method=method, url=url, json_payload=json_payload,
+                                timeout=timeout, rate_limit_seconds=rate_limit_seconds,
+                                max_retries=1, _is_reauth_attempt=True
+                            )
                     self.is_session_expired = True
                     self.last_error = "Angel One session expired (HTTP 401)"
                     return None
@@ -95,6 +114,17 @@ class SmartAPIAdapter:
 
                 err_code = str(data.get("errorcode", "") or data.get("errorCode", ""))
                 if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED"):
+                    if not _is_reauth_attempt and self.totp_secret and self.api_key and self.pin and self.api_key != "AUTO_RESTORED_KEY":
+                        logger.info(f"SmartAPI session expired ({err_code}) for {self.client_code}. Self-healing re-auth triggered...")
+                        self.is_session_expired = True
+                        reauth = self.authenticate(force_fresh=True)
+                        if reauth.get("success"):
+                            logger.info(f"Self-healing re-auth succeeded for {self.client_code}. Retrying {endpoint_name}...")
+                            return self._send_request(
+                                method=method, url=url, json_payload=json_payload,
+                                timeout=timeout, rate_limit_seconds=rate_limit_seconds,
+                                max_retries=1, _is_reauth_attempt=True
+                            )
                     self.is_session_expired = True
                     self.last_error = data.get("message", "Broker session expired")
                 elif err_code == "AG8004":
@@ -106,11 +136,21 @@ class SmartAPIAdapter:
                 if data.get("status") is True or data.get("success") is True:
                     self.last_sync_time = time.time()
                     self.last_error = None
+                    self.consecutive_errors = 0
+                    self.circuit_open_until = None
+                else:
+                    self.consecutive_errors += 1
+                    if self.consecutive_errors >= 5:
+                        self.circuit_open_until = time.time() + 60.0
+                        logger.warning(f"Circuit breaker tripped for {self.client_code} after 5 failures.")
                 return data
 
             except requests.exceptions.Timeout:
                 logger.warning(f"SmartAPI timeout for {self.client_code} on {endpoint_name} (attempt {attempt}/{max_retries})")
                 self.last_error = f"SmartAPI timeout on {endpoint_name}"
+                self.consecutive_errors += 1
+                if self.consecutive_errors >= 5:
+                    self.circuit_open_until = time.time() + 60.0
                 if attempt < max_retries:
                     time.sleep(1.0)
                     continue
@@ -118,6 +158,9 @@ class SmartAPIAdapter:
             except requests.exceptions.RequestException as e:
                 logger.error(f"Network error calling {endpoint_name} for {self.client_code}: {str(e)}")
                 self.last_error = f"Network error on {endpoint_name}: {str(e)}"
+                self.consecutive_errors += 1
+                if self.consecutive_errors >= 5:
+                    self.circuit_open_until = time.time() + 60.0
                 if attempt < max_retries:
                     time.sleep(1.0)
                     continue
@@ -128,15 +171,15 @@ class SmartAPIAdapter:
                 return None
         return None
 
-    def authenticate(self, manual_totp: Optional[str] = None) -> Dict[str, Any]:
+    def authenticate(self, manual_totp: Optional[str] = None, force_fresh: bool = False) -> Dict[str, Any]:
         """
         Performs official loginByPassword with freshly computed 6-digit TOTP code
         or caller-supplied manual 6-digit TOTP code.
         Thread-safe: acquires _auth_lock and re-checks for existing active session.
         """
         with self._auth_lock:
-            # Re-check if valid active session already exists (unless forced with manual_totp)
-            if not manual_totp and self.jwt_token and time.time() < self.token_expiry_timestamp and not self.is_session_expired:
+            # Re-check if valid active session already exists (unless forced with manual_totp or force_fresh)
+            if not force_fresh and not manual_totp and self.jwt_token and time.time() < self.token_expiry_timestamp and not self.is_session_expired:
                 return {
                     "success": True,
                     "message": "Authentication successful (reused active session)",

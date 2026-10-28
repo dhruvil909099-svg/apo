@@ -121,6 +121,10 @@ def run_safe_migrations():
         ("ddpi_status", "VARCHAR(30) DEFAULT 'UNKNOWN'"),
         ("edis_authorized_today", "BOOLEAN DEFAULT FALSE"),
         ("last_auth_error", "VARCHAR(500)"),
+        ("last_sync_attempt", "TIMESTAMP"),
+        ("sync_status", "VARCHAR(30) DEFAULT 'IDLE'"),
+        ("consecutive_errors", "INTEGER DEFAULT 0"),
+        ("circuit_breaker_until", "TIMESTAMP"),
     ]
 
     if "accounts" in existing_tables:

@@ -434,11 +434,15 @@ export const api = {
     const query = params.toString() ? `?${params.toString()}` : '';
     return fetchJson<import('./types').ConsolidatedPortfolioResponse>(`${getApiBase()}/portfolio/consolidated${query}`);
   },
+  getHoldingDetail: (symbol: string) => fetchJson<import('./types').HoldingDetailResponse>(
+    `${getApiBase()}/portfolio/holding/${encodeURIComponent(symbol)}`
+  ),
   getAccountPortfolios: () => fetchJson<AccountPortfolio[]>(`${getApiBase()}/portfolio/accounts`),
   syncPortfolio: () => fetchJson<{ success: boolean; accounts_synced: number; accounts_failed: number; timestamp: string }>(
     `${getApiBase()}/portfolio/sync`,
     { method: 'POST' }
   ),
+
 
   // Orders
   getOrders: (params?: { account_id?: number; status_filter?: string; symbol?: string; batch_id?: string }) => {
@@ -454,6 +458,10 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(order),
   }),
+  previewSingleOrder: (payload: import('./types').OrderPreviewPayload) => fetchJson<import('./types').OrderPreviewResponse>(
+    `${getApiBase()}/orders/preview`,
+    { method: 'POST', body: JSON.stringify(payload) }
+  ),
   prepareBulkOrders: (payload: any) => fetchJson<BulkOrderPreview>(`${getApiBase()}/orders/bulk-prepare`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -463,6 +471,7 @@ export const api = {
     body: JSON.stringify({ batch_id: batchId, operator_confirmed: confirmed }),
   }),
   cancelOrder: (id: number) => fetchJson<any>(`${getApiBase()}/orders/${id}/cancel`, { method: 'POST' }),
+
 
   // Risk Management
   getRiskLimits: () => fetchJson<RiskLimit>(`${getApiBase()}/risk`),
@@ -569,4 +578,17 @@ export const api = {
     { method: 'DELETE' }
   ),
   getChatContext: () => fetchJson<any>(`${getApiBase()}/chat/context`),
+
+  // Operations & Auto-Data Engine
+  getOrchestrationStatus: () => fetchJson<import('./types').OrchestrationStatusResponse>(`${getApiBase()}/operations/status`),
+  triggerAutoRefresh: (force: boolean = false) => fetchJson<import('./types').AutoRefreshResponse>(
+    `${getApiBase()}/operations/auto-refresh`,
+    { method: 'POST', body: JSON.stringify({ force }) }
+  ),
+  getOperationsDiagnostics: () => fetchJson<import('./types').AIOpsDiagnosticsResponse>(`${getApiBase()}/operations/diagnostics`),
+  executeRemediation: (action: string, payload: Record<string, any> = {}) => fetchJson<{ success: boolean; action: string; message: string; details?: any }>(
+    `${getApiBase()}/operations/remediate`,
+    { method: 'POST', body: JSON.stringify({ action, payload }) }
+  ),
 };
+

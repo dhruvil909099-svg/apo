@@ -10,14 +10,120 @@ from app.models.order import Order
 from app.models.account import Account
 from app.models.risk import RiskLimit
 from app.core.rate_limit import rate_limit_orders
+from app.models.ipo import IPO, Allotment
 from app.schemas.order import (
     OrderSingleCreate, BulkOrderPrepareRequest, BulkOrderPreviewResponse,
-    BulkOrderExecuteRequest, OrderResponse
+    BulkOrderExecuteRequest, OrderResponse, OrderPreviewRequest, OrderPreviewResponse
 )
 from app.services.bulk_order_service import BulkOrderService
 from app.services.paper_trading_service import PaperTradingService
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
+
+
+@router.post("/preview", response_model=OrderPreviewResponse)
+def preview_single_order(
+    req: OrderPreviewRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Validates single order parameters, checks available funds/holdings,
+    and returns comprehensive pre-trade analysis including estimated regulatory charges.
+    """
+    account = db.query(Account).filter(Account.id == req.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    clean_symbol = req.tradingsymbol.replace("-EQ", "").strip().upper()
+    ipo = db.query(IPO).filter(IPO.symbol == clean_symbol).first()
+    effective_price = req.price
+    if effective_price <= 0 and ipo:
+        effective_price = ipo.current_ltp or ipo.issue_price or 100.0
+    elif effective_price <= 0:
+        effective_price = 100.0
+
+    est_value = round(req.quantity * effective_price, 2)
+
+    # Calculate standard Indian equity delivery statutory charges:
+    # Brokerage: ₹0
+    brokerage = 0.0
+    # STT (Securities Transaction Tax): 0.1% on delivery Buy & Sell
+    stt = round(est_value * 0.001, 2)
+    # Exchange turnover charge (NSE): ~0.00345%
+    exchange_charges = round(est_value * 0.0000345, 2)
+    # GST: 18% on (brokerage + exchange charges)
+    gst = round((brokerage + exchange_charges) * 0.18, 2)
+    # SEBI turnover fees: 0.0001% (₹10/crore)
+    sebi_fees = round(est_value * 0.000001, 2)
+    # Stamp duty: 0.015% on BUY only
+    stamp_duty = round(est_value * 0.00015, 2) if req.transaction_type == "BUY" else 0.0
+
+    total_charges = round(brokerage + stt + exchange_charges + gst + sebi_fees + stamp_duty, 2)
+    net_total = round(est_value + total_charges if req.transaction_type == "BUY" else est_value - total_charges, 2)
+
+    blocking_reasons = []
+    warnings = []
+
+    if not account.is_enabled:
+        blocking_reasons.append(f"Account '{account.nickname}' is disabled.")
+
+    risk = db.query(RiskLimit).filter(
+        (RiskLimit.account_id == account.id) | (RiskLimit.account_id == None)
+    ).first()
+    if risk and risk.emergency_trading_disabled:
+        blocking_reasons.append("Emergency Kill Switch is ACTIVE across all accounts.")
+
+    available_balance = 0.0
+    balance_label = "Available Cash"
+
+    if req.transaction_type == "BUY":
+        available_balance = account.available_cash or 0.0
+        balance_label = "Available Cash"
+        if available_balance < (est_value + total_charges):
+            blocking_reasons.append(
+                f"Insufficient funds: Required ₹{(est_value + total_charges):,.2f}, Available ₹{available_balance:,.2f}"
+            )
+    else:  # SELL
+        balance_label = "Sellable Shares"
+        allotment = db.query(Allotment).join(IPO).filter(
+            Allotment.account_id == account.id,
+            IPO.symbol == clean_symbol
+        ).first()
+        available_balance = float(allotment.allotted_quantity) if allotment else 0.0
+        if available_balance < req.quantity:
+            blocking_reasons.append(
+                f"Insufficient holdings: Requested {req.quantity} shares, but only {int(available_balance)} available."
+            )
+        if account.ddpi_status != "ACTIVE" and not account.edis_authorized_today:
+            warnings.append("DDPI is not active for this account. CDSL T-PIN authorization (eDIS) will be required prior to broker settlement.")
+
+    is_valid = len(blocking_reasons) == 0
+
+    return OrderPreviewResponse(
+        is_valid=is_valid,
+        tradingsymbol=clean_symbol,
+        transaction_type=req.transaction_type,
+        order_type=req.order_type,
+        quantity=req.quantity,
+        price=effective_price,
+        estimated_value=est_value,
+        estimated_charges=total_charges,
+        net_total=net_total,
+        available_balance=available_balance,
+        balance_label=balance_label,
+        ddpi_status=account.ddpi_status,
+        is_paper_trade=(settings.TRADING_MODE == "PAPER" or account.is_demo),
+        charges_breakdown={
+            "brokerage": brokerage,
+            "stt": stt,
+            "exchange_charges": exchange_charges,
+            "gst": gst,
+            "sebi_fees": sebi_fees,
+            "stamp_duty": stamp_duty
+        },
+        blocking_reasons=blocking_reasons,
+        warnings=warnings
+    )
 
 
 @router.get("", response_model=List[OrderResponse])
@@ -89,16 +195,25 @@ def place_single_order(
             detail=f"Account '{account.nickname}' is disabled. Cannot place orders."
         )
 
+    clean_symbol = order_in.tradingsymbol.replace("-EQ", "").strip().upper()
+    token = order_in.symbol_token
+    if not token or token == "0":
+        ipo = db.query(IPO).filter(IPO.symbol == clean_symbol).first()
+        if ipo and ipo.symbol_token:
+            token = ipo.symbol_token
+        else:
+            token = "0"
+
     client_order_id = str(uuid.uuid4())
     order = Order(
         client_order_id=client_order_id,
         account_id=account.id,
-        tradingsymbol=order_in.tradingsymbol,
-        symbol_token=order_in.symbol_token,
+        tradingsymbol=clean_symbol,
+        symbol_token=token,
         exchange=order_in.exchange,
         transaction_type=order_in.transaction_type,
         order_type=order_in.order_type,
-        product_type="DELIVERY",
+        product_type=order_in.product_type or "DELIVERY",
         variety=order_in.variety,
         quantity=order_in.quantity,
         price=order_in.price,
@@ -113,6 +228,7 @@ def place_single_order(
     # Execute paper order if in paper mode or demo account
     if settings.TRADING_MODE == "PAPER" or account.is_demo:
         PaperTradingService.execute_paper_order(db, order)
+
     else:
         # Live order execution via SmartAPI adapter
         from app.core.security import cipher

@@ -13,6 +13,7 @@ from app.api.endpoints_watchlists import router as watchlists_router
 from app.api.endpoints_notes import router as notes_router
 from app.api.endpoints_notifications import router as notifications_router
 from app.api.endpoints_chat import router as chat_router
+from app.api.endpoints_operations import router as operations_router
 from app.core.auth import verify_api_key
 
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -34,3 +35,4 @@ api_v1_router.include_router(watchlists_router, dependencies=[Depends(verify_api
 api_v1_router.include_router(notes_router, dependencies=[Depends(verify_api_key)])
 api_v1_router.include_router(notifications_router, dependencies=[Depends(verify_api_key)])
 api_v1_router.include_router(chat_router, dependencies=[Depends(verify_api_key)])
+api_v1_router.include_router(operations_router, dependencies=[Depends(verify_api_key)])

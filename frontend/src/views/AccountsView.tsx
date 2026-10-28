@@ -82,14 +82,36 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
   // Form State for Credential Rotation & Reconnect
   const [rotationAccount, setRotationAccount] = useState<Account | null>(null);
-  const [rotationTab, setRotationTab] = useState<'quick' | 'full'>('quick');
+  const [rotationTab, setRotationTab] = useState<'quick' | 'full'>('full');
   const [quickTotp, setQuickTotp] = useState('');
   const [isQuickVerifying, setIsQuickVerifying] = useState(false);
   const [rotationData, setRotationData] = useState({ client_code: '', api_key: '', pin: '', totp_secret: '' });
   const [isRotating, setIsRotating] = useState(false);
   const [rotationError, setRotationError] = useState<string | null>(null);
 
+  const handleAutoReconnect = async (acc: Account) => {
+    setTestingAccountId(acc.id);
+    try {
+      const res = await api.testAccount(acc.id);
+      if (res.success) {
+        alert(`Connected successfully! SmartAPI session restored for ${acc.nickname} via automatic background 2FA.`);
+        onRefresh();
+      } else {
+        setRotationAccount(acc);
+        setRotationTab('full');
+        setRotationError(res.message || 'Please configure your permanent Angel One credentials below.');
+      }
+    } catch (err: any) {
+      setRotationAccount(acc);
+      setRotationTab('full');
+      setRotationError(err.message || 'Auto-reconnect failed.');
+    } finally {
+      setTestingAccountId(null);
+    }
+  };
+
   const groups = ['All', 'Family', 'Friends', 'Demo Pool', 'Custom'];
+
 
   // Cooldown timer ticker
   useEffect(() => {
@@ -842,18 +864,31 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
                               {acc.auth_status === 'ERROR' || acc.auth_status === 'EXPIRED' ? (
-                                <button
-                                  onClick={() => {
-                                    setRotationAccount(acc);
-                                    setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
-                                  }}
-                                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-xs"
-                                  title="Reconnect Angel One SmartAPI Credentials"
-                                >
-                                  <KeyRound className="w-3 h-3" />
-                                  <span>Reconnect</span>
-                                </button>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleAutoReconnect(acc)}
+                                    disabled={testingAccountId === acc.id}
+                                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-xs disabled:opacity-50"
+                                    title="Auto-reconnect using saved TOTP Secret (Zero OTP Prompts)"
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${testingAccountId === acc.id ? 'animate-spin' : ''}`} />
+                                    <span>{testingAccountId === acc.id ? 'Connecting...' : 'Auto-Connect'}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setRotationAccount(acc);
+                                      setRotationTab('full');
+                                      setRotationData({ client_code: '', api_key: '', pin: '', totp_secret: '' });
+                                    }}
+                                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-semibold transition-colors flex items-center gap-1"
+                                    title="Configure Permanent Credentials (Never Ask Again)"
+                                  >
+                                    <KeyRound className="w-3 h-3" />
+                                    <span>Setup</span>
+                                  </button>
+                                </div>
                               ) : (
+
                                 <button
                                   onClick={() => handleSyncAccount(acc.id)}
                                   disabled={isSyncing || hasCooldown}
@@ -1863,19 +1898,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </button>
             </div>
 
-            {/* Modal Tabs: Quick Reconnect vs Full Rotation */}
+            {/* Modal Tabs: Permanent Setup (Default) vs Quick OTP */}
             <div className="flex border-b border-slate-200 text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => { setRotationTab('quick'); setRotationError(null); }}
-                className={`flex-1 py-2 text-center border-b-2 transition-all ${
-                  rotationTab === 'quick'
-                    ? 'border-brand-600 text-brand-600 font-bold'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                Quick OTP Reconnect
-              </button>
               <button
                 type="button"
                 onClick={() => { setRotationTab('full'); setRotationError(null); }}
@@ -1885,9 +1909,25 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     : 'border-transparent text-slate-500 hover:text-slate-800'
                 }`}
               >
-                Full Credential Rotation
+                Permanent Credentials (Never Ask Again)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRotationTab('quick'); setRotationError(null); }}
+                className={`flex-1 py-2 text-center border-b-2 transition-all ${
+                  rotationTab === 'quick'
+                    ? 'border-brand-600 text-brand-600 font-bold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                1-Time 6-Digit OTP
               </button>
             </div>
+
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px] leading-relaxed">
+              <strong>One-Time Setup Guarantee:</strong> Enter your Client Code, API Key, PIN, and Base32 TOTP Secret once. IPOPro automatically generates 2FA tokens on the fly in the backend for every refresh and never asks you for 6-digit codes again!
+            </div>
+
 
             {rotationAccount.last_auth_error && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs space-y-1">

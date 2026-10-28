@@ -53,10 +53,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
     };
     fetchPortfolios();
+    // Automatic Data Engine: Auto-refresh stale accounts in background without UI freeze
+    api.triggerAutoRefresh(false).catch(() => {});
     return () => {
       isMounted = false;
     };
   }, [accounts]);
+
+  const [autoSyncNotice, setAutoSyncNotice] = useState<string | null>(null);
+  const [isAutoRefreshing, setIsAutoRefreshing] = useState(false);
+
+  const handleTriggerAutoRefresh = async () => {
+    setIsAutoRefreshing(true);
+    try {
+      const res = await api.triggerAutoRefresh(true);
+      setAutoSyncNotice(res.message);
+      if (onRefresh) onRefresh();
+      setTimeout(() => setAutoSyncNotice(null), 5000);
+    } catch (err: any) {
+      setAutoSyncNotice(`Refresh notice: ${err.message}`);
+    } finally {
+      setIsAutoRefreshing(false);
+    }
+  };
+
 
   const pnlIsPositive = (summary?.total_unrealized_pnl ?? 0) >= 0;
 
@@ -104,8 +124,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Auto-Data Engine & Self-Healing Telemetry Bar */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-700">
+            <ShieldCheck className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-900 tracking-tight">Auto-Data Engine & Self-Healing</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Active
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Demat holdings & RMS cash are refreshed automatically in the background using saved Base32 credentials. Zero manual Sync clicks required.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+          {autoSyncNotice && (
+            <span className="text-[11px] text-emerald-700 font-semibold">{autoSyncNotice}</span>
+          )}
+          <button
+            onClick={handleTriggerAutoRefresh}
+            disabled={isAutoRefreshing}
+            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50 shadow-xs"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isAutoRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isAutoRefreshing ? 'Refreshing...' : 'Auto-Refresh Now'}</span>
+          </button>
+        </div>
+      </div>
+
       {/* Session Expired Global Banner */}
       {expiredAccounts.length > 0 && (
+
         <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-amber-100 text-amber-800 rounded-lg">

@@ -27,9 +27,13 @@ class Account(Base):
     ddpi_status = Column(String(30), default="UNKNOWN")  # ACTIVE, INACTIVE, UNKNOWN
     edis_authorized_today = Column(Boolean, default=False)
     
-    # Metrics
+    # Metrics & Auto-Sync Telemetry
     available_cash = Column(Float, default=100000.0)  # Default demo balance or synced live balance
     last_sync_time = Column(DateTime, nullable=True)
+    last_sync_attempt = Column(DateTime, nullable=True)
+    sync_status = Column(String(30), default="IDLE")  # IDLE, REFRESHING, SUCCESS, STALE_FALLBACK, ERROR
+    consecutive_errors = Column(Integer, default=0)
+    circuit_breaker_until = Column(DateTime, nullable=True)
     last_auth_error = Column(String(500), nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)

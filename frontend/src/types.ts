@@ -10,9 +10,14 @@ export interface Account {
   edis_authorized_today: boolean;
   available_cash: number;
   last_sync_time?: string;
+  last_sync_attempt?: string;
+  sync_status?: string;
+  consecutive_errors?: number;
+  circuit_breaker_until?: string;
   last_auth_error?: string;
   created_at: string;
 }
+
 
 export interface AccountCreatePayload {
   nickname: string;
@@ -216,6 +221,15 @@ export interface ConsolidatedHolding {
   pnl_percentage: number;
   average_cost: number;
   portfolio_allocation_percent?: number;
+  available_quantity?: number;
+  sellable_quantity?: number;
+  blocked_quantity?: number;
+  day_open?: number;
+  day_high?: number;
+  day_low?: number;
+  volume?: number;
+  realized_pnl?: number;
+  is_stale?: boolean;
   accounts_count: number;
   data_source?: string;
   last_updated?: string;
@@ -225,6 +239,7 @@ export interface ConsolidatedHolding {
     masked_client_code: string;
     account_group: string;
     quantity: number;
+    sellable_quantity?: number;
     acquisition_cost: number;
     market_value: number;
     unrealized_pnl: number;
@@ -234,6 +249,7 @@ export interface ConsolidatedHolding {
     sync_status?: string;
   }>;
 }
+
 
 export interface PortfolioSummary {
   total_current_value: number;
@@ -509,3 +525,148 @@ export interface ChatMessage {
   };
   created_at: string;
 }
+
+export interface HoldingDetailResponse {
+  symbol: string;
+  company_name: string;
+  exchange: string;
+  isin: string;
+  symbol_token: string;
+  current_ltp: number;
+  previous_close: number;
+  day_change: number;
+  day_change_percent: number;
+  day_open: number;
+  day_high: number;
+  day_low: number;
+  volume: number;
+  total_quantity: number;
+  sellable_quantity: number;
+  available_quantity: number;
+  blocked_quantity: number;
+  average_cost: number;
+  invested_value: number;
+  market_value: number;
+  unrealized_pnl: number;
+  pnl_percentage: number;
+  accounts_count: number;
+  accounts_breakdown: Array<{
+    account_id: number;
+    nickname: string;
+    masked_client_code: string;
+    account_group: string;
+    quantity: number;
+    sellable_quantity: number;
+    acquisition_cost: number;
+    market_value: number;
+    unrealized_pnl: number;
+    pnl_percentage: number;
+    ddpi_status: string;
+    edis_authorized: boolean;
+  }>;
+  recent_orders: Array<{
+    id: number;
+    client_order_id: string;
+    account_nickname: string;
+    transaction_type: string;
+    order_type: string;
+    quantity: number;
+    price: number;
+    execution_price?: number;
+    status: string;
+    created_at: string;
+  }>;
+  permitted_actions: {
+    can_buy: boolean;
+    can_sell: boolean;
+    requires_edis: boolean;
+  };
+  last_updated: string;
+}
+
+export interface OrderPreviewPayload {
+  account_id: number;
+  tradingsymbol: string;
+  transaction_type: 'BUY' | 'SELL';
+  order_type: 'LIMIT' | 'MARKET' | 'STOPLOSS_LIMIT';
+  product_type?: string;
+  quantity: number;
+  price?: number;
+  trigger_price?: number;
+}
+
+export interface OrderPreviewResponse {
+  is_valid: boolean;
+  tradingsymbol: string;
+  transaction_type: 'BUY' | 'SELL';
+  order_type: string;
+  quantity: number;
+  price: number;
+  estimated_value: number;
+  estimated_charges: number;
+  net_total: number;
+  available_balance: number;
+  balance_label: string;
+  ddpi_status: string;
+  is_paper_trade: boolean;
+  charges_breakdown: {
+    brokerage: number;
+    stt: number;
+    exchange_charges: number;
+    gst: number;
+    sebi_fees: number;
+    stamp_duty: number;
+  };
+  blocking_reasons: string[];
+  warnings: string[];
+}
+
+export interface OrchestrationAccountStatus {
+  account_id: number;
+  nickname: string;
+  masked_client_code: string;
+  auth_status: string;
+  sync_status: string;
+  last_sync_time?: string;
+  last_sync_attempt?: string;
+  consecutive_errors: number;
+  circuit_breaker_active: boolean;
+  circuit_breaker_until?: string;
+  is_stale: boolean;
+  available_cash?: number;
+  has_credentials: boolean;
+}
+
+export interface OrchestrationStatusResponse {
+  server_time: string;
+  cache_ttl_seconds: number;
+  total_accounts: number;
+  active_background_jobs: number;
+  accounts: OrchestrationAccountStatus[];
+}
+
+export interface AutoRefreshResponse {
+  success: boolean;
+  message: string;
+  job_triggered: boolean;
+  stale_accounts_count: number;
+  forced: boolean;
+  timestamp: string;
+}
+
+export interface AIOpsDiagnostic {
+  code: string;
+  severity: 'HEALTHY' | 'INFO' | 'WARNING' | 'CRITICAL';
+  message: string;
+  target_account_id?: number;
+  suggested_action: string;
+  action_payload?: Record<string, any>;
+  is_automated_safe: boolean;
+}
+
+export interface AIOpsDiagnosticsResponse {
+  timestamp: string;
+  total_issues: number;
+  diagnostics: AIOpsDiagnostic[];
+}
+

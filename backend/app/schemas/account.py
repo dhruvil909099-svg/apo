@@ -44,6 +44,10 @@ class AccountResponse(BaseModel):
     edis_authorized_today: bool
     available_cash: float
     last_sync_time: Optional[datetime] = None
+    last_sync_attempt: Optional[datetime] = None
+    sync_status: str = "IDLE"
+    consecutive_errors: int = 0
+    circuit_breaker_until: Optional[datetime] = None
     last_auth_error: Optional[str] = None
     created_at: datetime
 

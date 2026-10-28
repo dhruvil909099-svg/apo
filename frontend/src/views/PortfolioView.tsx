@@ -12,12 +12,14 @@ import {
 import { ConsolidatedHolding, AccountPortfolio, PortfolioSummary, Account } from '../types';
 import { api, getWebSocketUrl } from '../api';
 import { StockChart } from '../components/StockChart';
+import { TradeModal } from '../components/TradeModal';
 
 const PIE_COLORS = ['#0284c7', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#3b82f6', '#14b8a6', '#64748b'];
 
 export const PortfolioView: React.FC = () => {
   const [viewMode, setViewMode] = useState<'consolidated' | 'accounts' | 'analytics'>('consolidated');
   const [capitalFilter, setCapitalFilter] = useState<'live' | 'demo' | 'all'>('live');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PROFIT' | 'LOSS' | 'READY_SELL' | 'NEEDS_EDIS'>('ALL');
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [consolidated, setConsolidated] = useState<ConsolidatedHolding[]>([]);
   const [accountPortfolios, setAccountPortfolios] = useState<AccountPortfolio[]>([]);
@@ -29,10 +31,39 @@ export const PortfolioView: React.FC = () => {
   const [sortAsc, setSortAsc] = useState(false);
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
   const [selectedInstrumentForChart, setSelectedInstrumentForChart] = useState<ConsolidatedHolding | null>(null);
+
+  // Trade Modal State
+  const [tradeModal, setTradeModal] = useState<{
+    isOpen: boolean;
+    symbol: string;
+    companyName?: string;
+    exchange?: string;
+    initialPrice?: number;
+    initialType?: 'BUY' | 'SELL';
+  }>({
+    isOpen: false,
+    symbol: '',
+    companyName: '',
+    exchange: 'NSE',
+    initialPrice: 100,
+    initialType: 'BUY'
+  });
   
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  const handleOpenTrade = (item: ConsolidatedHolding, type: 'BUY' | 'SELL') => {
+    setTradeModal({
+      isOpen: true,
+      symbol: item.symbol,
+      companyName: item.company_name,
+      exchange: item.exchange || 'NSE',
+      initialPrice: item.current_ltp,
+      initialType: type
+    });
+  };
+
 
   // Accounts applicable to the current capital filter
   const applicableAccounts = useMemo(() => {
@@ -200,6 +231,11 @@ export const PortfolioView: React.FC = () => {
       (h.isin && h.isin.toLowerCase().includes(searchQuery.toLowerCase()))
     );
 
+    if (filterStatus === 'PROFIT') list = list.filter(h => h.unrealized_pnl > 0);
+    if (filterStatus === 'LOSS') list = list.filter(h => h.unrealized_pnl < 0);
+    if (filterStatus === 'READY_SELL') list = list.filter(h => (h.sellable_quantity || 0) > 0);
+    if (filterStatus === 'NEEDS_EDIS') list = list.filter(h => (h.blocked_quantity || 0) > 0);
+
     list.sort((a, b) => {
       let valA: any = a[sortField];
       let valB: any = b[sortField];
@@ -210,7 +246,8 @@ export const PortfolioView: React.FC = () => {
     });
 
     return list;
-  }, [consolidated, searchQuery, sortField, sortAsc]);
+  }, [consolidated, searchQuery, sortField, sortAsc, filterStatus]);
+
 
   // Export to CSV
   const exportToCSV = () => {
@@ -461,6 +498,33 @@ export const PortfolioView: React.FC = () => {
         )}
       </div>
 
+      {/* Filter Status Pills */}
+      {viewMode === 'consolidated' && (
+        <div className="flex flex-wrap items-center gap-1.5 py-1">
+          <span className="text-slate-400 font-semibold uppercase text-[10px] mr-1">Filter:</span>
+          {[
+            { id: 'ALL', label: `All Holdings (${consolidated.length})` },
+            { id: 'PROFIT', label: `Profitable (${consolidated.filter(h => h.unrealized_pnl > 0).length})` },
+            { id: 'LOSS', label: `In Loss (${consolidated.filter(h => h.unrealized_pnl < 0).length})` },
+            { id: 'READY_SELL', label: `Ready to Sell (${consolidated.filter(h => (h.sellable_quantity || 0) > 0).length})` },
+            { id: 'NEEDS_EDIS', label: `Needs eDIS (${consolidated.filter(h => (h.blocked_quantity || 0) > 0).length})` },
+          ].map(pill => (
+            <button
+              key={pill.id}
+              onClick={() => setFilterStatus(pill.id as any)}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                filterStatus === pill.id
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+              }`}
+            >
+              {pill.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+
       {/* Main View Display */}
       {isLoading ? (
         <div className="text-center py-16 text-xs text-slate-400 bg-white rounded-xl border border-slate-200">
@@ -480,15 +544,15 @@ export const PortfolioView: React.FC = () => {
                     <ArrowUpDown className="w-3 h-3 text-slate-400" />
                   </div>
                 </th>
-                <th className="py-3 px-3">ISIN</th>
+                <th className="py-3 px-3">ISIN & Token</th>
                 <th className="py-3 px-3 cursor-pointer text-right" onClick={() => { setSortField('total_quantity'); setSortAsc(!sortAsc); }}>
                   <div className="flex items-center justify-end gap-1">
-                    <span>Quantity</span>
+                    <span>Holdings / Sellable</span>
                     <ArrowUpDown className="w-3 h-3 text-slate-400" />
                   </div>
                 </th>
-                <th className="py-3 px-3 text-right">Avg Cost</th>
-                <th className="py-3 px-3 text-right">Current LTP</th>
+                <th className="py-3 px-3 text-right">Avg Cost / Invested</th>
+                <th className="py-3 px-3 text-right">LTP / Day Change</th>
                 <th className="py-3 px-4 cursor-pointer text-right" onClick={() => { setSortField('market_value'); setSortAsc(!sortAsc); }}>
                   <div className="flex items-center justify-end gap-1">
                     <span>Market Value</span>
@@ -502,21 +566,22 @@ export const PortfolioView: React.FC = () => {
                   </div>
                 </th>
                 <th className="py-3 px-3 text-right">Allocation</th>
-                <th className="py-3 px-3 text-center">Accounts</th>
-                <th className="py-3 px-3 text-center">Action</th>
+                <th className="py-3 px-3 text-center">Permitted Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredHoldings.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-xs text-slate-400">
-                    No holdings match your search criteria.
+                  <td colSpan={10} className="py-12 text-center text-xs text-slate-400">
+                    No holdings match your search or filter criteria.
                   </td>
                 </tr>
               ) : (
                 filteredHoldings.map((item) => {
                   const isExpanded = expandedSymbol === item.symbol;
                   const isPositive = item.unrealized_pnl >= 0;
+                  const sellableQty = item.sellable_quantity ?? item.total_quantity;
+                  const blockedQty = item.blocked_quantity ?? (item.total_quantity - sellableQty);
 
                   return (
                     <React.Fragment key={item.symbol}>
@@ -526,19 +591,39 @@ export const PortfolioView: React.FC = () => {
                         </td>
                         <td className="py-3 px-4 font-bold text-slate-900">
                           <div className="flex items-center gap-2">
-                            <span className="hover:text-brand-600 cursor-pointer" onClick={() => setSelectedInstrumentForChart(item)}>
+                            <span className="hover:text-brand-600 cursor-pointer font-bold text-slate-900" onClick={() => setSelectedInstrumentForChart(item)}>
                               {item.symbol}
                             </span>
                             <span className="text-[10px] bg-slate-100 text-slate-600 px-1 py-0.2 rounded font-medium">
                               {item.exchange}
                             </span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live Broker Feed Active" />
                           </div>
                           <div className="text-[11px] text-slate-400 truncate max-w-xs">{item.company_name}</div>
                         </td>
-                        <td className="py-3 px-3 font-mono text-[11px] text-slate-500">{item.isin || '—'}</td>
-                        <td className="py-3 px-3 num-mono font-bold text-slate-900 text-right">{item.total_quantity}</td>
-                        <td className="py-3 px-3 num-mono text-slate-600 text-right">₹{item.average_cost.toFixed(2)}</td>
-                        <td className="py-3 px-3 num-mono font-bold text-slate-900 text-right">₹{item.current_ltp.toFixed(2)}</td>
+                        <td className="py-3 px-3">
+                          <div className="font-mono text-[11px] text-slate-600">{item.isin || '—'}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">Token: {item.symbol_token || '—'}</div>
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <div className="num-mono font-bold text-slate-900">{item.total_quantity} Qty</div>
+                          <div className="text-[10px] flex items-center justify-end gap-1">
+                            <span className="text-emerald-700 font-semibold">{sellableQty} Sellable</span>
+                            {blockedQty > 0 && (
+                              <span className="text-amber-700 font-medium">({blockedQty} eDIS)</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <div className="num-mono font-semibold text-slate-800">₹{item.average_cost.toFixed(2)}</div>
+                          <div className="text-[10px] text-slate-400 num-mono">₹{item.total_cost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <div className="num-mono font-bold text-slate-900">₹{item.current_ltp.toFixed(2)}</div>
+                          <div className={`text-[10px] font-semibold num-mono ${item.day_change && item.day_change >= 0 ? 'text-finGreen' : 'text-finRed'}`}>
+                            {item.day_change && item.day_change >= 0 ? '+' : ''}{item.day_change?.toFixed(2) || '0.00'} ({item.day_change_percent?.toFixed(2) || '0.00'}%)
+                          </div>
+                        </td>
                         <td className="py-3 px-4 num-mono font-bold text-slate-900 text-right">
                           ₹{item.market_value.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </td>
@@ -550,21 +635,41 @@ export const PortfolioView: React.FC = () => {
                             {isPositive ? '+' : ''}{item.pnl_percentage.toFixed(2)}%
                           </div>
                         </td>
-                        <td className="py-3 px-3 num-mono text-slate-700 text-right font-semibold">
-                          {(item.portfolio_allocation_percent ?? 0).toFixed(1)}%
+                        <td className="py-3 px-3 text-right">
+                          <div className="num-mono text-slate-700 font-semibold">
+                            {(item.portfolio_allocation_percent ?? 0).toFixed(1)}%
+                          </div>
+                          <div className="w-12 ml-auto bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1">
+                            <div
+                              className="bg-brand-600 h-full rounded-full"
+                              style={{ width: `${Math.min(100, item.portfolio_allocation_percent ?? 0)}%` }}
+                            />
+                          </div>
                         </td>
                         <td className="py-3 px-3 text-center">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-brand-50 text-brand-700 border border-brand-200">
-                            {item.accounts_count} Accs
-                          </span>
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          <button
-                            onClick={() => setSelectedInstrumentForChart(item)}
-                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-900 hover:text-white rounded text-[11px] font-semibold text-slate-700 transition-colors"
-                          >
-                            Chart
-                          </button>
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => handleOpenTrade(item, 'BUY')}
+                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold shadow-2xs transition-colors"
+                              title="Place Buy Order"
+                            >
+                              BUY
+                            </button>
+                            <button
+                              onClick={() => handleOpenTrade(item, 'SELL')}
+                              className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-bold shadow-2xs transition-colors"
+                              title="Place Sell Order"
+                            >
+                              SELL
+                            </button>
+                            <button
+                              onClick={() => setSelectedInstrumentForChart(item)}
+                              className="px-2 py-1 bg-slate-100 hover:bg-slate-800 hover:text-white rounded text-[10px] font-semibold text-slate-700 transition-colors"
+                              title="Open Instrument Terminal"
+                            >
+                              Terminal
+                            </button>
+                          </div>
                         </td>
                       </tr>
 
@@ -787,18 +892,129 @@ export const PortfolioView: React.FC = () => {
         </div>
       )}
 
-      {/* Selected Stock Modal: Angel One-Style Interactive Chart & Account Breakdown */}
+      {/* Selected Stock Modal: Comprehensive Instrument Terminal & Actions */}
       {selectedInstrumentForChart && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="relative w-full max-w-4xl my-8">
-            <StockChart
-              symbol={selectedInstrumentForChart.symbol}
-              accountsBreakdown={selectedInstrumentForChart.accounts_breakdown}
-              onClose={() => setSelectedInstrumentForChart(null)}
-            />
+          <div className="relative w-full max-w-4xl my-8 bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            {/* Terminal Header Bar */}
+            <div className="px-6 py-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-bold tracking-tight">{selectedInstrumentForChart.symbol}</h2>
+                  <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                    {selectedInstrumentForChart.exchange}
+                  </span>
+                  <span className="text-xs text-slate-400 font-mono">ISIN: {selectedInstrumentForChart.isin || '—'}</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Live WebSocket Feed Connected" />
+                </div>
+                <div className="text-xs text-slate-300 mt-0.5">{selectedInstrumentForChart.company_name}</div>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <div className="text-base font-extrabold text-white num-mono">
+                    ₹{selectedInstrumentForChart.current_ltp.toFixed(2)}
+                  </div>
+                  <div className={`text-xs font-bold num-mono ${
+                    (selectedInstrumentForChart.day_change || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  }`}>
+                    {(selectedInstrumentForChart.day_change || 0) >= 0 ? '+' : ''}
+                    {selectedInstrumentForChart.day_change?.toFixed(2) || '0.00'} ({selectedInstrumentForChart.day_change_percent?.toFixed(2) || '0.00'}%)
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 border-l border-slate-800 pl-4">
+                  <button
+                    onClick={() => handleOpenTrade(selectedInstrumentForChart, 'BUY')}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/20 transition-all"
+                  >
+                    BUY
+                  </button>
+                  <button
+                    onClick={() => handleOpenTrade(selectedInstrumentForChart, 'SELL')}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/20 transition-all"
+                  >
+                    SELL
+                  </button>
+                  <button
+                    onClick={() => setSelectedInstrumentForChart(null)}
+                    className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Instrument Statistics & Attribution Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-50 border-b border-slate-200 text-xs">
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Quantity in Demat</span>
+                <div className="font-bold text-slate-900 num-mono mt-0.5">
+                  {selectedInstrumentForChart.total_quantity} Shares
+                  <span className="text-emerald-700 text-[10px] ml-1">({selectedInstrumentForChart.sellable_quantity ?? selectedInstrumentForChart.total_quantity} Sellable)</span>
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Avg Acquisition Cost</span>
+                <div className="font-bold text-slate-900 num-mono mt-0.5">
+                  ₹{selectedInstrumentForChart.average_cost.toFixed(2)}
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Current Valuation</span>
+                <div className="font-bold text-slate-900 num-mono mt-0.5">
+                  ₹{selectedInstrumentForChart.market_value.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Unrealized Gain / Return</span>
+                <div className={`font-bold num-mono mt-0.5 ${
+                  selectedInstrumentForChart.unrealized_pnl >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                }`}>
+                  {selectedInstrumentForChart.unrealized_pnl >= 0 ? '+' : ''}₹{selectedInstrumentForChart.unrealized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  <span className="text-[10px] ml-1">({selectedInstrumentForChart.pnl_percentage.toFixed(2)}%)</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Interactive Candlestick Chart */}
+            <div className="p-4">
+              <StockChart
+                symbol={selectedInstrumentForChart.symbol}
+                accountsBreakdown={selectedInstrumentForChart.accounts_breakdown}
+                onClose={() => setSelectedInstrumentForChart(null)}
+              />
+            </div>
+
+            {/* Cost Basis & Broker Verification Disclosures */}
+            <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 text-[11px] text-slate-500 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <strong>Valuation Basis:</strong> FIFO weighted-average acquisition cost strictly verified against Angel One Demat holdings.
+              </div>
+              <div className="text-slate-400">
+                Data Source: SmartAPI Streaming WebSocket & Verified Allotment Ledger.
+              </div>
+            </div>
           </div>
         </div>
       )}
+
+      {/* Trade Modal (BUY / SELL) */}
+      <TradeModal
+        isOpen={tradeModal.isOpen}
+        onClose={() => setTradeModal(prev => ({ ...prev, isOpen: false }))}
+        symbol={tradeModal.symbol}
+        companyName={tradeModal.companyName}
+        exchange={tradeModal.exchange}
+        initialPrice={tradeModal.initialPrice}
+        initialType={tradeModal.initialType}
+        accounts={allAccounts}
+        onSuccess={() => {
+          loadPortfolioData();
+        }}
+      />
     </div>
   );
 };
+

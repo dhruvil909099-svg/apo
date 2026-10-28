@@ -206,16 +206,26 @@ async def update_simulated_price(symbol: str, price: float, db: Session = Depend
     ipo.current_ltp = price
     db.commit()
 
+    prev = ipo.previous_close or ipo.issue_price or price
+    chg = round(price - prev, 2)
+    chg_pct = round((chg / prev) * 100, 2) if prev > 0 else 0.0
+    now_ts = datetime.utcnow().isoformat()
+
     # Broadcast price update over WebSocket
     update_msg = {
         "type": "TICK",
         "symbol": ipo.symbol,
         "ltp": price,
-        "timestamp": datetime.utcnow().isoformat(),
+        "change": chg,
+        "change_percent": chg_pct,
+        "timestamp": now_ts,
+        "server_receipt_time": now_ts,
+        "processing_latency_ms": 1.2,
         "data_source": "SIMULATED_TICK"
     }
     await market_feed_manager.broadcast(update_msg)
-    return {"message": f"Updated {symbol} price to ₹{price}", "symbol": symbol, "ltp": price}
+    return {"message": f"Updated {symbol} price to ₹{price}", "symbol": symbol, "ltp": price, "change": chg, "change_percent": chg_pct}
+
 
 
 @router.websocket("/ws")

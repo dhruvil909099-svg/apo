@@ -7,14 +7,46 @@ from pydantic import BaseModel, Field, ConfigDict
 class OrderSingleCreate(BaseModel):
     account_id: int
     tradingsymbol: str = Field(..., min_length=1)
-    symbol_token: str = Field(..., min_length=1)
+    symbol_token: str = Field(default="0")
     exchange: str = Field(default="NSE")
     transaction_type: str = Field(default="SELL")  # BUY or SELL
     order_type: str = Field(default="LIMIT")       # LIMIT, MARKET, STOPLOSS_LIMIT, STOPLOSS_MARKET
+    product_type: str = Field(default="DELIVERY")
     variety: str = Field(default="NORMAL")         # NORMAL or STOPLOSS
     quantity: int = Field(..., gt=0)
     price: float = Field(default=0.0, ge=0.0)
     trigger_price: float = Field(default=0.0, ge=0.0)
+
+
+class OrderPreviewRequest(BaseModel):
+    account_id: int
+    tradingsymbol: str = Field(..., min_length=1)
+    transaction_type: str = Field(default="BUY")   # BUY or SELL
+    order_type: str = Field(default="LIMIT")       # LIMIT, MARKET, STOPLOSS_LIMIT
+    product_type: str = Field(default="DELIVERY")
+    quantity: int = Field(..., gt=0)
+    price: float = Field(default=0.0, ge=0.0)
+    trigger_price: float = Field(default=0.0, ge=0.0)
+
+
+class OrderPreviewResponse(BaseModel):
+    is_valid: bool
+    tradingsymbol: str
+    transaction_type: str
+    order_type: str
+    quantity: int
+    price: float
+    estimated_value: float
+    estimated_charges: float
+    net_total: float
+    available_balance: float
+    balance_label: str
+    ddpi_status: str
+    is_paper_trade: bool
+    charges_breakdown: dict
+    blocking_reasons: List[str]
+    warnings: List[str]
+
 
 
 class BulkAccountTarget(BaseModel):
