@@ -9,7 +9,11 @@ logger = logging.getLogger("database")
 connect_args = {}
 engine_kwargs = {"echo": False}
 
-if settings.DATABASE_URL.startswith("sqlite"):
+db_url = settings.DATABASE_URL
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+if db_url.startswith("sqlite"):
     connect_args = {
         "check_same_thread": False,
         "timeout": 30.0  # 30-second busy timeout to prevent 'database is locked' errors
@@ -24,7 +28,7 @@ else:
     })
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    db_url,
     connect_args=connect_args,
     **engine_kwargs
 )
@@ -72,6 +76,9 @@ def run_safe_migrations():
         ("source_name", "VARCHAR(50) DEFAULT 'MANUAL'"),
         ("source_timestamp", "DATETIME"),
         ("last_sync_at", "DATETIME"),
+        ("subscription_rate", "VARCHAR(30)"),
+        ("min_investment", "FLOAT"),
+        ("issue_size", "VARCHAR(50)"),
     ]
 
     if "ipos" in existing_tables:

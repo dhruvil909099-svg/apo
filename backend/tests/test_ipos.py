@@ -1,6 +1,6 @@
 import io
 import pytest
-from app.models.ipo import IPO
+from app.models.ipo import IPO, Allotment
 from app.models.account import Account
 
 
@@ -223,3 +223,160 @@ def test_prepare_ipo_applications_retail_limit_exceeded(client, db_session):
     data = res.json()
     assert data["all_valid"] is False
     assert any("Retail category limit is ₹2,00,000" in app["validation_message"] for app in data["applications"] if not app["is_valid"])
+
+
+def test_ipo_lifecycle_calculation_ist_boundaries():
+    """
+    Verifies that compute_ipo_lifecycle_status handles IST date boundaries precisely.
+    """
+    from datetime import date
+    from app.services.ipo_feed_service import compute_ipo_lifecycle_status
+
+    ref_date = date(2026, 10, 28)
+
+    # 1. Active bidding window (Open)
+    status_open = compute_ipo_lifecycle_status(
+        bidding_start_date="2026-10-25",
+        bidding_end_date="2026-10-29",
+        listing_date="2026-11-04",
+        reference_date=ref_date
+    )
+    assert status_open == "OPEN"
+
+    # 2. Closes today (Open)
+    status_closes_today = compute_ipo_lifecycle_status(
+        bidding_start_date="2026-10-24",
+        bidding_end_date="2026-10-28",
+        listing_date="2026-11-03",
+        reference_date=ref_date
+    )
+    assert status_closes_today == "OPEN"
+
+    # 3. Future bidding (Upcoming)
+    status_upcoming = compute_ipo_lifecycle_status(
+        bidding_start_date="2026-11-05",
+        bidding_end_date="2026-11-08",
+        listing_date="2026-11-13",
+        reference_date=ref_date
+    )
+    assert status_upcoming == "UPCOMING"
+
+    # 4. Unannounced dates (Upcoming)
+    status_tbd = compute_ipo_lifecycle_status(
+        bidding_start_date=None,
+        bidding_end_date=None,
+        listing_date=None,
+        reference_date=ref_date
+    )
+    assert status_tbd == "UPCOMING"
+
+    # 5. Bidding ended, awaiting listing (Closed)
+    status_closed = compute_ipo_lifecycle_status(
+        bidding_start_date="2026-10-20",
+        bidding_end_date="2026-10-24",
+        listing_date="2026-10-31",
+        reference_date=ref_date
+    )
+    assert status_closed == "CLOSED"
+
+    # 6. Listing completed (Listed)
+    status_listed = compute_ipo_lifecycle_status(
+        bidding_start_date="2026-10-10",
+        bidding_end_date="2026-10-14",
+        listing_date="2026-10-20",
+        reference_date=ref_date
+    )
+    assert status_listed == "LISTED"
+
+
+def test_list_open_and_sme_ipos_filters(client):
+    """
+    Syncs live feed and tests OPEN and SME filtering endpoints.
+    """
+    sync_res = client.post("/api/v1/ipos/sync-feed")
+    assert sync_res.status_code == 200
+
+    # 1. Test OPEN filter
+    open_res = client.get("/api/v1/ipos?status_filter=OPEN")
+    assert open_res.status_code == 200
+    open_ipos = open_res.json()
+    assert len(open_ipos) >= 1
+    symbols_open = [i["symbol"] for i in open_ipos]
+    assert "EAAA" in symbols_open or "DLSPOLY" in symbols_open
+
+    # 2. Test SME filter
+    sme_res = client.get("/api/v1/ipos?status_filter=SME")
+    assert sme_res.status_code == 200
+    sme_ipos = sme_res.json()
+    assert len(sme_ipos) >= 1
+    assert all(i["is_sme"] is True for i in sme_ipos)
+
+
+def test_ipo_subscription_and_min_investment_fields(client):
+    """
+    Verifies subscription_rate, min_investment, and issue_size are exposed in API responses.
+    """
+    client.post("/api/v1/ipos/sync-feed")
+    res = client.get("/api/v1/ipos")
+    assert res.status_code == 200
+    ipos = res.json()
+    dls = next((i for i in ipos if i["symbol"] == "DLSPOLY"), None)
+    assert dls is not None
+    assert dls["subscription_rate"] == "14.89x"
+    assert dls["min_investment"] is not None
+    assert dls["min_investment"] > 0
+
+
+def test_idempotent_feed_sync_preserves_allotments(client, db_session):
+    """
+    Verifies repeated syncs do not duplicate records or wipe user allotments.
+    """
+    client.post("/api/v1/ipos/sync-feed")
+    ipo = db_session.query(IPO).filter(IPO.symbol == "DLSPOLY").first()
+    acc = db_session.query(Account).first()
+    assert ipo is not None
+    assert acc is not None
+
+    # Add user allotment
+    allot = {
+        "ipo_id": ipo.id,
+        "account_id": acc.id,
+        "applied_quantity": 180,
+        "allotted_quantity": 180,
+        "acquisition_cost": 80.0,
+        "status": "ALLOTTED"
+    }
+    client.post(f"/api/v1/ipos/{ipo.id}/allotments", json=allot)
+
+    # Repeat sync twice
+    res1 = client.post("/api/v1/ipos/sync-feed")
+    res2 = client.post("/api/v1/ipos/sync-feed")
+    assert res1.status_code == 200
+    assert res2.status_code == 200
+
+    # Verify allotment still exists
+    allots = client.get(f"/api/v1/ipos/{ipo.id}/allotments").json()
+    assert len(allots) == 1
+    assert allots[0]["allotted_quantity"] == 180
+
+
+def test_account_persistence_and_restore(db_session):
+    """
+    Verifies that accounts are backed up and auto-restored when database is fresh.
+    """
+    from app.services.account_persistence import persist_accounts_backup, restore_accounts_backup
+
+    # 1. Backup existing accounts
+    assert persist_accounts_backup(db_session) is True
+
+    # 2. Simulate empty container DB
+    db_session.query(Allotment).delete()
+    db_session.query(Account).delete()
+    db_session.commit()
+    assert db_session.query(Account).count() == 0
+
+    # 3. Restore accounts
+    restored = restore_accounts_backup(db_session)
+    assert restored > 0
+    assert db_session.query(Account).count() > 0
+

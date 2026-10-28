@@ -34,8 +34,11 @@ ENV/
 
 # Databases
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+backend/app/data/
 
 # Node & Frontend
 node_modules/

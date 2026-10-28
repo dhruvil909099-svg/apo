@@ -62,7 +62,7 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
     isin: string;
     symbol_token: string;
     is_sme: boolean;
-    status: 'UPCOMING' | 'PRE_OPEN' | 'LISTED' | 'CLOSED';
+    status: 'UPCOMING' | 'OPEN' | 'PRE_OPEN' | 'LISTED' | 'CLOSED';
   }>({
     symbol: '',
     company_name: '',
@@ -72,7 +72,7 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
     isin: '',
     symbol_token: '',
     is_sme: false,
-    status: 'LISTED'
+    status: 'OPEN'
   });
 
   // Manual Allotment Form
@@ -98,13 +98,14 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
   const [workspacePrepResult, setWorkspacePrepResult] = useState<IPOPrepareApplicationResponse | null>(null);
   const [isPreparingWorkspace, setIsPreparingWorkspace] = useState(false);
 
-  const statuses = [
-    { id: 'ALL', label: 'All Issues' },
-    { id: 'PRE_OPEN', label: 'Pre-Open' },
-    { id: 'LISTED', label: 'Listed' },
-    { id: 'UPCOMING', label: 'Upcoming' },
-    { id: 'SME', label: 'SME Only' },
-  ];
+  const statuses = useMemo(() => [
+    { id: 'ALL', label: 'All Issues', count: ipos.length },
+    { id: 'OPEN', label: 'Open Bidding', count: ipos.filter(i => i.status === 'OPEN' || i.status === 'PRE_OPEN').length },
+    { id: 'UPCOMING', label: 'Upcoming', count: ipos.filter(i => i.status === 'UPCOMING').length },
+    { id: 'CLOSED', label: 'Closed', count: ipos.filter(i => i.status === 'CLOSED').length },
+    { id: 'LISTED', label: 'Listed & Trading', count: ipos.filter(i => i.status === 'LISTED').length },
+    { id: 'SME', label: 'SME Only', count: ipos.filter(i => i.is_sme).length },
+  ], [ipos]);
 
   const showToast = (type: 'success' | 'error' | 'info', message: string) => {
     setToast({ type, message });
@@ -118,6 +119,8 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
         // Status filter
         if (selectedStatus === 'SME') {
           if (!ipo.is_sme) return false;
+        } else if (selectedStatus === 'OPEN') {
+          if (ipo.status !== 'OPEN' && ipo.status !== 'PRE_OPEN') return false;
         } else if (selectedStatus !== 'ALL') {
           if (ipo.status !== selectedStatus) return false;
         }
@@ -420,7 +423,7 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
         <div className="space-y-4">
           {/* Header Controls: Filters, Search, Actions */}
           <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            {/* Filter Pills */}
+            {/* Filter Pills with Accurate Counts */}
             <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg overflow-x-auto">
               {statuses.map((s) => (
                 <button
@@ -429,13 +432,20 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
                     setSelectedStatus(s.id);
                     setCurrentPage(1);
                   }}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors ${
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 ${
                     selectedStatus === s.id
                       ? 'bg-white text-slate-900 shadow-xs font-bold'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {s.label}
+                  <span>{s.label}</span>
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                    selectedStatus === s.id
+                      ? 'bg-brand-50 text-brand-700 font-bold'
+                      : 'bg-slate-200 text-slate-600'
+                  }`}>
+                    {s.count}
+                  </span>
                 </button>
               ))}
             </div>
@@ -597,21 +607,41 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
                           )}
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            ipo.status === 'PRE_OPEN'
-                              ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                              : ipo.status === 'LISTED'
-                              ? 'bg-blue-50 text-brand-600 border border-blue-200'
-                              : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {ipo.status}
-                          </span>
+                          <div className="flex flex-col gap-1 items-start">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1 ${
+                              ipo.status === 'OPEN' || ipo.status === 'PRE_OPEN'
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                : ipo.status === 'UPCOMING'
+                                ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                                : ipo.status === 'CLOSED'
+                                ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200'
+                            }`}>
+                              {(ipo.status === 'OPEN' || ipo.status === 'PRE_OPEN') && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              )}
+                              {ipo.status === 'OPEN' || ipo.status === 'PRE_OPEN' ? 'OPEN' : ipo.status}
+                            </span>
+                            {ipo.subscription_rate && (
+                              <span className="text-[10px] text-slate-500 font-medium">
+                                Sub: <span className="font-bold text-slate-800">{ipo.subscription_rate}</span>
+                              </span>
+                            )}
+                            {ipo.bidding_end_date && (ipo.status === 'OPEN' || ipo.status === 'PRE_OPEN') && (
+                              <span className="text-[10px] text-emerald-700 font-semibold">
+                                Closes: {ipo.bidding_end_date}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4 num-mono font-medium text-slate-700">
-                          ₹{ipo.issue_price.toFixed(2)}
+                          <div>₹{ipo.issue_price.toFixed(2)}</div>
                           {ipo.min_price && ipo.max_price && ipo.min_price !== ipo.max_price && (
-                            <div className="text-[10px] text-slate-400">₹{ipo.min_price}–₹{ipo.max_price}</div>
+                            <div className="text-[10px] text-slate-400">Band: ₹{ipo.min_price}–₹{ipo.max_price}</div>
                           )}
+                          {ipo.min_investment ? (
+                            <div className="text-[10px] text-slate-500">Min: ₹{ipo.min_investment.toLocaleString('en-IN')}</div>
+                          ) : null}
                         </td>
                         <td className="py-3 px-4 num-mono text-slate-600">
                           {ipo.lot_size} {ipo.is_sme ? 'shares (fixed)' : 'shares'}
@@ -1157,10 +1187,10 @@ export const IPOTrackerView: React.FC<IPOTrackerViewProps> = ({ ipos, accounts, 
                     onChange={(e: any) => setIpoForm({ ...ipoForm, status: e.target.value })}
                     className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-brand-500"
                   >
-                    <option value="LISTED">Listed</option>
-                    <option value="PRE_OPEN">Pre-Open Session</option>
+                    <option value="OPEN">Open (Bidding Active)</option>
                     <option value="UPCOMING">Upcoming</option>
                     <option value="CLOSED">Closed</option>
+                    <option value="LISTED">Listed</option>
                   </select>
                 </div>
                 <div>

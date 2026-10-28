@@ -62,14 +62,16 @@ def _sanitize_csv_cell(val: Any) -> str:
 
 @router.get("", response_model=List[IPOResponse])
 def list_ipos(
-    status_filter: Optional[str] = Query(None, description="Filter: UPCOMING, PRE_OPEN, LISTED, CLOSED, SME"),
+    status_filter: Optional[str] = Query(None, description="Filter: ALL, OPEN, UPCOMING, CLOSED, LISTED, SME"),
     db: Session = Depends(get_db)
 ):
     query = db.query(IPO)
     if status_filter:
-        s_upper = status_filter.upper()
+        s_upper = status_filter.upper().strip()
         if s_upper == "SME":
             query = query.filter(IPO.is_sme.is_(True))
+        elif s_upper in ["OPEN", "PRE_OPEN"]:
+            query = query.filter(IPO.status.in_(["OPEN", "PRE_OPEN"]))
         elif s_upper != "ALL":
             query = query.filter(IPO.status == s_upper)
 
@@ -78,6 +80,7 @@ def list_ipos(
 
     for ipo in ipos:
         m = _calculate_ipo_metrics(ipo)
+        min_inv = ipo.min_investment or round((ipo.min_price or ipo.issue_price) * ipo.lot_size, 2)
         results.append(IPOResponse(
             id=ipo.id,
             symbol=ipo.symbol,
@@ -87,6 +90,9 @@ def list_ipos(
             min_price=ipo.min_price,
             max_price=ipo.max_price,
             lot_size=ipo.lot_size,
+            min_investment=min_inv,
+            issue_size=ipo.issue_size,
+            subscription_rate=ipo.subscription_rate,
             bidding_start_date=ipo.bidding_start_date,
             bidding_end_date=ipo.bidding_end_date,
             allotment_date=ipo.allotment_date,
@@ -126,6 +132,8 @@ def create_ipo(ipo_in: IPOCreate, db: Session = Depends(get_db)):
     if ipo_in.lot_size <= 0:
         raise HTTPException(status_code=400, detail="Lot size must be at least 1.")
 
+    min_inv = ipo_in.min_investment or round((ipo_in.min_price or ipo_in.issue_price) * ipo_in.lot_size, 2)
+
     ipo = IPO(
         symbol=clean_symbol,
         company_name=ipo_in.company_name.strip(),
@@ -134,6 +142,9 @@ def create_ipo(ipo_in: IPOCreate, db: Session = Depends(get_db)):
         min_price=float(ipo_in.min_price) if ipo_in.min_price else float(ipo_in.issue_price),
         max_price=float(ipo_in.max_price) if ipo_in.max_price else float(ipo_in.issue_price),
         lot_size=int(ipo_in.lot_size),
+        min_investment=min_inv,
+        issue_size=ipo_in.issue_size,
+        subscription_rate=ipo_in.subscription_rate,
         bidding_start_date=ipo_in.bidding_start_date,
         bidding_end_date=ipo_in.bidding_end_date,
         allotment_date=ipo_in.allotment_date,
@@ -161,6 +172,9 @@ def create_ipo(ipo_in: IPOCreate, db: Session = Depends(get_db)):
         min_price=ipo.min_price,
         max_price=ipo.max_price,
         lot_size=ipo.lot_size,
+        min_investment=ipo.min_investment,
+        issue_size=ipo.issue_size,
+        subscription_rate=ipo.subscription_rate,
         bidding_start_date=ipo.bidding_start_date,
         bidding_end_date=ipo.bidding_end_date,
         allotment_date=ipo.allotment_date,
@@ -190,6 +204,7 @@ def get_ipo(ipo_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="IPO record not found.")
 
     m = _calculate_ipo_metrics(ipo)
+    min_inv = ipo.min_investment or round((ipo.min_price or ipo.issue_price) * ipo.lot_size, 2)
     return IPOResponse(
         id=ipo.id,
         symbol=ipo.symbol,
@@ -199,6 +214,9 @@ def get_ipo(ipo_id: int, db: Session = Depends(get_db)):
         min_price=ipo.min_price,
         max_price=ipo.max_price,
         lot_size=ipo.lot_size,
+        min_investment=min_inv,
+        issue_size=ipo.issue_size,
+        subscription_rate=ipo.subscription_rate,
         bidding_start_date=ipo.bidding_start_date,
         bidding_end_date=ipo.bidding_end_date,
         allotment_date=ipo.allotment_date,

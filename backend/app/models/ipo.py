@@ -30,8 +30,13 @@ class IPO(Base):
     current_ltp = Column(Float, nullable=True)
     previous_close = Column(Float, nullable=True)
     
-    # Status: UPCOMING, PRE_OPEN, LISTED, CLOSED
+    # Status: UPCOMING, OPEN, PRE_OPEN, CLOSED, LISTED
     status = Column(String(20), default="LISTED")
+    
+    # Financial and Subscription Details (matching Angel One data quality)
+    subscription_rate = Column(String(30), nullable=True)  # e.g. "14.89x", "0.5x"
+    min_investment = Column(Float, nullable=True)         # e.g. lot_size * min_price
+    issue_size = Column(String(50), nullable=True)         # e.g. "₹500 Cr"
     
     # Discovery & Synchronization Attribution
     source_name = Column(String(50), default="MANUAL", nullable=False)

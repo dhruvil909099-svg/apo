@@ -42,7 +42,10 @@ export interface IPO {
   is_sme: boolean;
   current_ltp?: number;
   previous_close?: number;
-  status: 'UPCOMING' | 'PRE_OPEN' | 'LISTED' | 'CLOSED';
+  status: 'UPCOMING' | 'OPEN' | 'PRE_OPEN' | 'LISTED' | 'CLOSED';
+  subscription_rate?: string;
+  min_investment?: number;
+  issue_size?: string;
   source_name?: string;
   source_timestamp?: string;
   last_sync_at?: string;
@@ -345,4 +348,99 @@ export interface DashboardSummary {
   orders_rejected_count: number;
   emergency_trading_disabled: boolean;
   server_time: string;
+}
+
+export interface AccountOverviewResponse {
+  account_id: number;
+  nickname: string;
+  masked_client_code: string;
+  account_group: string;
+  is_enabled: boolean;
+  is_demo: boolean;
+  auth_status: 'CONNECTED' | 'DISCONNECTED' | 'EXPIRED' | 'ERROR';
+  ddpi_status: 'ACTIVE' | 'INACTIVE' | 'UNKNOWN';
+  edis_authorized_today: boolean;
+  available_cash: number | null;
+  total_margin: number | null;
+  utilized_margin: number | null;
+  total_holdings_count: number;
+  total_holdings_value: number;
+  total_positions_count: number;
+  last_sync_time?: string | null;
+  data_source: string;
+  stale_data_warning: boolean;
+}
+
+export interface AccountHoldingItem {
+  symbol: string;
+  company_name?: string;
+  isin?: string;
+  symbol_token?: string;
+  quantity: number;
+  authorised_quantity?: number;
+  average_price: number;
+  current_ltp?: number;
+  valuation?: number;
+  unrealized_pnl?: number;
+  pnl_percentage?: number;
+  data_source: string;
+  source_timestamp?: string;
+}
+
+export interface AccountPositionItem {
+  symbol: string;
+  symbol_token?: string;
+  exchange: string;
+  product_type: string;
+  net_quantity: number;
+  buy_quantity: number;
+  sell_quantity: number;
+  buy_average_price: number;
+  sell_average_price: number;
+  current_ltp?: number;
+  unrealized_pnl?: number;
+  realized_pnl?: number;
+  data_source: string;
+  source_timestamp?: string;
+}
+
+export interface AccountOrderItem {
+  order_id: string;
+  symbol: string;
+  exchange: string;
+  transaction_type: string;
+  order_type: string;
+  product_type: string;
+  quantity: number;
+  filled_quantity: number;
+  price: number;
+  trigger_price: number;
+  average_price?: number;
+  status: string;
+  rejection_reason?: string;
+  order_timestamp?: string;
+  is_paper_trade: boolean;
+}
+
+export interface AccountTradeItem {
+  fill_id: string;
+  order_id: string;
+  symbol: string;
+  exchange: string;
+  transaction_type: string;
+  product_type: string;
+  fill_price: number;
+  fill_quantity: number;
+  fill_timestamp?: string;
+  is_paper_trade: boolean;
+}
+
+export interface AccountSyncResponse {
+  account_id: number;
+  success: boolean;
+  message: string;
+  holdings_count: number;
+  positions_count: number;
+  available_cash?: number | null;
+  sync_timestamp: string;
 }

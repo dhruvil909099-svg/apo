@@ -1,7 +1,9 @@
 import {
   Account, AccountCreatePayload, IPO, Allotment, Order,
   MarketQuote, ConsolidatedHolding, AccountPortfolio,
-  BulkOrderPreview, RiskLimit, AuditLog, DashboardSummary
+  BulkOrderPreview, RiskLimit, AuditLog, DashboardSummary,
+  AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
+  AccountOrderItem, AccountTradeItem, AccountSyncResponse
 } from './types';
 
 const DEFAULT_API_BASE = 'https://apo-wubq.onrender.com/api/v1';
@@ -155,6 +157,12 @@ export const api = {
     `${getApiBase()}/accounts/batch-create-demo?count=${count}`,
     { method: 'POST' }
   ),
+  getAccountOverview: (id: number) => fetchJson<AccountOverviewResponse>(`${getApiBase()}/accounts/${id}/overview`),
+  getAccountHoldings: (id: number) => fetchJson<AccountHoldingItem[]>(`${getApiBase()}/accounts/${id}/holdings`),
+  getAccountPositions: (id: number) => fetchJson<AccountPositionItem[]>(`${getApiBase()}/accounts/${id}/positions`),
+  getAccountOrders: (id: number) => fetchJson<AccountOrderItem[]>(`${getApiBase()}/accounts/${id}/orders`),
+  getAccountTrades: (id: number) => fetchJson<AccountTradeItem[]>(`${getApiBase()}/accounts/${id}/trades`),
+  syncAccount: (id: number) => fetchJson<AccountSyncResponse>(`${getApiBase()}/accounts/${id}/sync`, { method: 'POST' }),
 
   // IPOs
   getIPOs: (status?: string) => {
@@ -304,9 +312,10 @@ export const api = {
   ),
 
   // Audit Logs
-  getAuditLogs: (limit: number = 50, offset: number = 0, eventType?: string) => {
+  getAuditLogs: (limit: number = 50, offset: number = 0, eventType?: string, accountId?: number) => {
     const sp = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
-    if (eventType) sp.append('event_type', eventType);
+    if (eventType && eventType !== 'ALL') sp.append('event_type', eventType);
+    if (accountId) sp.append('account_id', accountId.toString());
     return fetchJson<AuditLog[]>(`${getApiBase()}/audit/logs?${sp.toString()}`);
   },
 };

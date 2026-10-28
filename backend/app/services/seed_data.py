@@ -39,8 +39,21 @@ def wipe_all_data(db: Session):
     logger.info("All data wiped. Database is clean and ready for production use.")
 
 
+from app.services.account_persistence import restore_accounts_backup
+from app.services.ipo_feed_service import IPOFeedService
+
+
 def seed_demo_data(db: Session):
     """
-    Clean state default: does not inject synthetic records automatically.
+    Guarantees container restart resilience:
+    - Restores registered accounts if database was wiped on container reboot.
+    - Synchronizes verified market IPO feed if IPO catalog is empty.
     """
-    pass
+    restored = restore_accounts_backup(db)
+    if restored > 0:
+        logger.info(f"Auto-restored {restored} accounts on system boot.")
+
+    if db.query(IPO).count() == 0:
+        logger.info("Fresh database detected. Initializing authoritative IPO catalog...")
+        IPOFeedService.sync_feed(db)
+

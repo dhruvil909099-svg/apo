@@ -20,6 +20,9 @@ class IPOCreate(BaseModel):
     is_sme: bool = Field(default=False)
     status: str = Field(default="LISTED")
     source_name: Optional[str] = "MANUAL"
+    subscription_rate: Optional[str] = None
+    min_investment: Optional[float] = None
+    issue_size: Optional[str] = None
 
 
 class IPOResponse(BaseModel):
@@ -43,6 +46,9 @@ class IPOResponse(BaseModel):
     current_ltp: Optional[float] = None
     previous_close: Optional[float] = None
     status: str
+    subscription_rate: Optional[str] = None
+    min_investment: Optional[float] = None
+    issue_size: Optional[str] = None
     source_name: str = "MANUAL"
     source_timestamp: Optional[datetime] = None
     last_sync_at: Optional[datetime] = None
