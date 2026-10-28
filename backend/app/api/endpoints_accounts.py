@@ -39,6 +39,31 @@ def list_accounts(
     
     accounts = query.order_by(Account.id.asc()).all()
     
+    # Auto-solve / auto-connect accounts that have stored credentials
+    for acc in accounts:
+        if acc.is_enabled and not acc.is_demo and acc.auth_status != "CONNECTED":
+            try:
+                raw_key = cipher.decrypt(acc.encrypted_api_key) if acc.encrypted_api_key else ""
+                raw_pin = cipher.decrypt(acc.encrypted_pin) if acc.encrypted_pin else ""
+                raw_totp = cipher.decrypt(acc.encrypted_totp_secret) if acc.encrypted_totp_secret else ""
+                if raw_key and raw_pin and raw_totp and raw_key != "AUTO_RESTORED_KEY":
+                    adapter = get_adapter_for_account(acc.id, raw_key, acc.client_code, raw_pin, raw_totp)
+                    if adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired:
+                        acc.auth_status = "CONNECTED"
+                        acc.last_auth_error = None
+                    else:
+                        auth_res = adapter.authenticate()
+                        if auth_res.get("success"):
+                            acc.auth_status = "CONNECTED"
+                            acc.last_sync_time = datetime.utcnow()
+                            acc.last_auth_error = None
+                            rms = adapter.get_rms()
+                            if rms:
+                                acc.available_cash = round(float(rms.get("availablecash", rms.get("net", acc.available_cash))), 2)
+                            db.commit()
+            except Exception as e:
+                logger.warning(f"Auto-solve connection check for account {acc.id}: {e}")
+    
     return [
         AccountResponse(
             id=acc.id,
@@ -85,6 +110,36 @@ def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
     encrypted_pin = cipher.encrypt(clean_pin)
     encrypted_totp = cipher.encrypt(raw_totp)
 
+    initial_status = "CONNECTED" if account_in.is_demo else "DISCONNECTED"
+    initial_cash = 100000.0 if account_in.is_demo else 0.0
+    initial_error = None
+    initial_sync_time = datetime.utcnow() if account_in.is_demo else None
+
+    # Immediate connection attempt upon registration
+    if not account_in.is_demo:
+        try:
+            adapter = get_adapter_for_account(
+                account_id=0,
+                api_key=clean_api_key,
+                client_code=clean_client_code,
+                pin=clean_pin,
+                totp_secret=raw_totp,
+                force_new=True
+            )
+            auth_res = adapter.authenticate()
+            if auth_res.get("success"):
+                initial_status = "CONNECTED"
+                initial_sync_time = datetime.utcnow()
+                rms = adapter.get_rms()
+                if rms:
+                    initial_cash = round(float(rms.get("availablecash", rms.get("net", 0.0))), 2)
+            else:
+                initial_status = "ERROR"
+                initial_error = auth_res.get("message")
+        except Exception as e:
+            initial_status = "ERROR"
+            initial_error = str(e)
+
     account = Account(
         nickname=account_in.nickname.strip(),
         client_code=clean_client_code,
@@ -94,9 +149,11 @@ def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
         encrypted_totp_secret=encrypted_totp,
         is_demo=account_in.is_demo,
         is_enabled=True,
-        auth_status="DISCONNECTED",
+        auth_status=initial_status,
         ddpi_status="ACTIVE",
-        available_cash=100000.0 if account_in.is_demo else 0.0
+        available_cash=initial_cash,
+        last_auth_error=initial_error,
+        last_sync_time=initial_sync_time
     )
     db.add(account)
     db.commit()

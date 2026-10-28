@@ -863,13 +863,13 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
-                              {acc.auth_status === 'ERROR' || acc.auth_status === 'EXPIRED' ? (
+                              {acc.auth_status !== 'CONNECTED' ? (
                                 <div className="flex items-center gap-1">
                                   <button
                                     onClick={() => handleAutoReconnect(acc)}
                                     disabled={testingAccountId === acc.id}
                                     className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-xs disabled:opacity-50"
-                                    title="Auto-reconnect using saved TOTP Secret (Zero OTP Prompts)"
+                                    title="Auto-connect using saved TOTP Secret (Zero OTP Prompts)"
                                   >
                                     <RefreshCw className={`w-3 h-3 ${testingAccountId === acc.id ? 'animate-spin' : ''}`} />
                                     <span>{testingAccountId === acc.id ? 'Connecting...' : 'Auto-Connect'}</span>
@@ -1877,16 +1877,14 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
         </div>
       )}
 
-      {/* ROTATE CREDENTIALS / RECONNECT MODAL */}
+      {/* PERMANENT CREDENTIALS SETUP (1-TIME SETUP - NEVER ASK AGAIN) */}
       {rotationAccount && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                  {rotationAccount.auth_status === 'ERROR' || rotationAccount.auth_status === 'EXPIRED'
-                    ? 'Reconnect Angel One Account'
-                    : 'Manage Account Credentials'}
+                  Configure Angel One Credentials (1-Time Setup)
                 </h3>
                 <p className="text-xs text-slate-500">{rotationAccount.nickname} ({rotationAccount.masked_client_code})</p>
               </div>
@@ -1898,42 +1896,18 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </button>
             </div>
 
-            {/* Modal Tabs: Permanent Setup (Default) vs Quick OTP */}
-            <div className="flex border-b border-slate-200 text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => { setRotationTab('full'); setRotationError(null); }}
-                className={`flex-1 py-2 text-center border-b-2 transition-all ${
-                  rotationTab === 'full'
-                    ? 'border-brand-600 text-brand-600 font-bold'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                Permanent Credentials (Never Ask Again)
-              </button>
-              <button
-                type="button"
-                onClick={() => { setRotationTab('quick'); setRotationError(null); }}
-                className={`flex-1 py-2 text-center border-b-2 transition-all ${
-                  rotationTab === 'quick'
-                    ? 'border-brand-600 text-brand-600 font-bold'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                1-Time 6-Digit OTP
-              </button>
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs leading-relaxed flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <strong>One-Time Setup Guarantee:</strong> Enter your API Key, PIN, and permanent Base32 TOTP Secret once. IPOPro generates 2FA codes automatically in the background on every refresh and never prompts you for 6-digit OTP codes again!
+              </div>
             </div>
-
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px] leading-relaxed">
-              <strong>One-Time Setup Guarantee:</strong> Enter your Client Code, API Key, PIN, and Base32 TOTP Secret once. IPOPro automatically generates 2FA tokens on the fly in the backend for every refresh and never asks you for 6-digit codes again!
-            </div>
-
 
             {rotationAccount.last_auth_error && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs space-y-1">
                 <div className="font-semibold text-rose-800 flex items-center gap-1.5">
                   <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
-                  <span>Last Broker Diagnostic</span>
+                  <span>Broker Diagnostic</span>
                 </div>
                 <p className="text-rose-700 font-mono text-[11px] leading-relaxed break-words">
                   {rotationAccount.last_auth_error}
@@ -1947,118 +1921,84 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </div>
             )}
 
-            {rotationTab === 'quick' ? (
-              <form onSubmit={handleQuickReconnect} className="space-y-4 text-xs">
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-[11px] leading-relaxed">
-                  Enter the live 6-digit TOTP code currently shown on your mobile Authenticator app (Google Authenticator / Angel One) to verify credentials and establish an active broker session immediately.
-                </div>
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1.5">
-                    Current 6-Digit TOTP Code
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    placeholder="e.g. 583921"
-                    value={quickTotp}
-                    onChange={(e) => setQuickTotp(e.target.value.replace(/\D/g, ''))}
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-center tracking-widest text-lg font-mono font-bold text-slate-900 focus:ring-2 focus:ring-brand-500 outline-none"
-                    autoFocus
-                  />
-                </div>
-                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setRotationAccount(null)}
-                    className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isQuickVerifying || quickTotp.length !== 6}
-                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5"
-                  >
-                    <KeyRound className="w-3.5 h-3.5" />
-                    <span>{isQuickVerifying ? 'Verifying with Angel One...' : 'Verify & Connect'}</span>
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <form onSubmit={handleRotateCredentials} className="space-y-3.5 text-xs">
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">
-                    Client Code <span className="text-slate-400 font-normal">(leave blank to keep current)</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder={`Current: ${rotationAccount.masked_client_code}`}
-                    value={rotationData.client_code}
-                    onChange={(e) => setRotationData({ ...rotationData, client_code: e.target.value.toUpperCase() })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono uppercase"
-                  />
-                </div>
+            <form onSubmit={handleRotateCredentials} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">
+                  Client Code <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder={`e.g. ${rotationAccount.masked_client_code.replace(/\*/g, 'X')}`}
+                  value={rotationData.client_code}
+                  onChange={(e) => setRotationData({ ...rotationData, client_code: e.target.value.toUpperCase() })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono uppercase"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">
-                    SmartAPI API Key <span className="text-slate-400 font-normal">(from smartapi.angelone.in)</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Enter SmartAPI App API Key"
-                    value={rotationData.api_key}
-                    onChange={(e) => setRotationData({ ...rotationData, api_key: e.target.value.trim() })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
-                  />
-                </div>
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">
+                  SmartAPI API Key <span className="text-rose-500">*</span> <span className="text-slate-400 font-normal">(from smartapi.angelone.in)</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter your Angel One SmartAPI App API Key"
+                  value={rotationData.api_key}
+                  onChange={(e) => setRotationData({ ...rotationData, api_key: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">
-                    Account PIN / Password <span className="text-slate-400 font-normal">(4-digit trading PIN)</span>
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="Enter 4-digit Angel One PIN"
-                    value={rotationData.pin}
-                    onChange={(e) => setRotationData({ ...rotationData, pin: e.target.value.trim() })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none"
-                  />
-                </div>
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">
+                  Account PIN / Password <span className="text-rose-500">*</span> <span className="text-slate-400 font-normal">(4-digit trading PIN)</span>
+                </label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Enter 4-digit Angel One PIN"
+                  value={rotationData.pin}
+                  onChange={(e) => setRotationData({ ...rotationData, pin: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">
-                    TOTP Secret Key (Base32) <span className="text-slate-400 font-normal">(Permanent setup key)</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. JBSWY3DPEHPK3PXP (from authenticator setup)"
-                    value={rotationData.totp_secret}
-                    onChange={(e) => setRotationData({ ...rotationData, totp_secret: e.target.value.trim() })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
-                  />
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    Enter the permanent alphanumeric secret or OTPAuth URL from Angel One authenticator setup. (If a temporary 6-digit code is entered, it will be used for one-time verification without replacing your stored secret).
-                  </p>
-                </div>
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">
+                  TOTP Secret Key (Base32) <span className="text-rose-500">*</span> <span className="text-slate-400 font-normal">(from 'Enable TOTP' QR code)</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 23VPIQU5UOZ3ZN5ODGMV2GDX4E"
+                  value={rotationData.totp_secret}
+                  onChange={(e) => setRotationData({ ...rotationData, totp_secret: e.target.value.trim() })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-1 focus:ring-brand-500 outline-none font-mono"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Enter the permanent Base32 secret string from Angel One TOTP setup. The backend will calculate 6-digit codes automatically forever.
+                </p>
+              </div>
 
-                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setRotationAccount(null)}
-                    className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isRotating}
-                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50"
-                  >
-                    {isRotating ? 'Verifying with Angel One...' : 'Update & Reconnect'}
-                  </button>
-                </div>
-              </form>
-            )}
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRotationAccount(null)}
+                  className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isRotating}
+                  className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>{isRotating ? 'Authenticating with Angel One...' : 'Save & Connect (1-Time)'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

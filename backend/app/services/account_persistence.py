@@ -8,6 +8,10 @@ from app.models.ipo import IPO, Allotment
 from app.models.risk import RiskLimit
 from app.core.security import cipher
 
+from datetime import datetime
+from app.core.config import settings
+from app.core.security import cipher, normalize_base32_secret
+
 logger = logging.getLogger("account_persistence")
 
 DATA_DIR = os.environ.get("PERSISTENT_DATA_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
@@ -81,12 +85,10 @@ def restore_accounts_backup(db: Session) -> int:
     """
     Restores accounts and associated demat allotments and risk settings into the database
     if the database is empty (e.g. fresh container restart).
+    Guarantees primary production account exists and attempts auto-connection.
     """
-    if db.query(Account).count() > 0:
-        return 0
-
     restored_count = 0
-    if os.path.exists(BACKUP_FILE_PATH):
+    if db.query(Account).count() == 0 and os.path.exists(BACKUP_FILE_PATH):
         try:
             with open(BACKUP_FILE_PATH, "r", encoding="utf-8") as f:
                 records = json.load(f)
@@ -148,29 +150,74 @@ def restore_accounts_backup(db: Session) -> int:
         except Exception as e:
             logger.error(f"Error restoring accounts from backup file: {str(e)}")
 
-    # Always guarantee primary production account 'dhruvil' (AAAD986778) exists
-    primary_acc = db.query(Account).filter(Account.client_code == "AAAD986778").first()
-    if not primary_acc:
-        logger.info("Ensuring primary production account 'dhruvil' (AAAD986778) is present...")
-        primary_account = Account(
-            nickname="dhruvil",
-            client_code="AAAD986778",
-            account_group="Family",
-            encrypted_api_key=cipher.encrypt(""),
-            encrypted_pin=cipher.encrypt(""),
-            encrypted_totp_secret=cipher.encrypt(""),
-            is_enabled=True,
-            is_demo=False,
-            auth_status="DISCONNECTED",
-            ddpi_status="ACTIVE",
-            edis_authorized_today=False,
-            available_cash=0.0,
-            last_auth_error="SmartAPI credentials required. Enter your API Key, PIN, and TOTP secret to connect."
-        )
-        db.add(primary_account)
-        db.commit()
-        restored_count += 1
-        persist_accounts_backup(db)
-        logger.info("Primary production account 'dhruvil' successfully verified/seeded.")
+    # If primary production client code is provided via environment, ensure it exists
+    primary_code = settings.SMARTAPI_CLIENT_CODE.strip().upper() if settings.SMARTAPI_CLIENT_CODE else ""
+    primary_acc = None
+    if primary_code:
+        primary_acc = db.query(Account).filter(Account.client_code == primary_code).first()
+        if not primary_acc:
+            logger.info(f"Creating primary production account ({primary_code}) from environment...")
+            primary_acc = Account(
+                nickname="Primary Live Account",
+                client_code=primary_code,
+                account_group="Family",
+                encrypted_api_key=cipher.encrypt(""),
+                encrypted_pin=cipher.encrypt(""),
+                encrypted_totp_secret=cipher.encrypt(""),
+                is_enabled=True,
+                is_demo=False,
+                auth_status="DISCONNECTED",
+                ddpi_status="ACTIVE",
+                edis_authorized_today=False,
+                available_cash=0.0,
+                last_auth_error="SmartAPI credentials required. Enter your API Key, PIN, and TOTP secret to connect."
+            )
+            db.add(primary_acc)
+            db.commit()
+            db.refresh(primary_acc)
+            restored_count += 1
+            logger.info(f"Configured primary account ({primary_code}) successfully created.")
 
+    # Inject permanent credentials from environment if provided
+    env_key = settings.SMARTAPI_API_KEY.strip() if settings.SMARTAPI_API_KEY else ""
+    env_pin = settings.SMARTAPI_PIN.strip() if settings.SMARTAPI_PIN else ""
+    env_totp = settings.SMARTAPI_TOTP_SECRET.strip() if settings.SMARTAPI_TOTP_SECRET else ""
+
+    if env_key and env_pin and env_totp:
+        logger.info(f"Applying permanent SmartAPI credentials from environment to primary account {primary_code}...")
+        primary_acc.encrypted_api_key = cipher.encrypt(env_key)
+        primary_acc.encrypted_pin = cipher.encrypt(env_pin)
+        clean_totp = normalize_base32_secret(env_totp)
+        primary_acc.encrypted_totp_secret = cipher.encrypt(clean_totp)
+        primary_acc.last_auth_error = None
+        db.commit()
+        db.refresh(primary_acc)
+
+    # Attempt automatic connection on boot for accounts with complete credentials
+    for acc in db.query(Account).filter(Account.is_enabled == True, Account.is_demo == False).all():
+        try:
+            k = cipher.decrypt(acc.encrypted_api_key)
+            p = cipher.decrypt(acc.encrypted_pin)
+            t = cipher.decrypt(acc.encrypted_totp_secret)
+            if k and p and t and k != "AUTO_RESTORED_KEY":
+                logger.info(f"Auto-connecting account {acc.nickname} ({acc.client_code}) on startup...")
+                from app.services.smartapi_adapter import get_adapter_for_account
+                adapter = get_adapter_for_account(acc.id, k, acc.client_code, p, t, force_new=True)
+                auth_res = adapter.authenticate()
+                if auth_res.get("success"):
+                    acc.auth_status = "CONNECTED"
+                    acc.last_sync_time = datetime.utcnow()
+                    acc.last_auth_error = None
+                    rms = adapter.get_rms()
+                    if rms:
+                        cash = float(rms.get("availablecash", rms.get("net", acc.available_cash)))
+                        acc.available_cash = round(cash, 2)
+                    db.commit()
+                    logger.info(f"Account {acc.nickname} successfully connected on startup!")
+                else:
+                    logger.warning(f"Startup connection failed for {acc.nickname}: {auth_res.get('message')}")
+        except Exception as e:
+            logger.error(f"Error during startup auto-connection for {acc.nickname}: {str(e)}")
+
+    persist_accounts_backup(db)
     return restored_count

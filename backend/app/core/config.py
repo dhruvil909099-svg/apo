@@ -23,6 +23,12 @@ class Settings(BaseSettings):
         default=True,
         description="Enforces API key authentication across all /api/v1 routes"
     )
+
+    # Optional Primary Angel One Credentials (survives ephemeral container reboots)
+    SMARTAPI_CLIENT_CODE: str = Field(default="", description="Primary client code from environment")
+    SMARTAPI_API_KEY: str = Field(default="", description="Permanent SmartAPI API Key")
+    SMARTAPI_PIN: str = Field(default="", description="Permanent MPIN")
+    SMARTAPI_TOTP_SECRET: str = Field(default="", description="Permanent Base32 TOTP Secret")
     
     # Database URL (SQLite or PostgreSQL)
     DATABASE_URL: str = Field(default="sqlite:///./angel_dashboard.db", description="Database connection string")
