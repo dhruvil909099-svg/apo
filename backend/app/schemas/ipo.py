@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -23,6 +23,30 @@ class IPOCreate(BaseModel):
     subscription_rate: Optional[str] = None
     min_investment: Optional[float] = None
     issue_size: Optional[str] = None
+    company_logo_url: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    description: Optional[str] = None
+    issue_type: Optional[str] = "Book Built Issue"
+    fresh_issue_size: Optional[str] = None
+    offer_for_sale_size: Optional[str] = None
+    face_value: Optional[float] = None
+    retail_quota: Optional[str] = None
+    qib_quota: Optional[str] = None
+    nii_quota: Optional[str] = None
+    listing_price: Optional[float] = None
+    listing_gain: Optional[float] = None
+    lead_managers: Optional[str] = None
+    registrar_name: Optional[str] = None
+    registrar_url: Optional[str] = None
+    drhp_url: Optional[str] = None
+    rhp_url: Optional[str] = None
+    financials_json: Optional[Any] = None
+    valuation_json: Optional[Any] = None
+    strengths_risks_json: Optional[Any] = None
+    objects_of_issue_json: Optional[Any] = None
+    subscription_details_json: Optional[Any] = None
+    timeline_json: Optional[Any] = None
 
 
 class IPOResponse(BaseModel):
@@ -49,6 +73,33 @@ class IPOResponse(BaseModel):
     subscription_rate: Optional[str] = None
     min_investment: Optional[float] = None
     issue_size: Optional[str] = None
+    
+    # Comprehensive Fields
+    company_logo_url: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    description: Optional[str] = None
+    issue_type: Optional[str] = "Book Built Issue"
+    fresh_issue_size: Optional[str] = None
+    offer_for_sale_size: Optional[str] = None
+    face_value: Optional[float] = None
+    retail_quota: Optional[str] = None
+    qib_quota: Optional[str] = None
+    nii_quota: Optional[str] = None
+    listing_price: Optional[float] = None
+    listing_gain: Optional[float] = None
+    lead_managers: Optional[str] = None
+    registrar_name: Optional[str] = None
+    registrar_url: Optional[str] = None
+    drhp_url: Optional[str] = None
+    rhp_url: Optional[str] = None
+    financials_json: Optional[Any] = None
+    valuation_json: Optional[Any] = None
+    strengths_risks_json: Optional[Any] = None
+    objects_of_issue_json: Optional[Any] = None
+    subscription_details_json: Optional[Any] = None
+    timeline_json: Optional[Any] = None
+
     source_name: str = "MANUAL"
     source_timestamp: Optional[datetime] = None
     last_sync_at: Optional[datetime] = None
@@ -71,16 +122,35 @@ class AllotmentCreate(BaseModel):
     pan_masked: Optional[str] = None
     upi_id_masked: Optional[str] = None
     mandate_status: str = Field(default="PENDING")
+    preparation_status: Optional[str] = "READY_FOR_HANDOFF"
+    broker_application_status: Optional[str] = "NOT_SUBMITTED"
+    lots: Optional[int] = 1
+    bid_price: Optional[float] = None
+    total_amount: Optional[float] = 0.0
+    upi_mandate_reference: Optional[str] = None
+    bid_reference_no: Optional[str] = None
+    official_portal_url: Optional[str] = None
     status: str = Field(default="ALLOTTED")  # APPLIED, PENDING, ALLOTTED, NOT_ALLOTTED, DEMAT_CREDITED
 
 
 class AllotmentUpdate(BaseModel):
     allotted_quantity: Optional[int] = None
+    applied_quantity: Optional[int] = None
+    acquisition_cost: Optional[float] = None
     status: Optional[str] = None
     allotment_status: Optional[str] = None
     demat_credit_status: Optional[str] = None
     demat_verified: Optional[bool] = None
     conflict_note: Optional[str] = None
+    preparation_status: Optional[str] = None
+    broker_application_status: Optional[str] = None
+    mandate_status: Optional[str] = None
+    application_no: Optional[str] = None
+    upi_mandate_reference: Optional[str] = None
+    bid_reference_no: Optional[str] = None
+    lots: Optional[int] = None
+    bid_price: Optional[float] = None
+    total_amount: Optional[float] = None
 
 
 class AllotmentResponse(BaseModel):
@@ -105,6 +175,15 @@ class AllotmentResponse(BaseModel):
     pan_masked: Optional[str] = None
     upi_id_masked: Optional[str] = None
     mandate_status: str = "PENDING"
+    preparation_status: str = "READY_FOR_HANDOFF"
+    broker_application_status: str = "NOT_SUBMITTED"
+    lots: int = 1
+    bid_price: Optional[float] = None
+    total_amount: float = 0.0
+    upi_mandate_reference: Optional[str] = None
+    bid_reference_no: Optional[str] = None
+    official_portal_url: Optional[str] = None
+    handoff_timestamp: Optional[datetime] = None
     allotment_status: str = "PENDING"
     demat_credit_status: str = "PENDING"
     status: str
@@ -132,6 +211,7 @@ class IPOPrepareApplicationRequest(BaseModel):
     lots: int = Field(default=1, gt=0)
     category: str = Field(default="RETAIL")
     bid_price: Optional[float] = None
+    save_drafts: Optional[bool] = False
 
 
 class IPOApplicationPreparedItem(BaseModel):
@@ -147,6 +227,8 @@ class IPOApplicationPreparedItem(BaseModel):
     is_valid: bool
     validation_message: Optional[str] = None
     duplicate_warning: Optional[str] = None
+    official_portal_url: str = "https://trade.angelone.in/ipo"
+    draft_id: Optional[int] = None
 
 
 class IPOPrepareApplicationResponse(BaseModel):
@@ -160,4 +242,14 @@ class IPOPrepareApplicationResponse(BaseModel):
     total_amount: float
     applications: List[IPOApplicationPreparedItem]
     all_valid: bool
+    official_portal_url: str = "https://trade.angelone.in/ipo"
 
+
+class IPOApplicationHandoffUpdate(BaseModel):
+    allotment_id: int
+    preparation_status: Optional[str] = None  # e.g., "AWAITING_CONFIRMATION", "SUBMITTED_BROKER_CONFIRMED"
+    broker_application_status: Optional[str] = None  # e.g., "CONFIRMED", "PENDING_BROKER_VERIFICATION"
+    application_no: Optional[str] = None
+    upi_mandate_reference: Optional[str] = None
+    mandate_status: Optional[str] = None  # "PENDING", "APPROVED", "REJECTED"
+    verification_source: Optional[str] = "ACCOUNT_HOLDER_CONFIRMED"

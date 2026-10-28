@@ -2,6 +2,7 @@ export interface Account {
   id: number;
   nickname: string;
   masked_client_code: string;
+  client_code?: string;
   account_group: string;
   is_enabled: boolean;
   is_demo: boolean;
@@ -51,6 +52,63 @@ export interface IPO {
   subscription_rate?: string;
   min_investment?: number;
   issue_size?: string;
+  company_logo_url?: string;
+  sector?: string;
+  industry?: string;
+  description?: string;
+  issue_type?: string;
+  fresh_issue_size?: string;
+  offer_for_sale_size?: string;
+  face_value?: number;
+  retail_quota?: string;
+  qib_quota?: string;
+  nii_quota?: string;
+  listing_price?: number;
+  listing_gain?: number;
+  lead_managers?: string;
+  registrar_name?: string;
+  registrar_url?: string;
+  drhp_url?: string;
+  rhp_url?: string;
+  financials_json?: Array<{
+    period: string;
+    revenue: number;
+    pat: number;
+    ebitda?: number;
+    ebitda_margin?: number;
+    net_worth?: number;
+    total_assets?: number;
+    total_liabilities?: number;
+    borrowings?: number;
+    eps?: number;
+    ronw?: number;
+    roce?: number;
+    debt_to_equity?: number;
+  }>;
+  valuation_json?: {
+    p_e_ratio?: string;
+    p_b_ratio?: string;
+    industry_pe?: string;
+    peers?: string[];
+  };
+  strengths_risks_json?: {
+    strengths?: string[];
+    risks?: string[];
+  };
+  objects_of_issue_json?: string[];
+  subscription_details_json?: {
+    qib?: string;
+    nii?: string;
+    retail?: string;
+    employee?: string;
+    total?: string;
+    last_updated?: string;
+  };
+  timeline_json?: Array<{
+    stage: string;
+    date: string;
+    status: 'COMPLETED' | 'ACTIVE' | 'UPCOMING';
+  }>;
   source_name?: string;
   source_timestamp?: string;
   last_sync_at?: string;
@@ -82,6 +140,15 @@ export interface Allotment {
   pan_masked?: string;
   upi_id_masked?: string;
   mandate_status?: string;
+  preparation_status?: string;
+  broker_application_status?: string;
+  lots?: number;
+  bid_price?: number;
+  total_amount?: number;
+  upi_mandate_reference?: string;
+  bid_reference_no?: string;
+  official_portal_url?: string;
+  handoff_timestamp?: string;
   allotment_status?: string;
   demat_credit_status?: string;
   status: string;
@@ -116,6 +183,8 @@ export interface IPOApplicationPreparedItem {
   is_valid: boolean;
   validation_message?: string;
   duplicate_warning?: string;
+  official_portal_url?: string;
+  draft_id?: number;
 }
 
 export interface IPOPrepareApplicationResponse {
@@ -129,6 +198,7 @@ export interface IPOPrepareApplicationResponse {
   total_amount: number;
   applications: IPOApplicationPreparedItem[];
   all_valid: boolean;
+  official_portal_url?: string;
 }
 
 

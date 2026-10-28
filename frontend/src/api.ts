@@ -415,11 +415,43 @@ export const api = {
     lots: number;
     category?: string;
     bid_price?: number;
+    save_drafts?: boolean;
   }) => fetchJson<import('./types').IPOPrepareApplicationResponse>(
     `${getApiBase()}/ipos/prepare-applications`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    }
+  ),
+  getAllApplications: (params?: { account_id?: number; status_filter?: string; mandate_filter?: string; is_sme?: boolean }) => {
+    const sp = new URLSearchParams();
+    if (params?.account_id) sp.append('account_id', params.account_id.toString());
+    if (params?.status_filter) sp.append('status_filter', params.status_filter);
+    if (params?.mandate_filter) sp.append('mandate_filter', params.mandate_filter);
+    if (params?.is_sme !== undefined) sp.append('is_sme', params.is_sme.toString());
+    const query = sp.toString() ? `?${sp.toString()}` : '';
+    return fetchJson<Allotment[]>(`${getApiBase()}/ipos/applications/all${query}`);
+  },
+  updateApplicationStatus: (allotmentId: number, data: Partial<Allotment>) => fetchJson<Allotment>(
+    `${getApiBase()}/ipos/applications/${allotmentId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }
+  ),
+  recordApplicationHandoff: (data: {
+    allotment_id: number;
+    preparation_status?: string;
+    broker_application_status?: string;
+    application_no?: string;
+    upi_mandate_reference?: string;
+    mandate_status?: string;
+    verification_source?: string;
+  }) => fetchJson<Allotment>(
+    `${getApiBase()}/ipos/applications/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
     }
   ),
 
