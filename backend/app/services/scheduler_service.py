@@ -102,71 +102,12 @@ class BackgroundSyncManager:
             feed_res = IPOFeedService.sync_feed(db)
 
             # 2. Automated background Demat accounts & RMS sync
-            from app.models.account import Account
-            from app.core.security import cipher
-            from app.services.smartapi_adapter import get_adapter_for_account
-            from app.services.portfolio_sync_service import reconcile_broker_holdings
-            from app.services.account_persistence import persist_accounts_backup
-            import time
-
-            now = datetime.utcnow()
-            active_accounts = db.query(Account).filter(Account.is_enabled == True).all()
-            synced_acc_count = 0
-
-            for acc in active_accounts:
-                try:
-                    if acc.is_demo:
-                        acc.last_sync_time = now
-                        acc.auth_status = "CONNECTED"
-                        acc.last_auth_error = None
-                        synced_acc_count += 1
-                        continue
-
-                    raw_key = cipher.decrypt(acc.encrypted_api_key)
-                    raw_pin = cipher.decrypt(acc.encrypted_pin)
-                    raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
-                    if not (raw_key and raw_pin and raw_totp):
-                        continue
-
-                    adapter = get_adapter_for_account(acc.id, raw_key, acc.client_code, raw_pin, raw_totp)
-                    if not (adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired):
-                        auth_res = adapter.authenticate()
-                        if not auth_res.get("success"):
-                            acc.auth_status = "ERROR"
-                            acc.last_auth_error = auth_res.get("message")
-                            db.commit()
-                            continue
-
-                    # Refresh funds
-                    rms = adapter.get_rms()
-                    if rms:
-                        cash_val = float(rms.get("availablecash", rms.get("net", 0.0)))
-                        acc.available_cash = round(cash_val, 2)
-
-                    # Refresh Demat holdings
-                    holdings = adapter.get_holdings()
-                    if holdings is not None and not adapter.last_error:
-                        reconcile_broker_holdings(db, acc, holdings, now)
-
-                    if adapter.last_error:
-                        acc.auth_status = "ERROR"
-                        acc.last_auth_error = adapter.last_error
-                    else:
-                        acc.auth_status = "CONNECTED"
-                        acc.last_auth_error = None
-                        acc.last_sync_time = now
-                        synced_acc_count += 1
-                    db.commit()
-                except Exception as acc_err:
-                    logger.warning(f"Automated background sync for account {acc.nickname} failed: {str(acc_err)}")
-
-            if synced_acc_count > 0:
-                persist_accounts_backup(db)
+            sync_res = background_sync_all_accounts(db)
 
             return {
                 "success": True,
                 "feed": feed_res,
-                "synced_accounts": synced_acc_count
+                "synced_accounts": sync_res.get("synced_accounts", 0)
             }
         except Exception as e:
             logger.error(f"Failed to execute background auto-sync: {str(e)}")
@@ -187,5 +128,83 @@ class BackgroundSyncManager:
         }
 
 
+def background_sync_all_accounts(db) -> Dict[str, Any]:
+    """
+    Executes Demat holdings, RMS funds, and auth state sync across all enabled accounts.
+    Explicitly skips accounts that are in DISCONNECTED, REAUTHENTICATION_REQUIRED, or EXPIRED states
+    to halt automated private broker polling when disconnected.
+    """
+    from app.models.account import Account
+    from app.core.security import cipher
+    from app.services.smartapi_adapter import get_adapter_for_account
+    from app.services.portfolio_sync_service import reconcile_broker_holdings
+    from app.services.account_persistence import persist_accounts_backup
+    import time
+
+    now = datetime.utcnow()
+    active_accounts = db.query(Account).filter(Account.is_enabled == True).all()
+    synced_acc_count = 0
+
+    for acc in active_accounts:
+        try:
+            # Phase 3: Stop automated broker polling for disconnected accounts
+            if acc.auth_status in ("DISCONNECTED", "REAUTHENTICATION_REQUIRED", "EXPIRED"):
+                continue
+
+            if acc.is_demo:
+                acc.last_sync_time = now
+                acc.auth_status = "CONNECTED"
+                acc.last_auth_error = None
+                synced_acc_count += 1
+                continue
+
+            raw_key = cipher.decrypt(acc.encrypted_api_key)
+            raw_pin = cipher.decrypt(acc.encrypted_pin)
+            raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
+            if not (raw_key and raw_pin and raw_totp):
+                continue
+
+            adapter = get_adapter_for_account(acc.id, raw_key, acc.client_code, raw_pin, raw_totp)
+            if not (adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired):
+                auth_res = adapter.authenticate()
+                if not auth_res.get("success"):
+                    acc.auth_status = "ERROR"
+                    acc.last_auth_error = auth_res.get("message")
+                    db.commit()
+                    continue
+
+            # Refresh funds
+            rms = adapter.get_rms()
+            if rms:
+                cash_val = float(rms.get("availablecash", rms.get("net", 0.0)))
+                acc.available_cash = round(cash_val, 2)
+
+            # Refresh Demat holdings
+            holdings = adapter.get_holdings()
+            if holdings is not None and not adapter.last_error:
+                reconcile_broker_holdings(db, acc, holdings, now)
+
+            if adapter.last_error:
+                acc.auth_status = "ERROR"
+                acc.last_auth_error = adapter.last_error
+            else:
+                acc.auth_status = "CONNECTED"
+                acc.last_auth_error = None
+                acc.last_sync_time = now
+                synced_acc_count += 1
+            db.commit()
+        except Exception as acc_err:
+            logger.warning(f"Automated background sync for account {acc.nickname} failed: {str(acc_err)}")
+
+    if synced_acc_count > 0:
+        persist_accounts_backup(db)
+
+    return {
+        "success": True,
+        "synced_accounts": synced_acc_count
+    }
+
+
 # Global singleton scheduler instance with 3-minute automatic refresh interval
 sync_manager = BackgroundSyncManager(interval_seconds=180)
+

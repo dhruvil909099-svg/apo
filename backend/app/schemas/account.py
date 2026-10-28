@@ -90,6 +90,10 @@ class AccountOverviewResponse(BaseModel):
     last_sync_time: Optional[datetime] = None
     data_source: str = "SMARTAPI"
     stale_data_warning: bool = False
+    trading_enabled: bool = True
+    holdings_freshness: str = "LIVE"
+    market_price_freshness: str = "LIVE"
+    is_disconnected: bool = False
 
 
 class AccountHoldingItem(BaseModel):
@@ -105,6 +109,9 @@ class AccountHoldingItem(BaseModel):
     unrealized_pnl: Optional[float] = None
     pnl_percentage: Optional[float] = None
     data_source: str = "ANGEL_ONE_HOLDINGS"
+    holdings_status: str = "LIVE"
+    price_source: str = "SMARTAPI"
+    is_market_price_live: bool = True
     source_timestamp: Optional[str] = None
 
 

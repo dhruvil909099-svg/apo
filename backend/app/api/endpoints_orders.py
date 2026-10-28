@@ -13,7 +13,8 @@ from app.core.rate_limit import rate_limit_orders
 from app.models.ipo import IPO, Allotment
 from app.schemas.order import (
     OrderSingleCreate, BulkOrderPrepareRequest, BulkOrderPreviewResponse,
-    BulkOrderExecuteRequest, OrderResponse, OrderPreviewRequest, OrderPreviewResponse
+    BulkOrderExecuteRequest, OrderResponse, OrderPreviewRequest, OrderPreviewResponse,
+    OrderModifyRequest
 )
 from app.services.bulk_order_service import BulkOrderService
 from app.services.paper_trading_service import PaperTradingService
@@ -204,10 +205,12 @@ def place_single_order(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
+                "success": False,
                 "error_code": "BROKER_ACCOUNT_DISCONNECTED",
-                "message": f"Account '{account.nickname}' is {account.auth_status}. Broker order placement is disabled until reconnection."
+                "message": f"This account is disconnected. Historical data is available, but broker operations are disabled until reconnection."
             }
         )
+
 
     clean_symbol = order_in.tradingsymbol.replace("-EQ", "").strip().upper()
     token = order_in.symbol_token
@@ -341,8 +344,9 @@ def cancel_order(order_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
+                "success": False,
                 "error_code": "BROKER_ACCOUNT_DISCONNECTED",
-                "message": f"Account '{order.account.nickname}' is {order.account.auth_status}. Order cancellation is disabled until reconnection."
+                "message": "This account is disconnected. Historical data is available, but broker operations are disabled until reconnection."
             }
         )
 
@@ -351,4 +355,46 @@ def cancel_order(order_id: int, db: Session = Depends(get_db)):
 
     order.status = "CANCELLED"
     db.commit()
-    return {"message": "Order successfully cancelled.", "order_id": order.id, "status": "CANCELLED"}
+    return {"success": True, "message": "Order successfully cancelled.", "order_id": order.id, "status": "CANCELLED"}
+
+
+@router.put("/{order_id}")
+def modify_order(
+    order_id: int,
+    mod_in: Optional[OrderModifyRequest] = None,
+    price: Optional[float] = Query(None),
+    quantity: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Modifies an open or prepared order.
+    Enforces broker-account connection safety; disconnected accounts cannot modify orders.
+    """
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.account and not order.account.is_demo and order.account.auth_status != "CONNECTED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "success": False,
+                "error_code": "BROKER_ACCOUNT_DISCONNECTED",
+                "message": "This account is disconnected. Historical data is available, but broker operations are disabled until reconnection."
+            }
+        )
+
+    if order.status not in ["ACCEPTED", "PREPARED"]:
+        raise HTTPException(status_code=400, detail=f"Cannot modify order in status '{order.status}'.")
+
+    eff_price = mod_in.price if mod_in and mod_in.price is not None else price
+    eff_quantity = mod_in.quantity if mod_in and mod_in.quantity is not None else quantity
+
+    if eff_price is not None and eff_price > 0:
+        order.price = eff_price
+    if eff_quantity is not None and eff_quantity > 0:
+        order.quantity = eff_quantity
+
+    db.commit()
+    return {"success": True, "message": "Order successfully modified.", "order_id": order.id, "status": order.status}
+

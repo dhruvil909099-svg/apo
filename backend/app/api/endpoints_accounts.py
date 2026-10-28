@@ -16,7 +16,10 @@ from app.schemas.account import (
     AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
     AccountOrderItem, AccountTradeItem, AccountSyncResponse
 )
-from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account
+from app.services.smartapi_adapter import (
+    SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account,
+    get_any_active_market_adapter
+)
 from app.services.account_persistence import persist_accounts_backup
 from app.services.portfolio_sync_service import reconcile_broker_holdings
 import json
@@ -560,8 +563,18 @@ def get_account_overview(account_id: int, db: Session = Depends(get_db)):
     holdings_count = len(allotments)
     holdings_val = sum(a.allotted_quantity * (a.ipo.current_ltp or a.ipo.issue_price) for a in allotments)
 
-    # Stale data warning if last sync is missing or older than 12 hours
-    is_stale = False
+    # Check connection and freshness states
+    is_disconnected = (not account.is_demo and account.auth_status != "CONNECTED")
+    trading_enabled = (account.is_demo or account.auth_status == "CONNECTED")
+    has_shared_feed = False
+    if is_disconnected:
+        has_shared_feed = bool(get_any_active_market_adapter(db, exclude_account_id=account.id))
+
+    holdings_freshness = "HISTORICAL_DISCONNECTED" if is_disconnected else ("DEMAT_LEDGER" if account.is_demo else "LIVE")
+    market_price_freshness = "LIVE_SHARED" if (is_disconnected and has_shared_feed) else ("LIVE" if trading_enabled else "HISTORICAL_STALE")
+
+    # Stale data warning if last sync is missing or older than 12 hours, or account is disconnected
+    is_stale = is_disconnected
     if not account.last_sync_time:
         is_stale = True
     elif (datetime.utcnow() - account.last_sync_time).total_seconds() > 43200:
@@ -587,8 +600,12 @@ def get_account_overview(account_id: int, db: Session = Depends(get_db)):
         total_holdings_value=round(holdings_val, 2),
         total_positions_count=0,
         last_sync_time=account.last_sync_time,
-        data_source="DEMAT_LEDGER" if account.is_demo else "ANGEL_ONE_SMARTAPI",
-        stale_data_warning=is_stale
+        data_source="DEMAT_LEDGER" if account.is_demo else ("AUTHORIZED_SHARED_FEED" if (is_disconnected and has_shared_feed) else "ANGEL_ONE_SMARTAPI"),
+        stale_data_warning=is_stale,
+        trading_enabled=trading_enabled,
+        holdings_freshness=holdings_freshness,
+        market_price_freshness=market_price_freshness,
+        is_disconnected=is_disconnected
     )
 
 
@@ -658,19 +675,48 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
         except Exception as e:
             logger.warning(f"Live holdings fetch failed for {account.masked_client_code}, using verified ledger: {str(e)}")
 
-    # Fallback / Demo accounts / Verified Ledger
+    # Fallback / Disconnected / Demo accounts / Verified Ledger
     allotments = db.query(Allotment).join(IPO).filter(
         Allotment.account_id == account_id,
         Allotment.allotted_quantity > 0
     ).all()
+
+    # Phase 6: Check for an active authorized market adapter from another connected client
+    shared_market_adapter = None
+    if not account.is_demo and account.auth_status != "CONNECTED":
+        try:
+            shared_market_adapter = get_any_active_market_adapter(db, exclude_account_id=account.id)
+        except Exception as e:
+            logger.debug(f"Could not retrieve shared market adapter: {e}")
+
     results = []
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
     for a in allotments:
         ltp = a.ipo.current_ltp or a.ipo.issue_price
+        is_live = False
+        price_source = "HISTORICAL_STALE"
+
+        if shared_market_adapter and a.ipo.symbol_token:
+            try:
+                live_price = shared_market_adapter.get_ltp_data(
+                    exchange=a.ipo.exchange or "NSE",
+                    tradingsymbol=a.ipo.symbol,
+                    symbol_token=a.ipo.symbol_token
+                )
+                if live_price is not None and live_price > 0:
+                    ltp = live_price
+                    a.ipo.current_ltp = live_price
+                    is_live = True
+                    price_source = "AUTHORIZED_SHARED_MARKET_FEED"
+            except Exception as quote_err:
+                logger.debug(f"Failed to fetch shared quote for {a.ipo.symbol}: {quote_err}")
+
         val = round(a.allotted_quantity * ltp, 2)
         cost = round(a.allotted_quantity * a.acquisition_cost, 2)
         pnl = round(val - cost, 2)
         pnl_pct = round((pnl / cost) * 100, 2) if cost > 0 else 0.0
+
+        is_disconnected = (not account.is_demo and account.auth_status != "CONNECTED")
         results.append(AccountHoldingItem(
             symbol=a.ipo.symbol,
             company_name=a.ipo.company_name,
@@ -683,9 +729,14 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
             valuation=val,
             unrealized_pnl=pnl,
             pnl_percentage=pnl_pct,
-            data_source="DEMAT_ALLOTMENT_LEDGER",
+            data_source="AUTHORIZED_SHARED_FEED" if is_live else ("DEMAT_ALLOTMENT_LEDGER" if account.is_demo else "HISTORICAL_LEDGER"),
+            holdings_status="HISTORICAL" if is_disconnected else "LIVE",
+            price_source=price_source if is_disconnected else "SMARTAPI",
+            is_market_price_live=is_live if is_disconnected else True,
             source_timestamp=now_str
         ))
+    if shared_market_adapter:
+        db.commit()
     return results
 
 

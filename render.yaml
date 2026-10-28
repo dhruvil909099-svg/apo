@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: ipopro-backend
+    runtime: docker
+    dockerfilePath: Dockerfile
+    plan: starter
+    region: oregon
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ipopro-postgres
+          property: connectionString
+      - key: APP_ENCRYPTION_KEY
+        generateValue: true
+      - key: TRADING_MODE
+        value: PAPER
+      - key: REQUIRE_AUTH
+        value: "true"
+      - key: MASTER_API_KEY
+        value: "ipopro-secure-master-key-2026"
+      - key: ALLOWED_ORIGINS
+        value: "http://localhost:5173,http://localhost:3000,https://ipo.emperialcabs.com"
+      - key: SMARTAPI_API_KEY
+        sync: false
+      - key: SMARTAPI_CLIENT_CODE
+        sync: false
+      - key: SMARTAPI_PIN
+        sync: false
+      - key: SMARTAPI_TOTP_SECRET
+        sync: false
+
+databases:
+  - name: ipopro-postgres
+    plan: starter
+    databaseName: ipopro
+    user: ipopro_admin
+    region: oregon

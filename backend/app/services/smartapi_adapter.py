@@ -526,6 +526,48 @@ class SmartAPIAdapter:
             logger.error(f"Live order placement error for {self.client_code}: {str(e)}")
             return {"success": False, "message": f"Network exception: {str(e)}", "error_code": "NETWORK_FAIL"}
 
+    def get_ltp_data(self, exchange: str, tradingsymbol: str, symbol_token: str) -> Optional[float]:
+        """
+        Retrieves live Last Traded Price (LTP) from Angel One SmartAPI.
+        Used for shared authorized market data feeds across client demat accounts.
+        """
+        if not self._ensure_authenticated():
+            logger.warning(f"Session not authenticated for market data LTP fetch ({self.client_code})")
+            return None
+
+        # Try market quote endpoint
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/market/v1/quote"
+        payload = {
+            "mode": "LTP",
+            "exchangeTokens": {
+                exchange: [str(symbol_token)]
+            }
+        }
+        data = self._send_request("POST", url, json_payload=payload, rate_limit_seconds=0.2)
+        if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
+            fetched = data["data"].get("fetched", [])
+            if fetched and isinstance(fetched, list) and len(fetched) > 0:
+                try:
+                    return float(fetched[0].get("ltp", 0.0))
+                except (ValueError, TypeError):
+                    pass
+
+        # Fallback to getLtpData endpoint
+        url_ltp = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getLtpData"
+        payload_ltp = {
+            "exchange": exchange,
+            "tradingsymbol": tradingsymbol,
+            "symboltoken": str(symbol_token)
+        }
+        data_ltp = self._send_request("POST", url_ltp, json_payload=payload_ltp, rate_limit_seconds=0.2)
+        if data_ltp and (data_ltp.get("status") is True or data_ltp.get("success") is True) and data_ltp.get("data"):
+            try:
+                return float(data_ltp["data"].get("ltp", 0.0))
+            except (ValueError, TypeError):
+                pass
+
+        return None
+
     def _enforce_rate_limit(self, min_interval_seconds: float):
         elapsed = time.time() - self._last_request_time
         if elapsed < min_interval_seconds:
@@ -599,4 +641,37 @@ def invalidate_adapter_for_account(account_id: int) -> None:
             except Exception:
                 pass
             del _adapter_cache[account_id]
+
+
+def get_any_active_market_adapter(db, exclude_account_id: Optional[int] = None) -> Optional[SmartAPIAdapter]:
+    """
+    Finds any currently connected and authorized live demat account to provide
+    shared market data pricing feeds for historical holdings of disconnected clients.
+    Guarantees that private client data (orders, positions, holdings) is never accessed.
+    """
+    from app.models.account import Account
+    from app.core.security import cipher
+
+    query = db.query(Account).filter(
+        Account.is_enabled == True,
+        Account.is_demo == False,
+        Account.auth_status == "CONNECTED"
+    )
+    if exclude_account_id:
+        query = query.filter(Account.id != exclude_account_id)
+
+    active_accounts = query.all()
+    for acc in active_accounts:
+        try:
+            raw_key = cipher.decrypt(acc.encrypted_api_key)
+            raw_pin = cipher.decrypt(acc.encrypted_pin)
+            raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
+            if raw_key and raw_pin and raw_totp:
+                adapter = get_adapter_for_account(acc.id, raw_key, acc.client_code, raw_pin, raw_totp)
+                if adapter._ensure_authenticated():
+                    return adapter
+        except Exception:
+            continue
+    return None
+
 

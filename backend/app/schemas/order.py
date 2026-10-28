@@ -18,6 +18,12 @@ class OrderSingleCreate(BaseModel):
     trigger_price: float = Field(default=0.0, ge=0.0)
 
 
+class OrderModifyRequest(BaseModel):
+    price: Optional[float] = Field(default=None, ge=0.0)
+    quantity: Optional[int] = Field(default=None, gt=0)
+    order_type: Optional[str] = None
+
+
 class OrderPreviewRequest(BaseModel):
     account_id: int
     tradingsymbol: str = Field(..., min_length=1)
