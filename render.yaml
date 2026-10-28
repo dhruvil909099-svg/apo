@@ -3,15 +3,13 @@ services:
     name: ipopro-backend
     runtime: docker
     dockerfilePath: Dockerfile
-    plan: starter
+    plan: free
     region: oregon
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: ipopro-postgres
-          property: connectionString
+        sync: false  # Supply Hostinger MySQL URL: mysql+pymysql://<user>:<password>@<host>:3306/<database>?charset=utf8mb4
       - key: APP_ENCRYPTION_KEY
-        generateValue: true
+        sync: false  # Preserve existing UOq2vBkYP1PnplztDgeVbfI3UTQvdREy-EsbYI0g3C4= master key
       - key: TRADING_MODE
         value: PAPER
       - key: REQUIRE_AUTH
@@ -29,9 +27,3 @@ services:
       - key: SMARTAPI_TOTP_SECRET
         sync: false
 
-databases:
-  - name: ipopro-postgres
-    plan: starter
-    databaseName: ipopro
-    user: ipopro_admin
-    region: oregon

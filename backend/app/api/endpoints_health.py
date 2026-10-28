@@ -38,8 +38,8 @@ def health_readiness(response: Response, db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
         bind = db.get_bind()
         engine_name = bind.dialect.name if bind else "unknown"
-        # Managed PostgreSQL is persistent; SQLite with PERSISTENT_DATA_DIR is disk-backed
-        is_persistent = engine_name in ["postgresql", "postgres"] or bool(os.environ.get("PERSISTENT_DATA_DIR"))
+        # Managed MySQL/MariaDB (Hostinger) and PostgreSQL are persistent; SQLite with PERSISTENT_DATA_DIR is disk-backed
+        is_persistent = engine_name in ["mysql", "mariadb", "postgresql", "postgres"] or bool(os.environ.get("PERSISTENT_DATA_DIR"))
     except Exception:
         is_ready = False
         db_status = "UNAVAILABLE"

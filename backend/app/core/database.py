@@ -5,13 +5,25 @@ from app.core.config import settings
 
 logger = logging.getLogger("database")
 
-# Engine configuration (supporting SQLite and PostgreSQL)
+def normalize_database_url(url: str) -> str:
+    """Normalizes database URLs to their respective modern SQLAlchemy dialects."""
+    if not url:
+        return "sqlite:///./angel_dashboard.db"
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("mysql://"):
+        # Auto-configure PyMySQL driver for Hostinger MySQL/MariaDB
+        return url.replace("mysql://", "mysql+pymysql://", 1)
+    if url.startswith("mariadb://"):
+        return url.replace("mariadb://", "mysql+pymysql://", 1)
+    return url
+
+
+# Engine configuration (supporting SQLite, Hostinger MySQL/MariaDB, and PostgreSQL)
 connect_args = {}
 engine_kwargs = {"echo": False}
 
-db_url = settings.DATABASE_URL
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+db_url = normalize_database_url(settings.DATABASE_URL)
 
 if db_url.startswith("sqlite"):
     connect_args = {
@@ -19,13 +31,19 @@ if db_url.startswith("sqlite"):
         "timeout": 30.0  # 30-second busy timeout to prevent 'database is locked' errors
     }
 else:
-    # Conservative connection pooling for client/server databases (PostgreSQL/MySQL)
+    is_mysql = "mysql" in db_url or "mariadb" in db_url
+    if is_mysql:
+        connect_args = {
+            "charset": "utf8mb4",
+            "connect_timeout": 10,
+        }
+    # Conservative connection pooling for remote databases (Hostinger MySQL & PostgreSQL)
     engine_kwargs.update({
         "pool_size": 5,
         "max_overflow": 2,
         "pool_timeout": 15.0,
-        "pool_recycle": 300,
-        "pool_pre_ping": True,  # Critical for PostgreSQL resilience against dropped connections
+        "pool_recycle": 280,  # Recycle before Hostinger's 300-second idle connection timeout
+        "pool_pre_ping": True,  # Critical for catching dropped remote connections before query checkout
     })
 
 engine = create_engine(
@@ -58,14 +76,15 @@ def get_db():
         db.close()
 
 
-def run_safe_migrations():
+def run_safe_migrations(target_engine=None):
     """
-    Idempotent schema migration for SQLite and PostgreSQL.
+    Idempotent schema migration for SQLite, Hostinger MySQL/MariaDB, and PostgreSQL.
     Safely adds missing tables and columns without dropping tables or losing existing records.
     """
-    logger.info("Verifying schema and running non-destructive column migrations...")
-    Base.metadata.create_all(bind=engine)
-    inspector = inspect(engine)
+    active_engine = target_engine or engine
+    logger.info(f"Verifying schema and running non-destructive column migrations on {active_engine.dialect.name}...")
+    Base.metadata.create_all(bind=active_engine)
+    inspector = inspect(active_engine)
     existing_tables = inspector.get_table_names()
 
     # Column definitions to verify for 'ipos'
@@ -85,7 +104,7 @@ def run_safe_migrations():
 
     if "ipos" in existing_tables:
         existing_cols = {col["name"] for col in inspector.get_columns("ipos")}
-        with engine.connect() as conn:
+        with active_engine.connect() as conn:
             for col_name, col_type in ipo_columns_to_add:
                 if col_name not in existing_cols:
                     logger.info(f"Adding missing column ipos.{col_name} ({col_type})")
@@ -107,7 +126,7 @@ def run_safe_migrations():
 
     if "allotments" in existing_tables:
         existing_cols = {col["name"] for col in inspector.get_columns("allotments")}
-        with engine.connect() as conn:
+        with active_engine.connect() as conn:
             for col_name, col_type in allotment_columns_to_add:
                 if col_name not in existing_cols:
                     logger.info(f"Adding missing column allotments.{col_name} ({col_type})")
@@ -130,7 +149,7 @@ def run_safe_migrations():
 
     if "accounts" in existing_tables:
         existing_cols = {col["name"] for col in inspector.get_columns("accounts")}
-        with engine.connect() as conn:
+        with active_engine.connect() as conn:
             for col_name, col_type in account_columns_to_add:
                 if col_name not in existing_cols:
                     logger.info(f"Adding missing column accounts.{col_name} ({col_type})")
