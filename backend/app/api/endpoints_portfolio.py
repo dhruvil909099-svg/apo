@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.config import settings
 from app.models.ipo import Allotment, IPO
 from app.models.account import Account
 from app.models.audit import AuditLog

@@ -178,3 +178,12 @@ def test_portfolio_sync_trigger(client: TestClient, db_session):
     assert data["success"] is True
     assert "accounts_synced" in data
     assert "timestamp" in data
+
+
+def test_consolidated_holdings_default_params(client: TestClient, db_session):
+    res = client.get("/api/v1/portfolio/consolidated")
+    assert res.status_code == 200
+    data = res.json()
+    assert "summary" in data
+    assert "holdings" in data
+

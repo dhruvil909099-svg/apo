@@ -119,8 +119,8 @@ export const App: React.FC = () => {
 
   // Register scheduled background tasks
   useEffect(() => {
-    // 1. Dashboard summary refresh (every 60s)
-    refreshScheduler.register('summary', 60000, async () => {
+    // 1. Dashboard summary refresh (every 30s)
+    refreshScheduler.register('summary', 30000, async () => {
       try {
         const sum = await api.getSummary();
         setSummary(sum);
@@ -130,8 +130,8 @@ export const App: React.FC = () => {
       }
     });
 
-    // 2. Accounts list refresh (every 5 minutes)
-    refreshScheduler.register('accounts', 300000, async () => {
+    // 2. Accounts list auto-update (every 30s)
+    refreshScheduler.register('accounts', 30000, async () => {
       try {
         const accs = await api.getAccounts();
         setAccounts(accs);
