@@ -47,7 +47,7 @@
 4. **Resolution**:
    - `SmartAPIAdapter` now detects `AG8004` (Invalid API Key) and surfaces a clear diagnostic message: `"Angel One rejected request: Invalid SmartAPI API Key (AG8004). Please verify your API Key from smartapi.angelbroking.com."`
    - `sync_account_data` now checks `adapter.last_error`. If an error occurs, it sets `auth_status = "ERROR"`, preserves existing verified holdings, and displays the exact broker diagnostic.
-   - The user can click **"Rotate Credentials"** or **"Reconnect"** in the UI and enter their real 32-character SmartAPI API Key, 4-digit PIN, and TOTP Secret (`23VPIQU5UOZ3ZN5ODGMV2GDX4E`) to begin fetching real live funds and holdings.
+   - The user can click **"Rotate Credentials"** or **"Reconnect"** in the UI and enter their real 32-character SmartAPI API Key, 4-digit PIN, and Base32 TOTP Secret string (`[REDACTED_TOTP_SECRET]`) to begin fetching real live funds and holdings.
 
 ---
 

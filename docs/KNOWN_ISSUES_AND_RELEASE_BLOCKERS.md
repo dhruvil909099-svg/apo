@@ -13,7 +13,7 @@
    - **Workaround / Workflow**: IPOPro treats DDPI as an App-Managed setting. Users verify their DDPI status inside the official Angel One mobile app (`Account -> Profile -> DDPI Status`) and toggle **"Mark Active"** in IPOPro.
 2. **User API Key Reconnection Required**:
    - **Constraint**: For account `dhruvil` (`AAAD986778`), Angel One returned `AG8004 Invalid API Key` when attempting to fetch funds and Demat holdings because the account originally had an unconfigured/placeholder key.
-   - **Required Operator Action**: Click **"Rotate Credentials"** or **"Reconnect"** in the UI and enter your actual SmartAPI API key from `smartapi.angelbroking.com`, along with your 4-digit PIN and TOTP secret (`23VPIQU5UOZ3ZN5ODGMV2GDX4E`).
+   - **Required Operator Action**: Click **"Rotate Credentials"** or **"Reconnect"** in the UI and enter your actual SmartAPI API key from `smartapi.angelbroking.com`, along with your 4-digit PIN and Base32 TOTP secret (`[REDACTED_TOTP_SECRET]`).
 
 ---
 
