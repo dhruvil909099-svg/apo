@@ -269,6 +269,23 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     }
   };
 
+  // Toggle DDPI status manually based on Angel One mobile app status
+  const handleToggleDdpi = async (acc: Account) => {
+    try {
+      const nextStatus = acc.ddpi_status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      await api.updateAccount(acc.id, { ddpi_status: nextStatus });
+      onRefresh();
+      if (selectedAccountForDrawer?.id === acc.id) {
+        setSelectedAccountForDrawer((prev) => prev ? { ...prev, ddpi_status: nextStatus } : null);
+        if (drawerOverview) {
+          setDrawerOverview((prev: any) => prev ? { ...prev, ddpi_status: nextStatus } : null);
+        }
+      }
+    } catch (err: any) {
+      alert(`Failed to update DDPI status: ${err.message}`);
+    }
+  };
+
   // Test SmartAPI connectivity with rate-limiting and optional TOTP
   const handleTestConnection = async (accId: number, totpCode?: string) => {
     const now = Date.now();
@@ -790,11 +807,14 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
                           <td className="py-3.5 px-4">
                             <div className="flex items-center gap-1.5">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                acc.ddpi_status === 'ACTIVE'
-                                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                  : 'bg-amber-50 text-amber-800 border border-amber-200'
-                              }`}>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-help ${
+                                  acc.ddpi_status === 'ACTIVE'
+                                    ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                    : 'bg-amber-50 text-amber-800 border border-amber-200'
+                                }`}
+                                title="SmartAPI does not expose DDPI flags directly. Check Angel One app (Profile -> DDPI Status). Click Inspect to toggle."
+                              >
                                 DDPI: {acc.ddpi_status}
                               </span>
                             </div>
@@ -1140,8 +1160,26 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
                   <div className="p-3 bg-slate-50 rounded-lg text-xs space-y-2 border border-slate-200/60 font-mono">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-500">DDPI Status:</span>
-                      <span className="font-bold text-slate-800">{acc.ddpi_status}</span>
+                      <div className="flex items-center gap-1.5 font-sans">
+                        <span className="text-slate-500 font-mono">DDPI Status:</span>
+                        <span className="text-[10px] text-slate-400" title="Angel One SmartAPI does not expose DDPI flags. Check Angel One App.">(App-Managed)</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          acc.ddpi_status === 'ACTIVE'
+                            ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}>
+                          {acc.ddpi_status}
+                        </span>
+                        <button
+                          onClick={() => handleToggleDdpi(acc)}
+                          className="px-2 py-0.5 bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-semibold rounded border border-slate-300 transition-colors shadow-2xs font-sans"
+                          title="Click to toggle DDPI based on your Angel One app status"
+                        >
+                          {acc.ddpi_status === 'ACTIVE' ? 'Set Inactive' : 'Mark Active'}
+                        </button>
+                      </div>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-500">Last Successful Sync:</span>
@@ -1296,8 +1334,28 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                           <span className="font-bold text-slate-800">{drawerOverview?.auth_status || 'UNKNOWN'}</span>
                         </div>
                         <div className="flex items-center justify-between py-1">
-                          <span className="text-slate-500">DDPI Status:</span>
-                          <span className="font-bold text-slate-800">{drawerOverview?.ddpi_status || 'UNKNOWN'}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-slate-500">DDPI Status:</span>
+                            <span className="text-[10px] text-slate-400" title="SmartAPI does not expose DDPI flags. Verify in Angel One App.">(App-Managed)</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`font-bold px-2 py-0.5 rounded text-[11px] ${
+                              (drawerOverview?.ddpi_status || selectedAccountForDrawer?.ddpi_status) === 'ACTIVE'
+                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                : 'bg-amber-50 text-amber-800 border border-amber-200'
+                            }`}>
+                              {drawerOverview?.ddpi_status || selectedAccountForDrawer?.ddpi_status || 'UNKNOWN'}
+                            </span>
+                            {selectedAccountForDrawer && (
+                              <button
+                                onClick={() => handleToggleDdpi(selectedAccountForDrawer)}
+                                className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold rounded border border-slate-300 transition-colors shadow-2xs"
+                                title="Toggle DDPI based on your Angel One app status"
+                              >
+                                {(drawerOverview?.ddpi_status || selectedAccountForDrawer.ddpi_status) === 'ACTIVE' ? 'Set Inactive' : 'Mark Active'}
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className="flex items-center justify-between py-1">
                           <span className="text-slate-500">eDIS Authorized Today:</span>

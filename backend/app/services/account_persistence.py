@@ -156,15 +156,16 @@ def restore_accounts_backup(db: Session) -> int:
             nickname="dhruvil",
             client_code="AAAD986778",
             account_group="Family",
-            encrypted_api_key=cipher.encrypt("AUTO_RESTORED_KEY"),
-            encrypted_pin=cipher.encrypt("8887"),
-            encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
+            encrypted_api_key=cipher.encrypt(""),
+            encrypted_pin=cipher.encrypt(""),
+            encrypted_totp_secret=cipher.encrypt(""),
             is_enabled=True,
             is_demo=False,
             auth_status="DISCONNECTED",
             ddpi_status="ACTIVE",
             edis_authorized_today=False,
-            available_cash=0.0
+            available_cash=0.0,
+            last_auth_error="SmartAPI credentials required. Enter your API Key, PIN, and TOTP secret to connect."
         )
         db.add(primary_account)
         db.commit()

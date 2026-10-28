@@ -334,10 +334,11 @@ def test_account_connection(
         account.auth_status = "CONNECTED"
         account.last_sync_time = datetime.utcnow()
         account.last_auth_error = None
-        account.ddpi_status = test_res.get("ddpi_status", "ACTIVE")
+        if test_res.get("ddpi_status") is not None:
+            account.ddpi_status = test_res["ddpi_status"]
         rms_data = adapter.get_rms()
         if rms_data:
-            cash_val = float(rms_data.get("availablecash", rms_data.get("net", 0.0)))
+            cash_val = float(rms_data.get("availablecash", rms_data.get("net", account.available_cash)))
             account.available_cash = round(cash_val, 2)
     else:
         err_code = test_res.get("error_code", "")
@@ -769,23 +770,33 @@ def sync_account_data(account_id: int, db: Session = Depends(get_db)):
             auth_res = adapter.authenticate()
 
         if auth_res["success"]:
-            account.auth_status = "CONNECTED"
-            account.last_auth_error = None
-            account.last_sync_time = now
             rms = adapter.get_rms()
             if rms:
                 cash = float(rms.get("availablecash", rms.get("net", account.available_cash)))
                 account.available_cash = round(cash, 2)
+
+            holdings = []
             try:
                 holdings = adapter.get_holdings()
+            except Exception as e:
+                logger.error(f"Error calling get_holdings for {account.client_code}: {e}")
+
+            if adapter.last_error:
+                account.auth_status = "ERROR"
+                account.last_auth_error = adapter.last_error
+                msg = f"Broker sync warning: {adapter.last_error}"
+                success = False
+                holdings_count = db.query(Allotment).filter(Allotment.account_id == account.id, Allotment.allotted_quantity > 0).count()
+            else:
+                account.auth_status = "CONNECTED"
+                account.last_auth_error = None
+                account.last_sync_time = now
                 if holdings:
                     holdings_count = reconcile_broker_holdings(db, account, holdings, now)
                 else:
-                    holdings_count = db.query(Allotment).filter(Allotment.account_id == account.id, Allotment.allotted_quantity > 0).count()
-            except Exception:
-                holdings_count = db.query(Allotment).filter(Allotment.account_id == account.id, Allotment.allotted_quantity > 0).count()
-            msg = "Account synchronized successfully with Angel One."
-            success = True
+                    holdings_count = 0
+                msg = "Account synchronized successfully with Angel One."
+                success = True
         else:
             if adapter.is_session_expired:
                 invalidate_adapter_for_account(account.id)

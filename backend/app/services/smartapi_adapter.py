@@ -93,12 +93,17 @@ class SmartAPIAdapter:
                     self.last_error = f"Malformed non-JSON response from SmartAPI ({endpoint_name})"
                     return None
 
-                err_code = data.get("errorcode", "")
+                err_code = str(data.get("errorcode", "") or data.get("errorCode", ""))
                 if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED"):
                     self.is_session_expired = True
                     self.last_error = data.get("message", "Broker session expired")
+                elif err_code == "AG8004":
+                    self.last_error = "Angel One rejected request: Invalid SmartAPI API Key (AG8004). Please verify your API Key from smartapi.angelbroking.com."
+                    logger.error(f"Invalid API Key (AG8004) for {self.client_code}")
+                elif not (data.get("status") is True or data.get("success") is True):
+                    self.last_error = data.get("message") or f"Broker API error ({err_code})"
 
-                if data.get("status"):
+                if data.get("status") is True or data.get("success") is True:
                     self.last_sync_time = time.time()
                     self.last_error = None
                 return data
@@ -137,6 +142,14 @@ class SmartAPIAdapter:
                     "message": "Authentication successful (reused active session)",
                     "feed_token": self.feed_token
                 }
+
+            if not self.api_key or not self.client_code or not self.pin or not self.totp_secret:
+                self.last_error = "Angel One credentials incomplete. Please configure your API Key, Client Code, PIN, and TOTP Secret."
+                return {"success": False, "message": self.last_error, "error_code": "CREDENTIALS_INCOMPLETE"}
+
+            if self.api_key == "AUTO_RESTORED_KEY":
+                self.last_error = "Placeholder API key detected. Please rotate or enter your real Angel One SmartAPI API Key from smartapi.angelbroking.com."
+                return {"success": False, "message": self.last_error, "error_code": "PLACEHOLDER_KEY"}
 
             if manual_totp:
                 clean_code = str(manual_totp).strip().replace(" ", "").replace("-", "")
@@ -210,7 +223,7 @@ class SmartAPIAdapter:
 
     def test_connection(self, manual_totp: Optional[str] = None) -> Dict[str, Any]:
         """
-        Tests account connectivity and queries profile information.
+        Tests account connectivity, validates credentials against downstream RMS, and queries profile.
         """
         auth_result = self.authenticate(manual_totp=manual_totp)
         if not auth_result["success"]:
@@ -219,13 +232,15 @@ class SmartAPIAdapter:
                 "message": auth_result["message"],
                 "error_code": auth_result.get("error_code", "AUTH_FAILED"),
                 "jwt_acquired": False,
-                "ddpi_status": "UNKNOWN"
+                "ddpi_status": None
             }
 
-        # Query profile to check DDPI/account status
+        # Query profile to check account profile access
         url = f"{self.BASE_URL}/rest/secure/angelbroking/user/v1/getProfile"
         data = self._send_request("GET", url, rate_limit_seconds=1.0)
-        if data and data.get("status"):
+        dp_type = "CDSL"
+        detected_ddpi: Optional[str] = None
+        if data and (data.get("status") is True or data.get("success") is True):
             profile = data.get("data", {})
             dp_type = profile.get("dpType", "CDSL")
             is_ddpi = (
@@ -238,18 +253,28 @@ class SmartAPIAdapter:
                 profile.get("ddpi") is True or
                 profile.get("poa") is True
             )
+            if is_ddpi:
+                detected_ddpi = "ACTIVE"
+            elif profile.get("ddpiStatus") in ("INACTIVE", "N", "NO", "FALSE", "0"):
+                detected_ddpi = "INACTIVE"
+
+        # Verify downstream API key authorization via RMS
+        self.get_rms()
+        if self.last_error and "AG8004" in self.last_error:
             return {
-                "success": True,
-                "message": "Connection verified with Angel One",
+                "success": False,
+                "message": self.last_error,
+                "error_code": "AG8004",
                 "jwt_acquired": True,
-                "ddpi_status": "ACTIVE" if is_ddpi else "UNKNOWN",
-                "dp_type": dp_type
+                "ddpi_status": detected_ddpi
             }
+
         return {
             "success": True,
-            "message": "Authenticated (Profile query returned empty)",
+            "message": "Connection and SmartAPI credentials verified with Angel One",
             "jwt_acquired": True,
-            "ddpi_status": "UNKNOWN"
+            "ddpi_status": detected_ddpi,
+            "dp_type": dp_type
         }
 
     def _ensure_authenticated(self) -> bool:
@@ -270,17 +295,40 @@ class SmartAPIAdapter:
 
     def get_holdings(self) -> List[Dict[str, Any]]:
         """
-        Retrieves equity holdings from /portfolio/v1/getAllHolding (Rate limit: 1 req/sec).
+        Retrieves equity delivery holdings with multi-tier fallback:
+        1. /portfolio/v1/getAllHolding (aggregating summary + holdings array)
+        2. /portfolio/v1/getHolding (standard Demat holdings list)
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for holdings fetch ({self.client_code})")
             return []
 
-        url = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getAllHolding"
-        data = self._send_request("GET", url, rate_limit_seconds=1.0)
-        if data and data.get("status") and data.get("data"):
-            holdings_data = data["data"].get("holdings", []) if isinstance(data["data"], dict) else data["data"]
-            return holdings_data if isinstance(holdings_data, list) else []
+        # 1. Primary: getAllHolding
+        url_all = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getAllHolding"
+        data = self._send_request("GET", url_all, rate_limit_seconds=1.0)
+        if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
+            raw = data["data"]
+            if isinstance(raw, dict) and "holdings" in raw:
+                h_list = raw.get("holdings", [])
+                if isinstance(h_list, list) and len(h_list) > 0:
+                    return h_list
+            elif isinstance(raw, list) and len(raw) > 0:
+                return raw
+
+        # Stop if an authorization or broker error occurred
+        if self.last_error and ("AG8004" in self.last_error or "expired" in self.last_error.lower()):
+            return []
+
+        # 2. Fallback: getHolding
+        url_std = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getHolding"
+        data_std = self._send_request("GET", url_std, rate_limit_seconds=1.0)
+        if data_std and (data_std.get("status") is True or data_std.get("success") is True) and data_std.get("data"):
+            raw_std = data_std["data"]
+            if isinstance(raw_std, list):
+                return raw_std
+            elif isinstance(raw_std, dict) and "holdings" in raw_std:
+                return raw_std.get("holdings", [])
+
         return []
 
     def get_rms(self) -> Dict[str, Any]:
@@ -293,7 +341,7 @@ class SmartAPIAdapter:
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/user/v1/getRMS"
         data = self._send_request("GET", url, rate_limit_seconds=1.0)
-        if data and data.get("status") and data.get("data"):
+        if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
             return data["data"] if isinstance(data["data"], dict) else {}
         return {}
 

@@ -293,3 +293,139 @@ def test_manual_totp_reconnect_endpoint(client, db_session):
     assert "API_KEY_LIVE" not in resp_text
     assert "4321" not in resp_text
     assert "JBSWY3DPEHPK3PXP" not in resp_text
+
+
+def test_smartapi_ag8004_invalid_api_key_handling(client, db_session):
+    """
+    Verify that AG8004 (Invalid API Key) on downstream calls fails gracefully
+    and informs the user rather than falsely claiming 0 holdings and success.
+    """
+    acc = Account(
+        client_code="AG8004_TEST",
+        nickname="Key Test Demat",
+        account_group="Test",
+        encrypted_api_key=cipher.encrypt("INVALID_KEY"),
+        encrypted_pin=cipher.encrypt("1234"),
+        encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
+        is_enabled=True,
+        auth_status="DISCONNECTED",
+        ddpi_status="ACTIVE",
+        available_cash=50000.0
+    )
+    db_session.add(acc)
+    db_session.commit()
+    db_session.refresh(acc)
+
+    mock_auth_res = {
+        "status": True,
+        "message": "SUCCESS",
+        "data": {"jwtToken": "JWT", "refreshToken": "REF", "feedToken": "FEED"}
+    }
+    mock_ag8004_res = {
+        "success": False,
+        "message": "Invalid API Key",
+        "errorCode": "AG8004",
+        "data": ""
+    }
+
+    with patch("requests.Session.post") as mock_post, patch("requests.Session.get") as mock_get:
+        mock_post_resp = MagicMock()
+        mock_post_resp.json.return_value = mock_auth_res
+        mock_post.return_value = mock_post_resp
+
+        mock_get_resp = MagicMock()
+        mock_get_resp.json.return_value = mock_ag8004_res
+        mock_get.return_value = mock_get_resp
+
+        # Test sync endpoint
+        res = client.post(f"/api/v1/accounts/{acc.id}/sync")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert "AG8004" in data["message"] or "Invalid SmartAPI API Key" in data["message"]
+
+        db_session.refresh(acc)
+        assert acc.auth_status == "ERROR"
+        assert "AG8004" in acc.last_auth_error or "Invalid SmartAPI API Key" in acc.last_auth_error
+
+
+def test_smartapi_holdings_fallback_to_get_holding():
+    """Verify get_holdings falls back to standard /portfolio/v1/getHolding if getAllHolding returns empty."""
+    adapter = SmartAPIAdapter("KEY", "ACC01", "1234", "JBSWY3DPEHPK3PXP")
+    adapter.jwt_token = "JWT"
+    adapter.token_expiry_timestamp = time.time() + 3600
+
+    def mock_get(url, *args, **kwargs):
+        resp = MagicMock()
+        if "getAllHolding" in url:
+            # Empty summary returned
+            resp.json.return_value = {"status": True, "message": "SUCCESS", "data": {"holdings": []}}
+        elif "getHolding" in url:
+            # Fallback list returned
+            resp.json.return_value = {
+                "status": True,
+                "message": "SUCCESS",
+                "data": [{
+                    "tradingsymbol": "INFY-EQ",
+                    "quantity": 10,
+                    "averageprice": 1400.0,
+                    "ltp": 1500.0,
+                    "isin": "INE009A01021"
+                }]
+            }
+        return resp
+
+    with patch.object(adapter.session, "get", side_effect=mock_get):
+        holdings = adapter.get_holdings()
+        assert len(holdings) == 1
+        assert holdings[0]["tradingsymbol"] == "INFY-EQ"
+
+
+def test_smartapi_ddpi_preservation_when_unexposed(client, db_session):
+    """Verify that when broker profile does not contain DDPI flag, existing DDPI status is preserved."""
+    acc = Account(
+        client_code="DDPI_TEST",
+        nickname="DDPI Preserved",
+        account_group="Test",
+        encrypted_api_key=cipher.encrypt("VALID_KEY"),
+        encrypted_pin=cipher.encrypt("1234"),
+        encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
+        is_enabled=True,
+        auth_status="DISCONNECTED",
+        ddpi_status="ACTIVE",
+        available_cash=10000.0
+    )
+    db_session.add(acc)
+    db_session.commit()
+    db_session.refresh(acc)
+
+    mock_auth_res = {"status": True, "data": {"jwtToken": "JWT", "refreshToken": "REF", "feedToken": "FEED"}}
+    # Standard Angel One profile without DDPI fields
+    mock_profile_res = {
+        "status": True,
+        "data": {
+            "clientcode": "DDPI_TEST",
+            "name": "TEST USER",
+            "email": "",
+            "exchanges": ["nse_cm"],
+            "products": ["CNC"]
+        }
+    }
+    mock_rms_res = {"status": True, "data": {"availablecash": "15000.0", "net": "15000.0"}}
+
+    with patch("requests.Session.post") as mock_post, patch("requests.Session.get") as mock_get:
+        mock_post.return_value = MagicMock(json=lambda: mock_auth_res)
+
+        def mock_get_route(url, *args, **kwargs):
+            if "getProfile" in url:
+                return MagicMock(json=lambda: mock_profile_res)
+            return MagicMock(json=lambda: mock_rms_res)
+
+        mock_get.side_effect = mock_get_route
+
+        res = client.post(f"/api/v1/accounts/{acc.id}/test", json={"totp_code": "123456"})
+        assert res.status_code == 200
+        db_session.refresh(acc)
+        # DDPI status should remain ACTIVE as set by user, NOT overwritten to UNKNOWN
+        assert acc.ddpi_status == "ACTIVE"
+

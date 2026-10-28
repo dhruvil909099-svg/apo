@@ -148,10 +148,14 @@ class BackgroundSyncManager:
                     if holdings is not None and not adapter.last_error:
                         reconcile_broker_holdings(db, acc, holdings, now)
 
-                    acc.auth_status = "CONNECTED"
-                    acc.last_auth_error = None
-                    acc.last_sync_time = now
-                    synced_acc_count += 1
+                    if adapter.last_error:
+                        acc.auth_status = "ERROR"
+                        acc.last_auth_error = adapter.last_error
+                    else:
+                        acc.auth_status = "CONNECTED"
+                        acc.last_auth_error = None
+                        acc.last_sync_time = now
+                        synced_acc_count += 1
                     db.commit()
                 except Exception as acc_err:
                     logger.warning(f"Automated background sync for account {acc.nickname} failed: {str(acc_err)}")
