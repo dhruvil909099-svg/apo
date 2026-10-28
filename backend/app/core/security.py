@@ -123,6 +123,37 @@ def normalize_base32_secret(secret: str) -> str:
     return clean
 
 
+def validate_and_normalize_base32_secret(secret: str) -> str:
+    """
+    Validates and normalizes a permanent Base32 authenticator secret.
+    Explicitly rejects 6-digit temporary OTP codes, empty strings, and invalid Base32.
+    """
+    if not secret:
+        raise ValueError("TOTP secret cannot be empty.")
+
+    clean = normalize_base32_secret(secret)
+    if clean.isdigit() and len(clean) == 6:
+        raise ValueError("6-digit OTP is not accepted. A temporary 6-digit OTP code cannot be stored as a permanent Base32 authenticator secret. Please provide the permanent Base32 key.")
+
+
+    if len(clean) < 16:
+        raise ValueError("Base32 TOTP secret is too short. Please provide a valid secret key (at least 16 characters).")
+
+    if not re.match(r'^[A-Z2-7=]+$', clean):
+        raise ValueError("Invalid Base32 secret string. Only characters A-Z and 2-7 are allowed.")
+
+    padding = (8 - (len(clean.replace('=', '')) % 8)) % 8
+    test_str = clean.replace('=', '') + ('=' * padding)
+    try:
+        import base64
+        base64.b32decode(test_str, casefold=True)
+    except Exception as e:
+        raise ValueError(f"Invalid Base32 secret encoding: {str(e)}")
+
+    return clean
+
+
+
 def generate_totp_token(secret: str, digits: int = 6, interval: int = 30) -> str:
     """
     Generates a current 6-digit TOTP code (RFC 6238) from a base32 TOTP secret.

@@ -202,12 +202,15 @@ class SmartAPIAdapter:
                 totp_code = clean_code
             else:
                 if self.totp_secret.isdigit() and len(self.totp_secret) == 6:
-                    totp_code = self.totp_secret
-                else:
-                    totp_code = generate_totp_token(self.totp_secret)
-                    if not totp_code:
-                        self.last_error = "Failed to generate valid TOTP code from secret key. Ensure your permanent Base32 secret is correct."
-                        return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
+                    self.last_error = (
+                        "Invalid authenticator secret: A temporary 6-digit code is stored instead of a permanent Base32 secret. "
+                        "Please update your account credentials with the permanent Base32 key from Angel One setup."
+                    )
+                    return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP_SECRET"}
+                totp_code = generate_totp_token(self.totp_secret)
+                if not totp_code:
+                    self.last_error = "Failed to generate valid TOTP code from secret key. Ensure your permanent Base32 secret is correct."
+                    return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
 
             url = f"{self.BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword"
             payload = {

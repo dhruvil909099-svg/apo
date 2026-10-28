@@ -9,7 +9,7 @@ class AccountCreate(BaseModel):
     account_group: str = Field(default="Family", max_length=50)
     api_key: str = Field(..., min_length=3, description="SmartAPI Application API Key")
     pin: str = Field(..., min_length=4, max_length=20, description="4-digit PIN or password")
-    totp_secret: str = Field(..., min_length=8, description="Base32 TOTP QR code secret string")
+    totp_secret: str = Field(..., min_length=1, description="Base32 TOTP QR code secret string")
     is_demo: bool = Field(default=False)
 
 

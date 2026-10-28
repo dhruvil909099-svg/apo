@@ -31,9 +31,15 @@ def persist_accounts_backup(db: Session) -> bool:
         for acc in accounts:
             allotment_records = []
             for a in acc.allotments:
-                if a.allotted_quantity > 0 and a.ipo:
                     allotment_records.append({
+                        "application_no": a.application_no,
                         "symbol": a.ipo.symbol,
+                        "company_name": a.ipo.company_name,
+                        "exchange": a.ipo.exchange,
+                        "issue_price": a.ipo.issue_price,
+                        "lot_size": a.ipo.lot_size,
+                        "isin": a.ipo.isin,
+                        "symbol_token": a.ipo.symbol_token,
                         "allotted_quantity": a.allotted_quantity,
                         "applied_quantity": a.applied_quantity,
                         "acquisition_cost": a.acquisition_cost,
@@ -96,16 +102,28 @@ def restore_accounts_backup(db: Session) -> int:
             for item in records:
                 existing = db.query(Account).filter(Account.client_code == item["client_code"]).first()
                 if not existing:
+                    # Guard: ensure restored encrypted_totp_secret is never a 6-digit temporary OTP
+                    restored_totp_enc = item.get("encrypted_totp_secret", "")
+                    restored_auth_status = item.get("auth_status", "DISCONNECTED")
+                    try:
+                        dec_val = cipher.decrypt(restored_totp_enc)
+                        if dec_val.isdigit() and len(dec_val) == 6:
+                            logger.warning(f"Account {item.get('client_code')} had 6-digit OTP stored as secret in backup. Clearing secret.")
+                            restored_totp_enc = cipher.encrypt("")
+                            restored_auth_status = "REAUTHENTICATION_REQUIRED"
+                    except Exception:
+                        pass
+
                     acc = Account(
                         nickname=item["nickname"],
                         client_code=item["client_code"],
                         account_group=item.get("account_group", "Family"),
                         encrypted_api_key=item["encrypted_api_key"],
                         encrypted_pin=item["encrypted_pin"],
-                        encrypted_totp_secret=item["encrypted_totp_secret"],
+                        encrypted_totp_secret=restored_totp_enc,
                         is_enabled=item.get("is_enabled", True),
                         is_demo=item.get("is_demo", False),
-                        auth_status=item.get("auth_status", "DISCONNECTED"),
+                        auth_status=restored_auth_status,
                         ddpi_status=item.get("ddpi_status", "ACTIVE"),
                         edis_authorized_today=item.get("edis_authorized_today", False),
                         available_cash=item.get("available_cash", 0.0)
@@ -114,13 +132,28 @@ def restore_accounts_backup(db: Session) -> int:
                     db.flush()
                     restored_count += 1
 
-                    # Restore allotments if IPO exists
+                    # Restore allotments if IPO exists or reconstruct from metadata
                     for alt in item.get("allotments", []):
                         ipo = db.query(IPO).filter(IPO.symbol == alt["symbol"]).first()
+                        if not ipo and alt.get("company_name"):
+                            ipo = IPO(
+                                symbol=alt["symbol"],
+                                company_name=alt.get("company_name", alt["symbol"]),
+                                exchange=alt.get("exchange", "NSE"),
+                                issue_price=alt.get("issue_price", alt.get("acquisition_cost", 100.0)),
+                                lot_size=alt.get("lot_size", 1),
+                                isin=alt.get("isin"),
+                                symbol_token=alt.get("symbol_token"),
+                                status="LISTED"
+                            )
+                            db.add(ipo)
+                            db.flush()
+
                         if ipo:
                             db.add(Allotment(
                                 ipo_id=ipo.id,
                                 account_id=acc.id,
+                                application_no=alt.get("application_no", f"APP-{acc.client_code}-{ipo.symbol}"),
                                 applied_quantity=alt.get("applied_quantity", alt["allotted_quantity"]),
                                 allotted_quantity=alt["allotted_quantity"],
                                 acquisition_cost=alt["acquisition_cost"],
@@ -183,15 +216,18 @@ def restore_accounts_backup(db: Session) -> int:
     env_pin = settings.SMARTAPI_PIN.strip() if settings.SMARTAPI_PIN else ""
     env_totp = settings.SMARTAPI_TOTP_SECRET.strip() if settings.SMARTAPI_TOTP_SECRET else ""
 
-    if env_key and env_pin and env_totp:
-        logger.info(f"Applying permanent SmartAPI credentials from environment to primary account {primary_code}...")
-        primary_acc.encrypted_api_key = cipher.encrypt(env_key)
-        primary_acc.encrypted_pin = cipher.encrypt(env_pin)
-        clean_totp = normalize_base32_secret(env_totp)
-        primary_acc.encrypted_totp_secret = cipher.encrypt(clean_totp)
-        primary_acc.last_auth_error = None
-        db.commit()
-        db.refresh(primary_acc)
+    if env_key and env_pin and env_totp and primary_acc:
+        if env_totp.isdigit() and len(env_totp) == 6:
+            logger.error("SMARTAPI_TOTP_SECRET in environment is a 6-digit OTP code, not a Base32 secret. Cannot store as permanent secret.")
+        else:
+            logger.info(f"Applying permanent SmartAPI credentials from environment to primary account {primary_code}...")
+            primary_acc.encrypted_api_key = cipher.encrypt(env_key)
+            primary_acc.encrypted_pin = cipher.encrypt(env_pin)
+            clean_totp = normalize_base32_secret(env_totp)
+            primary_acc.encrypted_totp_secret = cipher.encrypt(clean_totp)
+            primary_acc.last_auth_error = None
+            db.commit()
+            db.refresh(primary_acc)
 
     # Attempt automatic connection on boot for accounts with complete credentials
     for acc in db.query(Account).filter(Account.is_enabled == True, Account.is_demo == False).all():

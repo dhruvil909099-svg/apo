@@ -3,7 +3,10 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.security import cipher, mask_client_id, sanitize_dict_for_logging, normalize_base32_secret
+from app.core.security import (
+    cipher, mask_client_id, sanitize_dict_for_logging,
+    normalize_base32_secret, validate_and_normalize_base32_secret
+)
 from app.models.account import Account
 from app.models.audit import AuditLog
 from app.models.ipo import Allotment, IPO
@@ -97,12 +100,12 @@ def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
 
     clean_api_key = account_in.api_key.strip()
     clean_pin = account_in.pin.strip()
-    raw_totp = normalize_base32_secret(account_in.totp_secret.strip())
-
-    if raw_totp.isdigit() and len(raw_totp) == 6:
+    try:
+        raw_totp = validate_and_normalize_base32_secret(account_in.totp_secret.strip())
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Account registration requires the permanent Base32 secret string from Angel One 'Enable TOTP', not a 6-digit temporary code."
+            detail=str(e)
         )
 
     # Encrypt sensitive credentials using AES-256 Fernet
@@ -257,15 +260,15 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
         manual_totp = account_in.manual_totp.strip()
 
     if account_in.totp_secret is not None and account_in.totp_secret.strip():
-        raw_secret_input = account_in.totp_secret.strip()
-        if raw_secret_input.isdigit() and len(raw_secret_input) == 6:
+        try:
+            normalized_secret = validate_and_normalize_base32_secret(account_in.totp_secret.strip())
+            account.encrypted_totp_secret = cipher.encrypt(normalized_secret)
+            credentials_rotated = True
+        except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid TOTP Secret. Please provide the permanent Base32 secret string (from Angel One 'Enable TOTP'), not a 6-digit temporary OTP."
+                detail=str(e)
             )
-        normalized_secret = normalize_base32_secret(raw_secret_input)
-        account.encrypted_totp_secret = cipher.encrypt(normalized_secret)
-        credentials_rotated = True
 
     # If credentials were changed or manual_totp was provided, re-verify connectivity
     if (credentials_rotated or manual_totp) and not account.is_demo:
@@ -334,14 +337,13 @@ def reconnect_account_full_credentials(
     clean_key = req.api_key.strip()
     clean_pin = req.pin.strip()
     raw_totp = req.totp_secret.strip()
-
-    if raw_totp.isdigit() and len(raw_totp) == 6:
+    try:
+        normalized_totp = validate_and_normalize_base32_secret(raw_totp)
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="6-digit OTP is not accepted. Please provide your permanent Base32 TOTP secret string from Angel One."
+            detail=str(e)
         )
-
-    normalized_totp = normalize_base32_secret(raw_totp)
 
     if not clean_code or not clean_key or not clean_pin or not normalized_totp:
         raise HTTPException(
@@ -619,6 +621,12 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
 
+            if adapter.last_error and (live_holdings is None or not live_holdings):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to retrieve delivery holdings from Angel One: {adapter.last_error}"
+                )
+
             if live_holdings is not None and not adapter.last_error:
                 items = []
                 now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
@@ -709,6 +717,12 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
 
+            if adapter.last_error and (live_pos is None or not live_pos):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to retrieve positions from Angel One: {adapter.last_error}"
+                )
+
             if live_pos is not None and not adapter.last_error:
                 items = []
                 now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
@@ -766,6 +780,12 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
                 raise HTTPException(
                     status_code=401,
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
+                )
+
+            if adapter.last_error and (broker_orders is None or not broker_orders):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to retrieve order book from Angel One: {adapter.last_error}"
                 )
 
             if broker_orders is not None and not adapter.last_error:
@@ -849,6 +869,12 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
                 raise HTTPException(
                     status_code=401,
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
+                )
+
+            if adapter.last_error and (broker_trades is None or not broker_trades):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to retrieve trade executions from Angel One: {adapter.last_error}"
                 )
 
             if broker_trades is not None and not adapter.last_error:

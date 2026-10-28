@@ -8,6 +8,7 @@ from app.models.account import Account
 from app.core.security import (
     cipher,
     normalize_base32_secret,
+    validate_and_normalize_base32_secret,
     generate_totp_token,
     mask_client_id
 )
@@ -428,4 +429,237 @@ def test_smartapi_ddpi_preservation_when_unexposed(client, db_session):
         db_session.refresh(acc)
         # DDPI status should remain ACTIVE as set by user, NOT overwritten to UNKNOWN
         assert acc.ddpi_status == "ACTIVE"
+
+
+def test_validate_and_normalize_base32_secret_strict_validation():
+    """Verify strict validation of permanent Base32 authenticator secrets."""
+    # Valid Base32 secrets
+    assert validate_and_normalize_base32_secret("JBSWY3DPEHPK3PXP") == "JBSWY3DPEHPK3PXP"
+    assert validate_and_normalize_base32_secret("  jbsw-y3dp-ehpk-3pxp  ") == "JBSWY3DPEHPK3PXP"
+    assert validate_and_normalize_base32_secret("otpauth://totp/AngelOne:AB1234?secret=JBSWY3DPEHPK3PXP") == "JBSWY3DPEHPK3PXP"
+
+    # Reject 6-digit numeric OTPs
+    with pytest.raises(ValueError, match="6-digit OTP is not accepted"):
+        validate_and_normalize_base32_secret("123456")
+
+    with pytest.raises(ValueError, match="6-digit OTP is not accepted"):
+        validate_and_normalize_base32_secret(" 654321 ")
+
+    # Reject too short
+    with pytest.raises(ValueError, match="too short"):
+        validate_and_normalize_base32_secret("TOOSHORT")
+
+    # Reject empty
+    with pytest.raises(ValueError, match="cannot be empty"):
+        validate_and_normalize_base32_secret("")
+
+    # Reject invalid characters
+    with pytest.raises(ValueError, match="Invalid Base32 secret string"):
+        validate_and_normalize_base32_secret("INVALID!@#$12345678")
+
+
+def test_create_and_update_account_rejects_six_digit_otp(client, db_session):
+    """Verify create and update account endpoints reject 6-digit OTP codes in totp_secret."""
+    # Create with 6-digit OTP should fail with 400
+    create_payload = {
+        "nickname": "Test OTP Demat",
+        "client_code": "TESTOTP01",
+        "account_group": "Family",
+        "api_key": "VALID_API_KEY_123",
+        "pin": "1234",
+        "totp_secret": "123456",  # 6-digit OTP!
+        "is_demo": False
+    }
+    resp = client.post("/api/v1/accounts", json=create_payload)
+    assert resp.status_code == 400
+    assert "6-digit OTP is not accepted" in resp.json()["detail"]
+
+    # Valid account creation
+    create_payload["totp_secret"] = "JBSWY3DPEHPK3PXP"
+    resp = client.post("/api/v1/accounts", json=create_payload)
+    assert resp.status_code == 201
+    created_id = resp.json()["id"]
+
+    # Update with 6-digit OTP should fail with 400
+    update_payload = {"totp_secret": "654321"}
+    resp = client.put(f"/api/v1/accounts/{created_id}", json=update_payload)
+    assert resp.status_code == 400
+    assert "6-digit OTP is not accepted" in resp.json()["detail"]
+
+
+def test_readonly_endpoints_raise_502_on_broker_failure(client, db_session):
+    """
+    Verify read-only endpoints (holdings, positions, orders, trades) raise HTTP 502
+    Bad Gateway when upstream broker call fails, rather than silently fabricating empty data.
+    """
+    live_acc = Account(
+        nickname="Broker Error Demat",
+        client_code="BROKER_ERR_01",
+        account_group="Test",
+        encrypted_api_key=cipher.encrypt("KEY_ERR"),
+        encrypted_pin=cipher.encrypt("1234"),
+        encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
+        is_enabled=True,
+        is_demo=False,
+        auth_status="CONNECTED",
+        available_cash=50000.0
+    )
+    db_session.add(live_acc)
+    db_session.commit()
+    db_session.refresh(live_acc)
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_session_expired = False
+    mock_adapter.last_error = "Broker gateway timeout or connection reset"
+    mock_adapter.get_holdings.return_value = []
+    mock_adapter.get_positions.return_value = []
+    mock_adapter.get_order_book.return_value = []
+    mock_adapter.get_trade_book.return_value = []
+
+    with patch("app.api.endpoints_accounts.get_adapter_for_account", return_value=mock_adapter):
+        # 1. Holdings
+        resp = client.get(f"/api/v1/accounts/{live_acc.id}/holdings")
+        assert resp.status_code == 502
+        assert "Broker gateway timeout" in resp.json()["detail"]
+
+        # 2. Positions
+        resp = client.get(f"/api/v1/accounts/{live_acc.id}/positions")
+        assert resp.status_code == 502
+        assert "Broker gateway timeout" in resp.json()["detail"]
+
+        # 3. Orders
+        resp = client.get(f"/api/v1/accounts/{live_acc.id}/orders")
+        assert resp.status_code == 502
+        assert "Broker gateway timeout" in resp.json()["detail"]
+
+        # 4. Trades
+        resp = client.get(f"/api/v1/accounts/{live_acc.id}/trades")
+        assert resp.status_code == 502
+        assert "Broker gateway timeout" in resp.json()["detail"]
+
+
+def test_smartapi_adapter_rejects_six_digit_otp_in_authenticate():
+    """Verify SmartAPIAdapter.authenticate rejects 6-digit numeric OTPs passed as totp_secret."""
+    adapter = SmartAPIAdapter(
+        api_key="API_KEY",
+        client_code="CLIENT01",
+        pin="1234",
+        totp_secret="123456"  # 6-digit numeric OTP passed as secret
+    )
+    res = adapter.authenticate()
+    assert res["success"] is False
+    assert "temporary 6-digit code is stored instead of a permanent Base32 secret" in res["message"]
+
+
+def test_account_persistence_scrubs_six_digit_otp_and_serializes_ipo_metadata(tmp_path):
+    """
+    Verify backup persistence serializes IPO metadata inside allotment records,
+    and restore scrubs legacy 6-digit OTP secrets to require re-authentication.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.core.database import Base
+    from app.models.ipo import IPO, Allotment
+    from app.models.risk import RiskLimit
+    import app.services.account_persistence as persistence
+
+    temp_backup_file = str(tmp_path / "metadata_test_backup.json")
+    original_backup_path = persistence.BACKUP_FILE_PATH
+    persistence.BACKUP_FILE_PATH = temp_backup_file
+
+    try:
+        db_path = str(tmp_path / "metadata_test.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        Base.metadata.create_all(bind=engine)
+        session = Session()
+
+        acc = Account(
+            nickname="Metadata Test Demat",
+            client_code="META_TEST_01",
+            account_group="Test",
+            encrypted_api_key=cipher.encrypt("TEST_KEY"),
+            encrypted_pin=cipher.encrypt("1234"),
+            encrypted_totp_secret=cipher.encrypt("654321"),  # legacy 6-digit OTP in DB
+            is_enabled=True,
+            is_demo=False,
+            auth_status="CONNECTED"
+        )
+        session.add(acc)
+
+        ipo = IPO(
+            symbol="TESTIPO",
+            company_name="Test IPO Company Limited",
+            exchange="NSE",
+            issue_price=250.0,
+            lot_size=60,
+            listing_date="2026-10-28",
+            isin="INE999A01099",
+            symbol_token="99999",
+            status="LISTED"
+        )
+        session.add(ipo)
+        session.flush()
+
+        allotment = Allotment(
+            ipo_id=ipo.id,
+            account_id=acc.id,
+            application_no="APP-META-001",
+            applied_quantity=60,
+            allotted_quantity=60,
+            acquisition_cost=250.0,
+            status="ALLOTTED"
+        )
+        session.add(allotment)
+        session.commit()
+
+        # Persist backup
+        assert persistence.persist_accounts_backup(session) is True
+
+        # Inspect backup JSON structure
+        with open(temp_backup_file, "r") as f:
+            data = json.load(f)
+
+        assert isinstance(data, list)
+        assert len(data) == 1
+        acc_data = data[0]
+        assert len(acc_data["allotments"]) == 1
+        allot_data = acc_data["allotments"][0]
+        assert allot_data["symbol"] == "TESTIPO"
+        assert allot_data["company_name"] == "Test IPO Company Limited"
+        assert allot_data["issue_price"] == 250.0
+        assert allot_data["lot_size"] == 60
+        assert allot_data["isin"] == "INE999A01099"
+
+        session.close()
+
+        # Re-create fresh database and restore
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        session_fresh = Session()
+
+        restored_count = persistence.restore_accounts_backup(session_fresh)
+        assert restored_count == 1
+
+        restored_acc = session_fresh.query(Account).filter(Account.client_code == "META_TEST_01").first()
+        assert restored_acc is not None
+        # 6-digit OTP should have been scrubbed to placeholder and auth_status set to REAUTHENTICATION_REQUIRED
+        assert restored_acc.auth_status == "REAUTHENTICATION_REQUIRED"
+        decrypted_secret = cipher.decrypt(restored_acc.encrypted_totp_secret)
+        assert decrypted_secret != "654321"
+
+        # IPO reconstructed and allotment linked
+        restored_ipo = session_fresh.query(IPO).filter(IPO.symbol == "TESTIPO").first()
+        assert restored_ipo is not None
+        assert restored_ipo.company_name == "Test IPO Company Limited"
+        assert restored_ipo.issue_price == 250.0
+
+        restored_allot = session_fresh.query(Allotment).filter(Allotment.application_no == "APP-META-001").first()
+        assert restored_allot is not None
+        assert restored_allot.ipo_id == restored_ipo.id
+        assert restored_allot.account_id == restored_acc.id
+
+        session_fresh.close()
+    finally:
+        persistence.BACKUP_FILE_PATH = original_backup_path
 

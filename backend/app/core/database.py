@@ -21,10 +21,11 @@ if db_url.startswith("sqlite"):
 else:
     # Conservative connection pooling for client/server databases (PostgreSQL/MySQL)
     engine_kwargs.update({
-        "pool_size": 3,
-        "max_overflow": 1,
-        "pool_timeout": 10.0,
+        "pool_size": 5,
+        "max_overflow": 2,
+        "pool_timeout": 15.0,
         "pool_recycle": 300,
+        "pool_pre_ping": True,  # Critical for PostgreSQL resilience against dropped connections
     })
 
 engine = create_engine(
