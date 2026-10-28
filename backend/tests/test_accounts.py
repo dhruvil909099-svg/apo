@@ -50,3 +50,22 @@ def test_test_account_connection(client):
     data = response.json()
     assert data["success"] is True
     assert data["auth_status"] == "CONNECTED"
+
+
+def test_update_account_partial_fields_without_rotation(client):
+    # Updating nickname or group without touching credentials should succeed without UnboundLocalError
+    response = client.put("/api/v1/accounts/1", json={"nickname": "Updated Demo Profile"})
+    assert response.status_code == 200
+    assert response.json()["nickname"] == "Updated Demo Profile"
+
+
+def test_update_account_rotate_credentials(client):
+    # Rotate demo account credentials
+    response = client.put("/api/v1/accounts/1", json={
+        "client_code": "DEMO_SELF01_NEW",
+        "api_key": "NEW_DEMO_KEY",
+        "pin": "5678",
+        "totp_secret": "JBSWY3DPEHPK3PXP"
+    })
+    assert response.status_code == 200
+    assert response.json()["masked_client_code"] == "D***NEW"

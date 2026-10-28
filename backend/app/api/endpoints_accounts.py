@@ -159,6 +159,7 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
         account.ddpi_status = account_in.ddpi_status
     if account_in.edis_authorized_today is not None:
         account.edis_authorized_today = account_in.edis_authorized_today
+    credentials_rotated = False
     if account_in.client_code is not None and account_in.client_code.strip():
         new_code = account_in.client_code.strip()
         if new_code != account.client_code:
@@ -166,11 +167,9 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
             if existing:
                 raise HTTPException(status_code=400, detail=f"Client code {mask_client_id(new_code)} already in use.")
             account.client_code = new_code
-            account.masked_client_code = mask_client_id(new_code)
             credentials_rotated = True
 
     # Optional credential rotation
-    credentials_rotated = False if not credentials_rotated else True
     if account_in.api_key:
         account.encrypted_api_key = cipher.encrypt(account_in.api_key.strip())
         credentials_rotated = True
