@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, Clock, ShieldCheck, AlertOctagon } from 'lucide-react';
-import { DashboardSummary } from '../types';
+import {
+  RefreshCw, Clock, ShieldCheck, AlertOctagon,
+  Server, KeyRound, Wifi, WifiOff, AlertTriangle, CheckCircle2
+} from 'lucide-react';
+import { DashboardSummary, Account } from '../types';
+import { connectionManager, ConnectionState } from '../services/backendConnectionManager';
 
 interface HeaderProps {
   currentTab: string;
   summary: DashboardSummary | null;
+  accounts?: Account[];
   onRefresh: () => void;
   isRefreshing: boolean;
+  lastUpdated?: Date | null;
 }
 
 const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
@@ -22,8 +28,21 @@ const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
   settings: { title: 'Settings & Reports', subtitle: 'Configuration, exportable registers, and Angel One SmartAPI connection guides' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ currentTab, summary, onRefresh, isRefreshing }) => {
+export const Header: React.FC<HeaderProps> = ({
+  currentTab,
+  summary,
+  accounts = [],
+  onRefresh,
+  isRefreshing,
+  lastUpdated,
+}) => {
   const [timeStr, setTimeStr] = useState<string>('');
+  const [connState, setConnState] = useState<ConnectionState>(connectionManager.getState());
+
+  useEffect(() => {
+    const unsub = connectionManager.subscribe((st) => setConnState(st));
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     const updateTime = () => {
@@ -38,6 +57,130 @@ export const Header: React.FC<HeaderProps> = ({ currentTab, summary, onRefresh, 
   const meta = TAB_TITLES[currentTab] || { title: 'IPOPro Dashboard', subtitle: 'Multi-Account Management' };
   const isHalted = summary?.emergency_trading_disabled ?? false;
 
+  // Broker connection status calculations
+  const totalAccounts = accounts.length;
+  const liveAccounts = accounts.filter((a) => !a.is_demo);
+  const errorAccounts = accounts.filter((a) => a.auth_status === 'ERROR' || a.auth_status === 'EXPIRED');
+
+  // Backend connection status badge rendering
+  const renderBackendStatus = () => {
+    const { lifecycle, lastProbeLatencyMs, nextRetryInSeconds, isWakingUp } = connState;
+
+    if (lifecycle === 'CONNECTED' || lifecycle === 'READY' || lifecycle === 'LOADING_DATA') {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-semibold text-emerald-700"
+          title={`Backend connected (${lastProbeLatencyMs || 0}ms)`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span>Backend: Online</span>
+        </div>
+      );
+    }
+
+    if (lifecycle === 'CHECKING_BACKEND') {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-[11px] font-semibold text-blue-700 animate-pulse"
+          title="Checking backend liveness..."
+        >
+          <RefreshCw className="w-3 h-3 animate-spin text-blue-600" />
+          <span>Connecting...</span>
+        </div>
+      );
+    }
+
+    if (lifecycle === 'RETRYING') {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-300 text-[11px] font-semibold text-amber-800"
+          title={connState.statusMessage}
+        >
+          <RefreshCw className="w-3 h-3 animate-spin text-amber-600" />
+          <span>
+            {isWakingUp ? 'Waking up' : 'Reconnecting'}
+            {nextRetryInSeconds !== null ? ` in ${nextRetryInSeconds}s` : '...'}
+          </span>
+        </div>
+      );
+    }
+
+    if (lifecycle === 'DEGRADED') {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-700"
+          title="Backend running but database degraded"
+        >
+          <AlertTriangle className="w-3 h-3 text-amber-500" />
+          <span>Backend Degraded</span>
+        </div>
+      );
+    }
+
+    if (lifecycle === 'AUTHENTICATION_REQUIRED') {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-50 border border-rose-200 text-[11px] font-semibold text-rose-700"
+          title="Invalid API Key configured"
+        >
+          <KeyRound className="w-3 h-3 text-rose-500" />
+          <span>Auth Required</span>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-300 text-[11px] font-semibold text-slate-600"
+        title="Backend unreachable"
+      >
+        <WifiOff className="w-3 h-3 text-slate-400" />
+        <span>Offline</span>
+      </div>
+    );
+  };
+
+  // Broker session status badge rendering
+  const renderBrokerStatus = () => {
+    if (totalAccounts === 0) {
+      return null;
+    }
+
+    if (errorAccounts.length > 0) {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-50 border border-rose-200 text-[11px] font-semibold text-rose-700"
+          title={`${errorAccounts.length} account(s) need session reconnection`}
+        >
+          <KeyRound className="w-3 h-3 text-rose-600" />
+          <span>Angel One: {errorAccounts.length} Action Needed</span>
+        </div>
+      );
+    }
+
+    if (liveAccounts.length > 0) {
+      return (
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-semibold text-emerald-700"
+          title="All authorized Angel One sessions healthy"
+        >
+          <ShieldCheck className="w-3 h-3 text-emerald-600" />
+          <span>Angel One: Valid</span>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-800"
+        title="Simulated demo trading pool only"
+      >
+        <ShieldCheck className="w-3 h-3 text-amber-600" />
+        <span>Angel One: Demo</span>
+      </div>
+    );
+  };
+
   return (
     <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between flex-shrink-0">
       <div>
@@ -45,8 +188,8 @@ export const Header: React.FC<HeaderProps> = ({ currentTab, summary, onRefresh, 
         <p className="text-xs text-slate-500">{meta.subtitle}</p>
       </div>
 
-      <div className="flex items-center gap-4">
-        {/* Emergency Halt Banner if active */}
+      <div className="flex items-center gap-3">
+        {/* Emergency Halt Banner */}
         {isHalted && (
           <div className="flex items-center gap-1.5 px-3 py-1 bg-red-100 border border-red-300 rounded-md text-red-800 text-xs font-bold animate-pulse">
             <AlertOctagon className="w-4 h-4 text-red-600" />
@@ -54,13 +197,17 @@ export const Header: React.FC<HeaderProps> = ({ currentTab, summary, onRefresh, 
           </div>
         )}
 
-        {/* Market Status Pill */}
-        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700">
+        {/* Status Badges: Backend & Broker */}
+        {renderBackendStatus()}
+        {renderBrokerStatus()}
+
+        {/* Live Market Pill */}
+        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-[11px] font-medium text-slate-700">
           <span className="w-2 h-2 rounded-full bg-finGreen animate-ping" />
-          <span>NSE / BSE: Cash Market</span>
+          <span>NSE / BSE: Cash</span>
         </div>
 
-        {/* Live Clock */}
+        {/* Live Clock & Last Updated */}
         <div className="flex items-center gap-1.5 text-xs font-mono font-medium text-slate-600 bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
           <Clock className="w-3.5 h-3.5 text-slate-400" />
           <span>{timeStr || 'Loading IST...'}</span>
@@ -71,7 +218,7 @@ export const Header: React.FC<HeaderProps> = ({ currentTab, summary, onRefresh, 
           onClick={onRefresh}
           disabled={isRefreshing}
           className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 transition-colors disabled:opacity-50"
-          title="Refresh Data"
+          title={lastUpdated ? `Last updated: ${lastUpdated.toLocaleTimeString('en-IN')}` : 'Refresh Data'}
         >
           <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-brand-600' : ''}`} />
         </button>

@@ -55,77 +55,221 @@ export function setApiKey(key: string): void {
   }
 }
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeaders(),
-        ...options?.headers,
-      },
-      ...options,
-    });
-  } catch (netErr: any) {
-    throw new Error(`Unable to reach backend server at "${url}". Please verify your network connection or Backend API URL in Settings.`);
+export class ApiError extends Error {
+  status: number;
+  statusText: string;
+  detail?: string;
+  constructor(message: string, status: number, statusText: string, detail?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.statusText = statusText;
+    this.detail = detail;
+  }
+}
+
+export class NetworkError extends Error {
+  constructor(message: string, public originalError?: any) {
+    super(message);
+    this.name = 'NetworkError';
+  }
+}
+
+export class TimeoutError extends Error {
+  constructor(message: string, public timeoutMs: number) {
+    super(message);
+    this.name = 'TimeoutError';
+  }
+}
+
+export class AuthError extends ApiError {
+  constructor(message: string, status: number = 401, detail?: string) {
+    super(message, status, 'Unauthorized', detail);
+    this.name = 'AuthError';
+  }
+}
+
+export class RateLimitError extends ApiError {
+  constructor(message: string, public retryAfterSeconds?: number) {
+    super(message, 429, 'Too Many Requests');
+    this.name = 'RateLimitError';
+  }
+}
+
+export interface FetchOptions extends RequestInit {
+  timeoutMs?: number;
+  skipDeduplication?: boolean;
+  retries?: number;
+}
+
+// In-flight request pooling for GET requests
+const inFlightRequests = new Map<string, Promise<any>>();
+
+async function fetchJson<T>(url: string, options?: FetchOptions): Promise<T> {
+  const method = (options?.method || 'GET').toUpperCase();
+  const isGet = method === 'GET';
+  const dedupKey = isGet && !options?.skipDeduplication ? `${method}:${url}` : null;
+
+  if (dedupKey && inFlightRequests.has(dedupKey)) {
+    return inFlightRequests.get(dedupKey) as Promise<T>;
   }
 
-  const contentType = response.headers.get('content-type') || '';
-  const isHtml = contentType.includes('text/html');
+  const executionPromise = (async () => {
+    const timeoutMs = options?.timeoutMs || 15000;
+    const maxRetries = options?.retries !== undefined ? options.retries : (isGet ? 1 : 0);
 
-  if (!response.ok) {
-    let errorDetail = `Request failed with status ${response.status}`;
-    if (isHtml) {
-      errorDetail = `Backend API server not found at "${url}" (HTTP ${response.status}). Hostinger returned an HTML page instead of API JSON. Please configure your live Backend API URL in Settings.`;
-    } else {
+    let attempt = 0;
+    while (attempt <= maxRetries) {
+      attempt++;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
       try {
-        const errObj = await response.json();
-        errorDetail = errObj.detail || errObj.message || errorDetail;
-      } catch {
-        // ignore
+        const response = await fetch(url, {
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+            ...options?.headers,
+          },
+          signal: controller.signal,
+          ...options,
+        });
+        clearTimeout(timeoutId);
+
+        const contentType = response.headers.get('content-type') || '';
+        const isHtml = contentType.includes('text/html');
+
+        if (!response.ok) {
+          let errorDetail = `Request failed with status ${response.status}`;
+          if (isHtml) {
+            errorDetail = `Backend API server not found at "${url}" (HTTP ${response.status}). Hostinger returned an HTML page instead of API JSON. Please configure your live Backend API URL in Settings.`;
+          } else {
+            try {
+              const errObj = await response.json();
+              errorDetail = errObj.detail || errObj.message || errorDetail;
+            } catch {
+              // ignore
+            }
+          }
+
+          if (response.status === 401 || response.status === 403) {
+            throw new AuthError(errorDetail, response.status, errorDetail);
+          }
+          if (response.status === 429) {
+            const retryAfter = response.headers.get('retry-after');
+            throw new RateLimitError(errorDetail, retryAfter ? parseInt(retryAfter, 10) : undefined);
+          }
+          if (response.status >= 500 && attempt <= maxRetries && isGet) {
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+
+          throw new ApiError(errorDetail, response.status, response.statusText, errorDetail);
+        }
+
+        if (isHtml) {
+          const text = await response.text();
+          if (text.trim().startsWith('<') || text.includes('<!doctype') || text.includes('<html')) {
+            throw new ApiError(
+              `Backend API server returned index.html instead of FastAPI JSON. Check Backend API URL in Settings.`,
+              200,
+              'HTML_RECEIVED'
+            );
+          }
+          try {
+            return JSON.parse(text);
+          } catch {
+            throw new ApiError(`Invalid non-JSON response from backend server at "${url}".`, 200, 'MALFORMED_JSON');
+          }
+        }
+
+        return await response.json();
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+          if (attempt <= maxRetries && isGet) {
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+          throw new TimeoutError(`Request timed out after ${timeoutMs}ms for "${url}".`, timeoutMs);
+        }
+        if (err instanceof ApiError) {
+          throw err;
+        }
+        if (attempt <= maxRetries && isGet) {
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        throw new NetworkError(`Unable to reach backend server at "${url}". ${err.message || ''}`, err);
       }
     }
-    throw new Error(errorDetail);
+    throw new NetworkError(`Failed to complete request to "${url}" after retries.`);
+  })();
+
+  if (dedupKey) {
+    inFlightRequests.set(dedupKey, executionPromise);
+    executionPromise.finally(() => {
+      inFlightRequests.delete(dedupKey);
+    });
   }
 
-  if (isHtml) {
-    const text = await response.text();
-    if (text.trim().startsWith('<') || text.includes('<!doctype') || text.includes('<html')) {
-      throw new Error(
-        `Backend API server is not running on Hostinger. The server returned index.html instead of FastAPI JSON. Please configure your live Backend API URL in Settings.`
-      );
-    }
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(`Invalid non-JSON response from backend server at "${url}".`);
-    }
-  }
-
-  return response.json();
+  return executionPromise;
 }
 
 export const api = {
-  // Health & connectivity check
-  checkHealth: async (baseUrl?: string): Promise<{ ok: boolean; statusText: string; latencyMs: number }> => {
-    const base = baseUrl || getApiBase();
+  // Lightweight health probe using /api/v1/health
+  checkHealth: async (
+    baseUrl?: string
+  ): Promise<{ ok: boolean; status: string; latencyMs: number; isWakingUp?: boolean; detail?: string }> => {
+    const base = (baseUrl || getApiBase()).replace(/\/+$/, '');
     const start = performance.now();
     try {
-      const res = await fetch(`${base}/audit/summary`, {
-        headers: getAuthHeaders(),
+      const res = await fetchJson<{ status: string; app_name: string; version: string }>(`${base}/health`, {
+        timeoutMs: 35000, // accommodate Render cold-start wakeups
+        skipDeduplication: true,
+        retries: 0,
       });
       const latencyMs = Math.round(performance.now() - start);
-      const contentType = res.headers.get('content-type') || '';
-      if (!res.ok) {
-        return { ok: false, statusText: `HTTP ${res.status}`, latencyMs };
-      }
-      if (contentType.includes('text/html')) {
-        return { ok: false, statusText: 'Returned HTML (FastAPI not found)', latencyMs };
-      }
-      await res.json();
-      return { ok: true, statusText: 'Online', latencyMs };
+      return { ok: true, status: res.status || 'UP', latencyMs };
     } catch (err: any) {
-      return { ok: false, statusText: err.message || 'Offline', latencyMs: Math.round(performance.now() - start) };
+      const latencyMs = Math.round(performance.now() - start);
+      const isTimeout = err instanceof TimeoutError || err.name === 'TimeoutError';
+      const isWakingUp = isTimeout || (err.message && err.message.toLowerCase().includes('timeout'));
+      return {
+        ok: false,
+        status: isWakingUp ? 'WAKING_UP' : 'OFFLINE',
+        latencyMs,
+        isWakingUp,
+        detail: err.message,
+      };
+    }
+  },
+
+  // Readiness probe verifying database and dependencies
+  checkReadiness: async (
+    baseUrl?: string
+  ): Promise<{ ok: boolean; status: string; database: string; latencyMs: number }> => {
+    const base = (baseUrl || getApiBase()).replace(/\/+$/, '');
+    const start = performance.now();
+    try {
+      const res = await fetchJson<{ status: string; database: string }>(`${base}/health/ready`, {
+        timeoutMs: 15000,
+        skipDeduplication: true,
+        retries: 0,
+      });
+      return {
+        ok: res.status === 'READY',
+        status: res.status,
+        database: res.database || 'CONNECTED',
+        latencyMs: Math.round(performance.now() - start),
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        status: 'DEGRADED',
+        database: 'UNAVAILABLE',
+        latencyMs: Math.round(performance.now() - start),
+      };
     }
   },
 

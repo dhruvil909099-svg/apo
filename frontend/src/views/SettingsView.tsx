@@ -25,7 +25,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ summary }) => {
       if (res.ok) {
         setTestResult({ ok: true, message: `Connected successfully (${res.latencyMs}ms)` });
       } else {
-        setTestResult({ ok: false, message: `Connection failed: ${res.statusText}` });
+        setTestResult({ ok: false, message: `Connection failed: ${res.status || res.detail || 'Offline'}` });
       }
     } catch (e: any) {
       setTestResult({ ok: false, message: e.message || 'Cannot reach endpoint' });
