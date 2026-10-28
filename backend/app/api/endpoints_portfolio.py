@@ -8,6 +8,7 @@ from app.models.account import Account
 from app.models.audit import AuditLog
 import time
 from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account
+from app.services.portfolio_sync_service import reconcile_broker_holdings
 from app.core.security import cipher
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio & Holdings"])
@@ -279,76 +280,10 @@ def trigger_portfolio_sync(db: Session = Depends(get_db)):
                 cash_val = float(rms_data.get("availablecash", rms_data.get("net", 0.0)))
                 acc.available_cash = round(cash_val, 2)
 
-            # 2. Fetch live Demat Holdings
+            # 2. Fetch and reconcile live Demat Holdings
             holdings = adapter.get_holdings()
-            for h in holdings:
-                raw_sym = h.get("tradingsymbol", "")
-                sym = raw_sym.replace("-EQ", "")
-                qty = int(h.get("quantity", h.get("realisedquantity", 0)))
-                avg_price = float(h.get("averageprice", 0.0))
-                ltp = float(h.get("ltp", avg_price))
-                close = float(h.get("close", ltp))
-                isin = h.get("isin", "")
-                token = str(h.get("symboltoken", ""))
-
-                if not sym or qty <= 0:
-                    continue
-
-                # Find or register Instrument in IPO table
-                ipo = db.query(IPO).filter(IPO.symbol == sym).first()
-                if not ipo:
-                    ipo = IPO(
-                        symbol=sym,
-                        company_name=sym,
-                        exchange=h.get("exchange", "NSE"),
-                        issue_price=avg_price,
-                        lot_size=1,
-                        isin=isin,
-                        symbol_token=token,
-                        current_ltp=ltp,
-                        previous_close=close,
-                        status="LISTED"
-                    )
-                    db.add(ipo)
-                    db.flush()
-                else:
-                    ipo.current_ltp = ltp
-                    ipo.previous_close = close
-                    if isin and not ipo.isin:
-                        ipo.isin = isin
-                    if token and not ipo.symbol_token:
-                        ipo.symbol_token = token
-
-                # Find or create Demat Allotment entry
-                allotment = db.query(Allotment).filter(
-                    Allotment.ipo_id == ipo.id,
-                    Allotment.account_id == acc.id
-                ).first()
-                if not allotment:
-                    allotment = Allotment(
-                        ipo_id=ipo.id,
-                        account_id=acc.id,
-                        applied_quantity=qty,
-                        allotted_quantity=qty,
-                        acquisition_cost=avg_price,
-                        allotment_status="ALLOTTED",
-                        demat_credit_status="CREDITED",
-                        status="DEMAT_CREDITED",
-                        demat_verified=True,
-                        verification_source="ANGEL_ONE_HOLDINGS",
-                        verification_timestamp=now
-                    )
-                    db.add(allotment)
-                else:
-                    allotment.allotted_quantity = qty
-                    allotment.applied_quantity = qty
-                    allotment.acquisition_cost = avg_price
-                    allotment.allotment_status = "ALLOTTED"
-                    allotment.demat_credit_status = "CREDITED"
-                    allotment.status = "DEMAT_CREDITED"
-                    allotment.demat_verified = True
-                    allotment.verification_source = "ANGEL_ONE_HOLDINGS"
-                    allotment.verification_timestamp = now
+            if holdings:
+                reconcile_broker_holdings(db, acc, holdings, now)
 
             synced_count += 1
         except Exception as e:

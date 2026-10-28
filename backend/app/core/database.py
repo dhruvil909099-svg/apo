@@ -60,9 +60,10 @@ def get_db():
 def run_safe_migrations():
     """
     Idempotent schema migration for SQLite and PostgreSQL.
-    Safely adds missing columns without dropping tables or losing existing records.
+    Safely adds missing tables and columns without dropping tables or losing existing records.
     """
     logger.info("Verifying schema and running non-destructive column migrations...")
+    Base.metadata.create_all(bind=engine)
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
 

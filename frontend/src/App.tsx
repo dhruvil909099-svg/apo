@@ -15,6 +15,7 @@ import { SingleAccountTasksView } from './views/SingleAccountTasksView';
 import { BulkOperationsView } from './views/BulkOperationsView';
 import { StockExplorerView } from './views/StockExplorerView';
 import { ExportCenterView } from './views/ExportCenterView';
+import { AIChatView } from './views/AIChatView';
 import { DashboardSummary, Account, IPO, Order, MarketQuote } from './types';
 import { api, getWebSocketUrl } from './api';
 import { connectionManager, ConnectionState } from './services/backendConnectionManager';
@@ -323,6 +324,7 @@ export const App: React.FC = () => {
             )}
             {currentTab === 'risk' && <RiskView onRefresh={handleManualRefresh} />}
             {currentTab === 'alerts' && <AlertsView />}
+            {currentTab === 'ai-chat' && <AIChatView />}
             {currentTab === 'settings' && <SettingsView summary={summary} />}
           </div>
         </main>

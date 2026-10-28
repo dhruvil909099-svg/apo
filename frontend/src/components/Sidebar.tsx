@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, TrendingUp, PieChart,
   Layers, ClipboardList, ShieldAlert, Bell, Settings,
   AlertTriangle, Shield, UserCheck, BarChart2,
-  Download, ArrowRight
+  Download, ArrowRight, Bot
 } from 'lucide-react';
 import { DashboardSummary } from '../types';
 
@@ -28,6 +28,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: 'OVERVIEW',
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'ai-chat', label: 'AI Financial Assistant', icon: Bot },
       ]
     },
     {

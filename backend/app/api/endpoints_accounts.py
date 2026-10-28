@@ -15,6 +15,7 @@ from app.schemas.account import (
 )
 from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account
 from app.services.account_persistence import persist_accounts_backup
+from app.services.portfolio_sync_service import reconcile_broker_holdings
 import json
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
@@ -771,6 +772,14 @@ def sync_account_data(account_id: int, db: Session = Depends(get_db)):
             if rms:
                 cash = float(rms.get("availablecash", rms.get("net", account.available_cash)))
                 account.available_cash = round(cash, 2)
+            try:
+                holdings = adapter.get_holdings()
+                if holdings:
+                    holdings_count = reconcile_broker_holdings(db, account, holdings, now)
+                else:
+                    holdings_count = db.query(Allotment).filter(Allotment.account_id == account.id, Allotment.allotted_quantity > 0).count()
+            except Exception:
+                holdings_count = db.query(Allotment).filter(Allotment.account_id == account.id, Allotment.allotted_quantity > 0).count()
             msg = "Account synchronized successfully with Angel One."
             success = True
         else:

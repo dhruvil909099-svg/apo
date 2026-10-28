@@ -482,4 +482,91 @@ export const api = {
     if (accountId) sp.append('account_id', accountId.toString());
     return fetchJson<AuditLog[]>(`${getApiBase()}/audit/logs?${sp.toString()}`);
   },
+
+  // Users & Admin CRUD
+  getUsers: (params?: { limit?: number; offset?: number; role?: string; search?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.append('limit', params.limit.toString());
+    if (params?.offset) sp.append('offset', params.offset.toString());
+    if (params?.role) sp.append('role', params.role);
+    if (params?.search) sp.append('search', params.search);
+    const query = sp.toString() ? `?${sp.toString()}` : '';
+    return fetchJson<{ total: number; items: import('./types').AppUser[] }>(`${getApiBase()}/users${query}`);
+  },
+  createUser: (data: { username: string; email: string; password: string; role?: string }) => fetchJson<import('./types').AppUser>(
+    `${getApiBase()}/users`,
+    { method: 'POST', body: JSON.stringify(data) }
+  ),
+  updateUser: (id: number, data: Partial<{ username: string; email: string; password: string; role: string; is_active: boolean }>) => fetchJson<import('./types').AppUser>(
+    `${getApiBase()}/users/${id}`,
+    { method: 'PUT', body: JSON.stringify(data) }
+  ),
+  deleteUser: (id: number) => fetchJson<void>(`${getApiBase()}/users/${id}`, { method: 'DELETE' }),
+
+  // Watchlists CRUD
+  getWatchlists: () => fetchJson<import('./types').Watchlist[]>(`${getApiBase()}/watchlists`),
+  createWatchlist: (data: { name: string; description?: string }) => fetchJson<import('./types').Watchlist>(
+    `${getApiBase()}/watchlists`,
+    { method: 'POST', body: JSON.stringify(data) }
+  ),
+  updateWatchlist: (id: number, data: { name?: string; description?: string }) => fetchJson<import('./types').Watchlist>(
+    `${getApiBase()}/watchlists/${id}`,
+    { method: 'PUT', body: JSON.stringify(data) }
+  ),
+  deleteWatchlist: (id: number) => fetchJson<void>(`${getApiBase()}/watchlists/${id}`, { method: 'DELETE' }),
+  addWatchlistItem: (watchlistId: number, data: { symbol: string; exchange?: string; symbol_token?: string; notes?: string }) => fetchJson<import('./types').WatchlistItem>(
+    `${getApiBase()}/watchlists/${watchlistId}/items`,
+    { method: 'POST', body: JSON.stringify(data) }
+  ),
+  removeWatchlistItem: (watchlistId: number, itemId: number) => fetchJson<void>(
+    `${getApiBase()}/watchlists/${watchlistId}/items/${itemId}`,
+    { method: 'DELETE' }
+  ),
+
+  // Portfolio Notes & Tags CRUD
+  getPortfolioNotes: (params?: { symbol?: string; account_id?: number; tag?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.symbol) sp.append('symbol', params.symbol);
+    if (params?.account_id) sp.append('account_id', params.account_id.toString());
+    if (params?.tag) sp.append('tag', params.tag);
+    const query = sp.toString() ? `?${sp.toString()}` : '';
+    return fetchJson<import('./types').PortfolioNote[]>(`${getApiBase()}/portfolio/notes${query}`);
+  },
+  createPortfolioNote: (data: { account_id?: number; symbol?: string; tag?: string; content: string }) => fetchJson<import('./types').PortfolioNote>(
+    `${getApiBase()}/portfolio/notes`,
+    { method: 'POST', body: JSON.stringify(data) }
+  ),
+  updatePortfolioNote: (id: number, data: { tag?: string; content?: string }) => fetchJson<import('./types').PortfolioNote>(
+    `${getApiBase()}/portfolio/notes/${id}`,
+    { method: 'PUT', body: JSON.stringify(data) }
+  ),
+  deletePortfolioNote: (id: number) => fetchJson<void>(`${getApiBase()}/portfolio/notes/${id}`, { method: 'DELETE' }),
+
+  // Notifications CRUD
+  getNotifications: (unreadOnly: boolean = false) => fetchJson<import('./types').AppNotification[]>(
+    `${getApiBase()}/notifications?unread_only=${unreadOnly}`
+  ),
+  createNotification: (data: { title: string; message: string; notification_type?: string }) => fetchJson<import('./types').AppNotification>(
+    `${getApiBase()}/notifications`,
+    { method: 'POST', body: JSON.stringify(data) }
+  ),
+  markNotificationRead: (id: number) => fetchJson<import('./types').AppNotification>(
+    `${getApiBase()}/notifications/${id}/read`,
+    { method: 'POST' }
+  ),
+  deleteNotification: (id: number) => fetchJson<void>(`${getApiBase()}/notifications/${id}`, { method: 'DELETE' }),
+
+  // AI Chat Assistant
+  sendChatMessage: (message: string, sessionId?: string) => fetchJson<import('./types').ChatMessage>(
+    `${getApiBase()}/chat/message`,
+    { method: 'POST', body: JSON.stringify({ message, session_id: sessionId }) }
+  ),
+  getChatHistory: (sessionId: string) => fetchJson<{ session_id: string; messages: import('./types').ChatMessage[] }>(
+    `${getApiBase()}/chat/history?session_id=${encodeURIComponent(sessionId)}`
+  ),
+  clearChatHistory: (sessionId: string) => fetchJson<void>(
+    `${getApiBase()}/chat/history?session_id=${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' }
+  ),
+  getChatContext: () => fetchJson<any>(`${getApiBase()}/chat/context`),
 };

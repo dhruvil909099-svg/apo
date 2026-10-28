@@ -8,6 +8,11 @@ from app.api.endpoints_market import router as market_router
 from app.api.endpoints_portfolio import router as portfolio_router
 from app.api.endpoints_risk import router as risk_router
 from app.api.endpoints_audit import router as audit_router
+from app.api.endpoints_users import router as users_router
+from app.api.endpoints_watchlists import router as watchlists_router
+from app.api.endpoints_notes import router as notes_router
+from app.api.endpoints_notifications import router as notifications_router
+from app.api.endpoints_chat import router as chat_router
 from app.core.auth import verify_api_key
 
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -24,3 +29,8 @@ api_v1_router.include_router(market_router, dependencies=[Depends(verify_api_key
 api_v1_router.include_router(portfolio_router, dependencies=[Depends(verify_api_key)])
 api_v1_router.include_router(risk_router, dependencies=[Depends(verify_api_key)])
 api_v1_router.include_router(audit_router, dependencies=[Depends(verify_api_key)])
+api_v1_router.include_router(users_router, dependencies=[Depends(verify_api_key)])
+api_v1_router.include_router(watchlists_router, dependencies=[Depends(verify_api_key)])
+api_v1_router.include_router(notes_router, dependencies=[Depends(verify_api_key)])
+api_v1_router.include_router(notifications_router, dependencies=[Depends(verify_api_key)])
+api_v1_router.include_router(chat_router, dependencies=[Depends(verify_api_key)])

@@ -47,11 +47,16 @@ class PaperTradingService:
             db.commit()
             return {"success": False, "status": "REJECTED", "rejection_reason": order.rejection_reason}
 
-        # 3. Holding balance check for SELL orders
+        # 3. Balance checks
+        clean_symbol = order.tradingsymbol.replace("-EQ", "")
+        ipo = db.query(IPO).filter(IPO.symbol == clean_symbol).first()
+        effective_ltp = mock_ltp or (ipo.current_ltp if ipo and ipo.current_ltp else (order.price if order.price > 0 else 500.0))
+
+        allotment = None
         if order.transaction_type == "SELL":
             allotment = db.query(Allotment).join(IPO).filter(
                 Allotment.account_id == account.id,
-                IPO.symbol == order.tradingsymbol.replace("-EQ", "")
+                IPO.symbol == clean_symbol
             ).first()
             
             holding_qty = allotment.allotted_quantity if allotment else 0
@@ -60,12 +65,15 @@ class PaperTradingService:
                 order.rejection_reason = f"Insufficient holdings: requested {order.quantity}, available {holding_qty}."
                 db.commit()
                 return {"success": False, "status": "REJECTED", "rejection_reason": order.rejection_reason}
+        elif order.transaction_type == "BUY":
+            est_cost = order.quantity * (order.price if order.price > 0 else effective_ltp)
+            if account.available_cash < est_cost:
+                order.status = "REJECTED"
+                order.rejection_reason = f"Insufficient simulated cash balance: required ₹{est_cost:,.2f}, available ₹{account.available_cash:,.2f}."
+                db.commit()
+                return {"success": False, "status": "REJECTED", "rejection_reason": order.rejection_reason}
 
-        # 4. Determine simulation market price
-        ipo = db.query(IPO).filter(IPO.symbol == order.tradingsymbol.replace("-EQ", "")).first()
-        effective_ltp = mock_ltp or (ipo.current_ltp if ipo and ipo.current_ltp else (order.price if order.price > 0 else 500.0))
-
-        # 5. Order execution logic
+        # 4. Order execution logic
         simulated_broker_id = f"SIM_{uuid.uuid4().hex[:10].upper()}"
         order.broker_order_id = simulated_broker_id
         order.is_paper_trade = True
@@ -93,6 +101,7 @@ class PaperTradingService:
                     order.execution_price = order.price
                 else:
                     order.status = "ACCEPTED"
+                    order.filled_quantity = 0
         elif order.order_type in ["STOPLOSS_LIMIT", "STOPLOSS_MARKET"]:
             # Trigger price evaluation
             if order.trigger_price > 0 and effective_ltp <= order.trigger_price:
@@ -101,11 +110,59 @@ class PaperTradingService:
                 order.execution_price = order.price if order.order_type == "STOPLOSS_LIMIT" else effective_ltp
             else:
                 order.status = "ACCEPTED"
+                order.filled_quantity = 0
 
-        # Update holdings upon execution
-        if order.status == "EXECUTED" and order.transaction_type == "SELL" and allotment:
-            allotment.allotted_quantity -= order.filled_quantity
-            account.available_cash += (order.filled_quantity * (order.execution_price or order.price))
+        # Update cash and holdings upon execution
+        if order.status == "EXECUTED":
+            exec_p = order.execution_price or order.price or effective_ltp
+            if order.transaction_type == "SELL":
+                if allotment:
+                    allotment.allotted_quantity -= order.filled_quantity
+                account.available_cash = round(account.available_cash + (order.filled_quantity * exec_p), 2)
+            elif order.transaction_type == "BUY":
+                actual_cost = order.filled_quantity * exec_p
+                account.available_cash = max(0.0, round(account.available_cash - actual_cost, 2))
+
+                # Ensure instrument exists in IPO table
+                if not ipo:
+                    ipo = IPO(
+                        symbol=clean_symbol,
+                        company_name=clean_symbol,
+                        exchange=order.exchange or "NSE",
+                        issue_price=exec_p,
+                        lot_size=1,
+                        current_ltp=exec_p,
+                        previous_close=exec_p,
+                        status="LISTED"
+                    )
+                    db.add(ipo)
+                    db.flush()
+
+                # Find or create allotment record
+                allotment = db.query(Allotment).filter(
+                    Allotment.ipo_id == ipo.id,
+                    Allotment.account_id == account.id
+                ).first()
+                if not allotment:
+                    allotment = Allotment(
+                        ipo_id=ipo.id,
+                        account_id=account.id,
+                        applied_quantity=order.filled_quantity,
+                        allotted_quantity=order.filled_quantity,
+                        acquisition_cost=exec_p,
+                        status="DEMAT_CREDITED",
+                        demat_verified=True,
+                        verification_source="PAPER_TRADING"
+                    )
+                    db.add(allotment)
+                else:
+                    total_qty = allotment.allotted_quantity + order.filled_quantity
+                    if total_qty > 0:
+                        new_cost = ((allotment.allotted_quantity * allotment.acquisition_cost) + (order.filled_quantity * exec_p)) / total_qty
+                        allotment.acquisition_cost = round(new_cost, 2)
+                    allotment.allotted_quantity = total_qty
+                    allotment.status = "DEMAT_CREDITED"
+                    allotment.demat_verified = True
 
         db.commit()
         db.refresh(order)
@@ -136,3 +193,22 @@ class PaperTradingService:
             "execution_price": order.execution_price,
             "rejection_reason": order.rejection_reason
         }
+
+    @staticmethod
+    def cancel_paper_order(db: Session, order: Order) -> Dict[str, Any]:
+        """Cancels an open ACCEPTED paper order."""
+        if order.status != "ACCEPTED":
+            return {"success": False, "message": f"Cannot cancel order in state {order.status}."}
+
+        order.status = "CANCELLED"
+        db.commit()
+        db.refresh(order)
+
+        db.add(AuditLog(
+            event_type="PAPER_ORDER_CANCELLED",
+            account_id=order.account_id,
+            operator="OPERATOR",
+            details_json=json.dumps({"client_order_id": order.client_order_id, "symbol": order.tradingsymbol})
+        ))
+        db.commit()
+        return {"success": True, "message": "Simulated order cancelled successfully."}

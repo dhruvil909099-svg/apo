@@ -445,3 +445,67 @@ export interface AccountSyncResponse {
   available_cash?: number | null;
   sync_timestamp: string;
 }
+
+export interface AppUser {
+  id: number;
+  username: string;
+  email: string;
+  role: 'ADMIN' | 'USER';
+  is_active: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface WatchlistItem {
+  id: number;
+  watchlist_id: number;
+  symbol: string;
+  exchange: string;
+  symbol_token?: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface Watchlist {
+  id: number;
+  name: string;
+  description?: string;
+  items: WatchlistItem[];
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface PortfolioNote {
+  id: number;
+  user_id?: number;
+  account_id?: number;
+  symbol?: string;
+  tag: string;
+  content: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface AppNotification {
+  id: number;
+  user_id?: number;
+  title: string;
+  message: string;
+  notification_type: 'INFO' | 'WARNING' | 'ERROR' | 'SUCCESS' | 'ALERT';
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  session_id: string;
+  sender: 'USER' | 'ASSISTANT';
+  content: string;
+  context_meta?: {
+    timestamp?: string;
+    total_valuation?: number;
+    distinct_symbols?: number;
+    emergency_halt?: boolean;
+  };
+  created_at: string;
+}

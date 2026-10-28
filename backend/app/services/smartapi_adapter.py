@@ -32,7 +32,7 @@ class SmartAPIAdapter:
         self.last_error: Optional[str] = None
         self.is_session_expired: bool = False
         self.session = requests.Session()
-        self._auth_lock = threading.Lock()
+        self._auth_lock = threading.RLock()
 
     def _get_headers(self, include_auth: bool = True) -> Dict[str, str]:
         headers = {
@@ -127,76 +127,86 @@ class SmartAPIAdapter:
         """
         Performs official loginByPassword with freshly computed 6-digit TOTP code
         or caller-supplied manual 6-digit TOTP code.
+        Thread-safe: acquires _auth_lock and re-checks for existing active session.
         """
-        if manual_totp:
-            clean_code = str(manual_totp).strip().replace(" ", "").replace("-", "")
-            if not (clean_code.isdigit() and len(clean_code) == 6):
-                self.last_error = "Manual TOTP code must be exactly 6 numeric digits."
-                return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
-            totp_code = clean_code
-        else:
-            if self.totp_secret.isdigit() and len(self.totp_secret) == 6:
-                totp_code = self.totp_secret
-            else:
-                totp_code = generate_totp_token(self.totp_secret)
-                if not totp_code:
-                    self.last_error = "Failed to generate valid TOTP code from secret key. Ensure your permanent Base32 secret is correct."
-                    return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
-
-        url = f"{self.BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword"
-        payload = {
-            "clientcode": self.client_code,
-            "password": self.pin,
-            "totp": totp_code
-        }
-
-        self._enforce_rate_limit(1.0)
-        try:
-            # Login must NEVER send Authorization header
-            resp = self.session.post(url, json=payload, headers=self._get_headers(include_auth=False), timeout=10)
-            data = resp.json()
-            if data.get("status") and data.get("data"):
-                token_data = data["data"]
-                self.jwt_token = token_data.get("jwtToken")
-                self.refresh_token = token_data.get("refreshToken")
-                self.feed_token = token_data.get("feedToken")
-                self.token_expiry_timestamp = time.time() + 86400  # Valid for the trading day
-                self.last_sync_time = time.time()
-                self.last_error = None
-                self.is_session_expired = False
+        with self._auth_lock:
+            # Re-check if valid active session already exists (unless forced with manual_totp)
+            if not manual_totp and self.jwt_token and time.time() < self.token_expiry_timestamp and not self.is_session_expired:
                 return {
                     "success": True,
-                    "message": "Authentication successful",
+                    "message": "Authentication successful (reused active session)",
                     "feed_token": self.feed_token
                 }
+
+            if manual_totp:
+                clean_code = str(manual_totp).strip().replace(" ", "").replace("-", "")
+                if not (clean_code.isdigit() and len(clean_code) == 6):
+                    self.last_error = "Manual TOTP code must be exactly 6 numeric digits."
+                    return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
+                totp_code = clean_code
             else:
-                msg = data.get("message", "Authentication rejected by broker")
-                err_code = data.get("errorcode", "AUTH_FAILED")
-                self.last_error = msg
-                if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED") or "expired" in msg.lower():
-                    self.is_session_expired = True
-
-                # Provide clear, sanitized diagnostic feedback based on broker response
-                if err_code == "AB1050" or "invalid totp" in msg.lower():
-                    diag_message = (
-                        "Angel One authentication rejected: Invalid TOTP, PIN, or Client Code combination (AB1050). "
-                        "Verify your 4-digit Account PIN and enter a fresh 6-digit TOTP code or check your Base32 secret."
-                    )
-                elif err_code in ("AG8001", "AB1004", "SESSION_EXPIRED"):
-                    diag_message = f"Angel One broker session expired ({err_code}). Re-authentication required."
-                elif "password" in msg.lower() or "pin" in msg.lower():
-                    diag_message = f"Angel One authentication rejected: Incorrect Account PIN ({err_code})."
-                elif "client" in msg.lower():
-                    diag_message = f"Angel One authentication rejected: Unknown or invalid client code ({err_code})."
+                if self.totp_secret.isdigit() and len(self.totp_secret) == 6:
+                    totp_code = self.totp_secret
                 else:
-                    diag_message = f"Angel One rejected login: {msg} (code: {err_code})"
+                    totp_code = generate_totp_token(self.totp_secret)
+                    if not totp_code:
+                        self.last_error = "Failed to generate valid TOTP code from secret key. Ensure your permanent Base32 secret is correct."
+                        return {"success": False, "message": self.last_error, "error_code": "INVALID_TOTP"}
 
-                logger.warning(f"Auth failed for {self.client_code}: {msg} (code: {err_code})")
-                return {"success": False, "message": diag_message, "error_code": err_code, "raw_message": msg}
-        except requests.RequestException as e:
-            logger.error(f"Network error authenticating {self.client_code}: {str(e)}")
-            self.last_error = f"Connection error: {str(e)}"
-            return {"success": False, "message": self.last_error, "error_code": "NETWORK_ERROR"}
+            url = f"{self.BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword"
+            payload = {
+                "clientcode": self.client_code,
+                "password": self.pin,
+                "totp": totp_code
+            }
+
+            self._enforce_rate_limit(1.0)
+            try:
+                # Login must NEVER send Authorization header
+                resp = self.session.post(url, json=payload, headers=self._get_headers(include_auth=False), timeout=10)
+                data = resp.json()
+                if data.get("status") and data.get("data"):
+                    token_data = data["data"]
+                    self.jwt_token = token_data.get("jwtToken")
+                    self.refresh_token = token_data.get("refreshToken")
+                    self.feed_token = token_data.get("feedToken")
+                    self.token_expiry_timestamp = time.time() + 86400  # Valid for the trading day
+                    self.last_sync_time = time.time()
+                    self.last_error = None
+                    self.is_session_expired = False
+                    return {
+                        "success": True,
+                        "message": "Authentication successful",
+                        "feed_token": self.feed_token
+                    }
+                else:
+                    msg = data.get("message", "Authentication rejected by broker")
+                    err_code = data.get("errorcode", "AUTH_FAILED")
+                    self.last_error = msg
+                    if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED") or "expired" in msg.lower():
+                        self.is_session_expired = True
+
+                    # Provide clear, sanitized diagnostic feedback based on broker response
+                    if err_code == "AB1050" or "invalid totp" in msg.lower():
+                        diag_message = (
+                            "Angel One authentication rejected: Invalid TOTP, PIN, or Client Code combination (AB1050). "
+                            "Verify your 4-digit Account PIN and enter a fresh 6-digit TOTP code or check your Base32 secret."
+                        )
+                    elif err_code in ("AG8001", "AB1004", "SESSION_EXPIRED"):
+                        diag_message = f"Angel One broker session expired ({err_code}). Re-authentication required."
+                    elif "password" in msg.lower() or "pin" in msg.lower():
+                        diag_message = f"Angel One authentication rejected: Incorrect Account PIN ({err_code})."
+                    elif "client" in msg.lower():
+                        diag_message = f"Angel One authentication rejected: Unknown or invalid client code ({err_code})."
+                    else:
+                        diag_message = f"Angel One rejected login: {msg} (code: {err_code})"
+
+                    logger.warning(f"Auth failed for {self.client_code}: {msg} (code: {err_code})")
+                    return {"success": False, "message": diag_message, "error_code": err_code, "raw_message": msg}
+            except requests.RequestException as e:
+                logger.error(f"Network error authenticating {self.client_code}: {str(e)}")
+                self.last_error = f"Connection error: {str(e)}"
+                return {"success": False, "message": self.last_error, "error_code": "NETWORK_ERROR"}
 
     def test_connection(self, manual_totp: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -431,6 +441,7 @@ class SmartAPIAdapter:
 
 # In-memory session pool maintaining 1:1 active broker sessions across endpoints
 _adapter_cache: Dict[int, SmartAPIAdapter] = {}
+_adapter_lock = threading.Lock()
 
 
 def get_adapter_for_account(
@@ -446,43 +457,52 @@ def get_adapter_for_account(
     or initializes and returns an adapter for the account.
     Reuses existing valid JWT session tokens to prevent multiple loginByPassword
     calls, rate-limiting, and TOTP replay rejections.
+    Thread-safe: guarded by _adapter_lock.
     """
     clean_code = (client_code or "").strip().upper()
     clean_key = (api_key or "").strip()
     clean_pin = (pin or "").strip()
     clean_totp = (totp_secret or "").strip()
 
-    existing = _adapter_cache.get(account_id)
-    if (
-        not force_new
-        and existing is not None
-        and existing.client_code == clean_code
-        and existing.api_key == clean_key
-        and existing.pin == clean_pin
-        and existing.jwt_token is not None
-        and time.time() < existing.token_expiry_timestamp
-        and not existing.is_session_expired
-    ):
-        return existing
+    with _adapter_lock:
+        existing = _adapter_cache.get(account_id)
+        if (
+            not force_new
+            and existing is not None
+            and existing.client_code == clean_code
+            and existing.api_key == clean_key
+            and existing.pin == clean_pin
+            and existing.jwt_token is not None
+            and time.time() < existing.token_expiry_timestamp
+            and not existing.is_session_expired
+        ):
+            return existing
 
-    # Create or replace adapter instance
-    adapter = SmartAPIAdapter(
-        api_key=clean_key,
-        client_code=clean_code,
-        pin=clean_pin,
-        totp_secret=clean_totp,
-        account_id=account_id
-    )
-    _adapter_cache[account_id] = adapter
-    return adapter
+        # Create or replace adapter instance cleanly
+        if existing is not None:
+            try:
+                existing.session.close()
+            except Exception:
+                pass
+
+        adapter = SmartAPIAdapter(
+            api_key=clean_key,
+            client_code=clean_code,
+            pin=clean_pin,
+            totp_secret=clean_totp,
+            account_id=account_id
+        )
+        _adapter_cache[account_id] = adapter
+        return adapter
 
 
 def invalidate_adapter_for_account(account_id: int) -> None:
     """Invalidates and cleans up the cached session when credentials are rotated or explicitly disconnected."""
-    if account_id in _adapter_cache:
-        try:
-            _adapter_cache[account_id].session.close()
-        except Exception:
-            pass
-        del _adapter_cache[account_id]
+    with _adapter_lock:
+        if account_id in _adapter_cache:
+            try:
+                _adapter_cache[account_id].session.close()
+            except Exception:
+                pass
+            del _adapter_cache[account_id]
 

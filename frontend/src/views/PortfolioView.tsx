@@ -10,7 +10,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid
 } from 'recharts';
 import { ConsolidatedHolding, AccountPortfolio, PortfolioSummary, Account } from '../types';
-import { api } from '../api';
+import { api, getWebSocketUrl } from '../api';
 import { StockChart } from '../components/StockChart';
 
 const PIE_COLORS = ['#0284c7', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#3b82f6', '#14b8a6', '#64748b'];
@@ -90,6 +90,77 @@ export const PortfolioView: React.FC = () => {
       setIsLoading(false);
     }
   };
+
+  const [lastTickTime, setLastTickTime] = useState<Date | null>(null);
+  const [streamConnected, setStreamConnected] = useState<boolean>(false);
+
+  // Live WebSocket Tick Streaming for Holdings & Real-time P&L recalculation
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    try {
+      const url = getWebSocketUrl();
+      ws = new WebSocket(url);
+      ws.onopen = () => setStreamConnected(true);
+      ws.onclose = () => setStreamConnected(false);
+      ws.onerror = () => setStreamConnected(false);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
+            const sym = msg.symbol.replace('-EQ', '').toUpperCase();
+            const newLtp = msg.ltp;
+            setLastTickTime(new Date());
+
+            setConsolidated((prev) => {
+              let hasChanged = false;
+              const updated = prev.map((h) => {
+                const hSym = h.symbol.replace('-EQ', '').toUpperCase();
+                if (hSym === sym) {
+                  hasChanged = true;
+                  const newMktVal = Math.round(h.total_quantity * newLtp * 100) / 100;
+                  const newPnl = Math.round((newMktVal - h.total_cost) * 100) / 100;
+                  const newPnlPct = h.total_cost > 0 ? Math.round((newPnl / h.total_cost) * 10000) / 100 : 0.0;
+                  return {
+                    ...h,
+                    current_ltp: newLtp,
+                    market_value: newMktVal,
+                    unrealized_pnl: newPnl,
+                    pnl_percentage: newPnlPct,
+                    last_updated: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST'
+                  };
+                }
+                return h;
+              });
+
+              if (hasChanged) {
+                const totalVal = updated.reduce((sum, item) => sum + item.market_value, 0);
+                const totalCost = updated.reduce((sum, item) => sum + item.total_cost, 0);
+                const netPnl = totalVal - totalCost;
+                const netPct = totalCost > 0 ? (netPnl / totalCost) * 100 : 0.0;
+
+                setSummary((prevSum) => prevSum ? {
+                  ...prevSum,
+                  total_current_value: Math.round(totalVal * 100) / 100,
+                  unrealized_pnl: Math.round(netPnl * 100) / 100,
+                  unrealized_pnl_percentage: Math.round(netPct * 100) / 100,
+                  last_sync_time: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST'
+                } : null);
+              }
+              return updated;
+            });
+          }
+        } catch {
+          // ignore malformed tick
+        }
+      };
+    } catch {
+      setStreamConnected(false);
+    }
+
+    return () => {
+      if (ws) ws.close();
+    };
+  }, []);
 
   useEffect(() => {
     if (allAccounts.length > 0) {
