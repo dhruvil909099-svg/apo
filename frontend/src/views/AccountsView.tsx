@@ -749,6 +749,39 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
         });
         if (isSubscribed) {
           setDrawerMarketsResults(res.instruments || []);
+          // Auto-fetch quotes for searched instruments
+          if (res.instruments && res.instruments.length > 0) {
+            const tokens = res.instruments
+              .filter((i) => i.symbol_token && i.exchange)
+              .map((i) => ({ exchange: i.exchange, symbol_token: i.symbol_token }));
+            if (tokens.length > 0) {
+              api.getBatchMarketQuotes(tokens.slice(0, 50), 'FULL').then((qRes) => {
+                if (!isSubscribed || !qRes?.fetched) return;
+                const qMap = new Map<string, any>();
+                for (const q of qRes.fetched) {
+                  if (q.symbol_token) qMap.set(String(q.symbol_token), q);
+                  if (q.trading_symbol) qMap.set(q.trading_symbol.replace('-EQ', '').toUpperCase(), q);
+                }
+                setDrawerMarketsResults((prev) =>
+                  prev.map((item) => {
+                    const q = (item.symbol_token ? qMap.get(String(item.symbol_token)) : undefined) ||
+                              qMap.get(item.tradingsymbol.replace('-EQ', '').toUpperCase());
+                    if (q && q.ltp) {
+                      const netChg = q.net_change ?? q.change ?? (q.previous_close ? q.ltp - q.previous_close : undefined);
+                      const pctChg = q.percent_change ?? q.change_percent ?? (q.previous_close && netChg ? (netChg / q.previous_close) * 100 : undefined);
+                      return {
+                        ...item,
+                        current_ltp: q.ltp,
+                        day_change: netChg !== undefined ? Number(netChg) : item.day_change,
+                        day_change_percentage: pctChg !== undefined ? Number(pctChg) : item.day_change_percentage,
+                      };
+                    }
+                    return item;
+                  })
+                );
+              }).catch(() => {});
+            }
+          }
         }
       } catch (err) {
         console.error('Failed to search markets for account drawer:', err);
@@ -2018,7 +2051,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                 <th className="py-2.5 px-3">Symbol</th>
                                 <th className="py-2.5 px-3">Product</th>
                                 <th className="py-2.5 px-3 text-right">Net Qty</th>
-                                <th className="py-2.5 px-3 text-right">LTP</th>
+                                <th className="py-2.5 px-4 text-right">Price</th>
                                 <th className="py-2.5 px-3 text-right">Unrealized P&L</th>
                               </tr>
                             </thead>
@@ -2364,7 +2397,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                 <th className="py-2.5 px-3">Segment</th>
                                 <th className="py-2.5 px-3">Type</th>
                                 <th className="py-2.5 px-3 text-right">Lot Size</th>
-                                <th className="py-2.5 px-3 text-right">LTP</th>
+                                <th className="py-2.5 px-4 text-right">Price</th>
                                 <th className="py-2.5 px-4 text-center">Trade Actions</th>
                               </tr>
                             </thead>
@@ -2388,20 +2421,21 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                   <td className="py-2.5 px-3 text-right font-mono text-slate-700">
                                     {inst.lot_size}
                                   </td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
+                                  <td className="py-2.5 px-4 text-right font-mono">
                                     {inst.current_ltp ? (
-                                      <div>
-                                        <span className="text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                      <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                        <span className="font-bold text-slate-900 text-xs">
                                           ₹{inst.current_ltp.toFixed(2)}
                                         </span>
                                         {inst.day_change !== undefined && inst.day_change !== null && (
-                                          <div className={`text-[10px] ${inst.day_change >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                            {inst.day_change >= 0 ? '+' : ''}{inst.day_change.toFixed(2)} ({inst.day_change_percentage ? `${inst.day_change_percentage >= 0 ? '+' : ''}${inst.day_change_percentage.toFixed(2)}%` : ''})
-                                          </div>
+                                          <span className={`text-[11px] font-semibold flex items-center gap-0.5 ${inst.day_change >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                            <span className="text-[9px]">{inst.day_change >= 0 ? '▲' : '▼'}</span>
+                                            <span>{inst.day_change >= 0 ? '+' : ''}{inst.day_change.toFixed(2)} ({inst.day_change_percentage ? `${inst.day_change_percentage >= 0 ? '+' : ''}${inst.day_change_percentage.toFixed(2)}%` : '0.00%'})</span>
+                                          </span>
                                         )}
                                       </div>
                                     ) : (
-                                      <span className="text-[10px] text-slate-400 font-normal">Live quote req</span>
+                                      <span className="text-slate-400 text-xs font-normal">—</span>
                                     )}
                                   </td>
                                   <td className="py-2.5 px-4 text-center">
