@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Search, ArrowUpDown, Download, RefreshCw, MoreVertical,
   TrendingUp, TrendingDown, Eye, BarChart2, ShieldCheck,
@@ -29,6 +29,35 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
   const [selectedSymbols, setSelectedSymbols] = useState<Set<string>>(new Set());
   const [activeMenuIndex, setActiveMenuIndex] = useState<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Sub-second live price tick flash tracking
+  const prevLtpRef = useRef<Record<string, number>>({});
+  const [flashMap, setFlashMap] = useState<Record<string, 'UP' | 'DOWN'>>({});
+
+  useEffect(() => {
+    const newFlashes: Record<string, 'UP' | 'DOWN'> = {};
+    let hasFlash = false;
+    holdings.forEach((h) => {
+      const sym = h.symbol;
+      const current = h.current_ltp;
+      const prev = prevLtpRef.current[sym];
+      if (prev !== undefined && current !== undefined && current !== prev) {
+        newFlashes[sym] = current > prev ? 'UP' : 'DOWN';
+        hasFlash = true;
+      }
+      if (current !== undefined) {
+        prevLtpRef.current[sym] = current;
+      }
+    });
+
+    if (hasFlash) {
+      setFlashMap((existing) => ({ ...existing, ...newFlashes }));
+      const timer = setTimeout(() => {
+        setFlashMap({});
+      }, 700);
+      return () => clearTimeout(timer);
+    }
+  }, [holdings]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -326,74 +355,72 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
         <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs whitespace-nowrap">
-              <thead className="bg-slate-50/90 text-slate-600 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
+              <thead className="bg-slate-900 text-slate-300 uppercase text-[10px] font-bold tracking-wider border-b border-slate-800">
                 <tr>
                   <th className="py-3 px-3 w-8 text-center">
                     <input
                       type="checkbox"
                       checked={selectedSymbols.size === filteredHoldings.length && filteredHoldings.length > 0}
                       onChange={toggleSelectAll}
-                      className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                      className="rounded border-slate-700 bg-slate-800 text-brand-600 focus:ring-brand-500"
                     />
                   </th>
                   <th
                     onClick={() => handleSort('symbol')}
-                    className="py-3 px-3 cursor-pointer hover:text-slate-900 transition-colors"
+                    className="py-3 px-3 cursor-pointer hover:text-white transition-colors"
                   >
                     <div className="flex items-center gap-1">
-                      <span>Stock / Symbol</span>
-                      <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      <span>Name</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" />
                     </div>
                   </th>
-                  <th className="py-3 px-2 text-center">Exch</th>
                   <th
                     onClick={() => handleSort('qty')}
-                    className="py-3 px-3 text-right cursor-pointer hover:text-slate-900 transition-colors"
+                    className="py-3 px-3 text-right cursor-pointer hover:text-white transition-colors"
                   >
                     <div className="flex items-center justify-end gap-1">
-                      <span>Qty / T1</span>
-                      <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      <span>Quantity</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" />
                     </div>
                   </th>
-                  <th className="py-3 px-3 text-right">Avg Price</th>
-                  <th className="py-3 px-3 text-right">LTP (₹)</th>
+                  <th className="py-3 px-3 text-right">Avg. Price</th>
+                  <th className="py-3 px-3 text-right">LTP</th>
                   <th
                     onClick={() => handleSort('invested')}
-                    className="py-3 px-3 text-right cursor-pointer hover:text-slate-900 transition-colors"
+                    className="py-3 px-3 text-right cursor-pointer hover:text-white transition-colors"
                   >
                     <div className="flex items-center justify-end gap-1">
-                      <span>Invested (₹)</span>
-                      <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      <span>Inv. Amt.</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" />
                     </div>
                   </th>
                   <th
                     onClick={() => handleSort('val')}
-                    className="py-3 px-3 text-right cursor-pointer hover:text-slate-900 transition-colors"
+                    className="py-3 px-3 text-right cursor-pointer hover:text-white transition-colors"
                   >
                     <div className="flex items-center justify-end gap-1">
-                      <span>Market Val (₹)</span>
-                      <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      <span>Current Val.</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" />
                     </div>
                   </th>
                   <th
                     onClick={() => handleSort('pnl')}
-                    className="py-3 px-3 text-right cursor-pointer hover:text-slate-900 transition-colors"
+                    className="py-3 px-3 text-right cursor-pointer hover:text-white transition-colors"
                   >
                     <div className="flex items-center justify-end gap-1">
-                      <span>Overall P&L</span>
-                      <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      <span>Overall G/L</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" />
                     </div>
                   </th>
                   <th
                     onClick={() => handleSort('day_pnl')}
-                    className="py-3 px-3 text-right cursor-pointer hover:text-slate-900 transition-colors"
+                    className="py-3 px-3 text-right cursor-pointer hover:text-white transition-colors"
                   >
                     <div className="flex items-center justify-end gap-1">
-                      <span>Day's P&L</span>
-                      <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      <span>Day's G/L</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" />
                     </div>
                   </th>
-                  <th className="py-3 px-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
@@ -410,13 +437,14 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
                   const isDayGain = dayPnl >= 0;
                   const sym = h.trading_symbol || `${h.symbol}-EQ`;
                   const isSelected = selectedSymbols.has(h.symbol);
+                  const flash = flashMap[h.symbol];
 
                   return (
                     <tr
                       key={idx}
-                      className={`hover:bg-slate-50/80 transition-colors ${isSelected ? 'bg-brand-50/30' : ''}`}
+                      className={`hover:bg-slate-50/90 transition-colors group ${isSelected ? 'bg-brand-50/30' : ''}`}
                     >
-                      <td className="py-3 px-3 text-center">
+                      <td className="py-3.5 px-3 text-center">
                         <input
                           type="checkbox"
                           checked={isSelected}
@@ -425,167 +453,168 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
                         />
                       </td>
 
-                      {/* Stock Name & Symbol */}
-                      <td className="py-3 px-3">
-                        <div className="flex flex-col">
-                          <span className="font-bold text-slate-900 text-xs">{h.company_name || h.symbol}</span>
-                          <span className="font-mono text-[11px] text-slate-500 font-semibold">{sym}</span>
+                      {/* Name + Angel One broker style quick action buttons [ B ] [ S ] [ ⋮ ] */}
+                      <td className="py-3.5 px-3">
+                        <div className="flex items-center gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => onOpenDetailsModal(h, 'chart')}
+                            className="font-bold text-slate-900 text-xs hover:text-brand-600 text-left transition-colors flex items-center gap-1.5"
+                            title="Click to open live TradingView candlestick chart"
+                          >
+                            <span>{h.symbol}</span>
+                            <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 bg-slate-100 text-slate-500 rounded border border-slate-200">
+                              {h.exchange || 'NSE'}
+                            </span>
+                          </button>
+
+                          {/* Quick Action Buttons matching Angel One UI */}
+                          <div className="flex items-center gap-1 bg-slate-900 p-0.5 rounded-md border border-slate-800 shadow-xs">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenOrderTicket(h, 'BUY');
+                              }}
+                              className="w-5 h-5 rounded flex items-center justify-center font-bold text-[11px] bg-emerald-500 hover:bg-emerald-400 text-white transition-all transform active:scale-90"
+                              title="Buy more shares"
+                            >
+                              B
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenOrderTicket(h, 'SELL');
+                              }}
+                              className="w-5 h-5 rounded flex items-center justify-center font-bold text-[11px] bg-rose-500 hover:bg-rose-400 text-white transition-all transform active:scale-90"
+                              title="Sell shares"
+                            >
+                              S
+                            </button>
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveMenuIndex(activeMenuIndex === idx ? null : idx);
+                                }}
+                                className="w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+                                title="More options & chart"
+                              >
+                                <MoreVertical className="w-3 h-3" />
+                              </button>
+
+                              {activeMenuIndex === idx && (
+                                <div
+                                  onMouseLeave={() => setActiveMenuIndex(null)}
+                                  className="absolute left-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 text-left animate-in fade-in zoom-in-95 duration-100"
+                                >
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveMenuIndex(null);
+                                      onOpenDetailsModal(h, 'chart');
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-semibold"
+                                  >
+                                    <BarChart2 className="w-3.5 h-3.5 text-brand-600" />
+                                    <span>TradingView Chart</span>
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveMenuIndex(null);
+                                      onOpenDetailsModal(h, 'depth');
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                                  >
+                                    <Layers className="w-3.5 h-3.5 text-slate-400" />
+                                    <span>Market Depth</span>
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveMenuIndex(null);
+                                      onOpenDetailsModal(h, 'details');
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                                  >
+                                    <Eye className="w-3.5 h-3.5 text-slate-400" />
+                                    <span>Stock Details</span>
+                                  </button>
+                                  <div className="border-t border-slate-100 my-1" />
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveMenuIndex(null);
+                                      navigator.clipboard.writeText(sym);
+                                      showToast(`Copied ${sym} to clipboard`);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 flex items-center gap-2 font-mono"
+                                  >
+                                    <Copy className="w-3.5 h-3.5 text-slate-400" />
+                                    <span>Copy Symbol</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </td>
 
-                      {/* Exchange */}
-                      <td className="py-3 px-2 text-center">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-slate-100 text-slate-700 border border-slate-200">
-                          {h.exchange || 'NSE'}
-                        </span>
-                      </td>
-
-                      {/* Quantity / T1 */}
-                      <td className="py-3 px-3 text-right">
-                        <div className="font-mono font-bold text-slate-900 text-xs">{h.quantity}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          Avail: {h.available_quantity ?? h.quantity} | T1: {h.t1_quantity ?? 0}
-                        </div>
+                      {/* Quantity */}
+                      <td className="py-3.5 px-3 text-right">
+                        <span className="font-mono font-bold text-slate-900 text-xs">{h.quantity}</span>
                       </td>
 
                       {/* Avg Price */}
-                      <td className="py-3 px-3 text-right font-mono font-medium text-slate-800">
+                      <td className="py-3.5 px-3 text-right font-mono text-slate-700 text-xs">
                         ₹{h.average_price.toFixed(2)}
                       </td>
 
-                      {/* LTP with pulse animation */}
-                      <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
+                      {/* LTP with live sub-second tick flash */}
+                      <td className="py-3.5 px-3 text-right font-mono font-bold text-xs">
                         <div className="flex items-center justify-end gap-1">
-                          <span>₹{ltp.toFixed(2)}</span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded transition-all duration-300 ${
+                              flash === 'UP'
+                                ? 'bg-emerald-500/25 text-emerald-600 scale-105 inline-block font-bold'
+                                : flash === 'DOWN'
+                                ? 'bg-rose-500/25 text-rose-600 scale-105 inline-block font-bold'
+                                : 'text-slate-900'
+                            }`}
+                          >
+                            ₹{ltp.toFixed(2)}
+                          </span>
                           <span className={`w-1.5 h-1.5 rounded-full ${h.is_market_price_live ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
                         </div>
                       </td>
 
-                      {/* Invested */}
-                      <td className="py-3 px-3 text-right font-mono text-slate-800">
+                      {/* Inv. Amt. */}
+                      <td className="py-3.5 px-3 text-right font-mono text-slate-700 text-xs">
                         ₹{inv.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
 
-                      {/* Market Value */}
-                      <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
+                      {/* Current Val. */}
+                      <td className="py-3.5 px-3 text-right font-mono font-bold text-slate-900 text-xs">
                         ₹{val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
 
-                      {/* Overall P&L */}
-                      <td className={`py-3 px-3 text-right font-mono font-bold ${
+                      {/* Overall G/L */}
+                      <td className={`py-3.5 px-3 text-right font-mono font-bold text-xs ${
                         isOverallGain ? 'text-emerald-600' : 'text-rose-600'
                       }`}>
                         <div>{isOverallGain ? '+' : ''}₹{pnl.toFixed(2)}</div>
                         <div className="text-[10px] font-semibold">{isOverallGain ? '+' : ''}{pnlPct.toFixed(2)}%</div>
                       </td>
 
-                      {/* Day's P&L */}
-                      <td className={`py-3 px-3 text-right font-mono font-medium ${
+                      {/* Day's G/L */}
+                      <td className={`py-3.5 px-3 text-right font-mono font-bold text-xs ${
                         isDayGain ? 'text-emerald-600' : 'text-rose-600'
                       }`}>
                         <div>{isDayGain ? '+' : ''}₹{dayPnl.toFixed(2)}</div>
-                        <div className="text-[10px]">{isDayGain ? '+' : ''}{dayPnlPct.toFixed(2)}%</div>
-                      </td>
-
-                      {/* Actions */}
-                      <td className="py-3 px-3 text-center">
-                        <div className="flex items-center justify-center gap-1.5 relative">
-                          <button
-                            onClick={() => onOpenOrderTicket(h, 'BUY')}
-                            className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-[11px] rounded border border-emerald-200 transition-colors shadow-2xs"
-                            title="Buy more shares"
-                          >
-                            Buy
-                          </button>
-                          <button
-                            onClick={() => onOpenOrderTicket(h, 'SELL')}
-                            className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded border border-rose-200 transition-colors shadow-2xs"
-                            title="Sell available shares"
-                          >
-                            Sell
-                          </button>
-
-                          {/* More Actions Dropdown */}
-                          <div className="relative">
-                            <button
-                              onClick={() => setActiveMenuIndex(activeMenuIndex === idx ? null : idx)}
-                              className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-                              title="More stock actions"
-                            >
-                              <MoreVertical className="w-3.5 h-3.5" />
-                            </button>
-
-                            {activeMenuIndex === idx && (
-                              <div
-                                onMouseLeave={() => setActiveMenuIndex(null)}
-                                className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-30 text-left animate-in fade-in zoom-in-95 duration-100"
-                              >
-                                <button
-                                  onClick={() => {
-                                    setActiveMenuIndex(null);
-                                    onOpenDetailsModal(h, 'depth');
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                  <Layers className="w-3.5 h-3.5 text-slate-400" />
-                                  <span>Market Depth</span>
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setActiveMenuIndex(null);
-                                    onOpenDetailsModal(h, 'chart');
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                  <BarChart2 className="w-3.5 h-3.5 text-slate-400" />
-                                  <span>Stock Chart</span>
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setActiveMenuIndex(null);
-                                    onOpenDetailsModal(h, 'details');
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                  <Eye className="w-3.5 h-3.5 text-slate-400" />
-                                  <span>Stock Details</span>
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setActiveMenuIndex(null);
-                                    onOpenOrderTicket(h, 'SELL');
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                  <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
-                                  <span>Stop-Loss Order</span>
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setActiveMenuIndex(null);
-                                    onOpenDetailsModal(h, 'corporate');
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                  <TrendingUp className="w-3.5 h-3.5 text-slate-400" />
-                                  <span>Corporate Actions</span>
-                                </button>
-                                <div className="border-t border-slate-100 my-1" />
-                                <button
-                                  onClick={() => {
-                                    setActiveMenuIndex(null);
-                                    navigator.clipboard.writeText(sym);
-                                    showToast(`Copied ${sym} to clipboard`);
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 flex items-center gap-2 font-mono"
-                                >
-                                  <Copy className="w-3.5 h-3.5 text-slate-400" />
-                                  <span>Copy Symbol</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                        <div className="text-[10px] font-semibold">{isDayGain ? '+' : ''}{dayPnlPct.toFixed(2)}%</div>
                       </td>
                     </tr>
                   );

@@ -391,8 +391,6 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
   // WebSocket Live Price Streaming and Order Book real-time synchronization
   useEffect(() => {
-    if (!selectedAccountForDrawer) return;
-
     let ws: WebSocket | null = null;
     let isSubscribed = true;
     let reconnectTimer: any = null;
@@ -416,6 +414,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               const sym = msg.symbol.replace('-EQ', '').toUpperCase();
               const tickLtp = msg.ltp;
 
+              // 1. Update Drawer Holdings in real time
               setDrawerHoldings((prev) => {
                 let changed = false;
                 const updated = prev.map((h) => {
@@ -451,6 +450,61 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                   } : null);
                 }
                 return updated;
+              });
+
+              // 2. Update active Chart & Details modal live if currently open
+              setSelectedStockForDetails((prev) => {
+                if (!prev) return null;
+                const prevSym = (prev.trading_symbol || prev.symbol).replace('-EQ', '').toUpperCase();
+                if (prevSym === sym) {
+                  const dayPnl = prev.close_price ? Math.round((tickLtp - prev.close_price) * prev.quantity * 100) / 100 : prev.day_pnl;
+                  const dayPnlPct = prev.close_price ? Math.round(((tickLtp - prev.close_price) / prev.close_price) * 10000) / 100 : prev.day_pnl_percentage;
+                  return {
+                    ...prev,
+                    current_ltp: tickLtp,
+                    day_pnl: dayPnl,
+                    day_pnl_percentage: dayPnlPct,
+                    valuation: Math.round(prev.quantity * tickLtp * 100) / 100,
+                  };
+                }
+                return prev;
+              });
+
+              // 3. Update Consolidated Portfolio tab holdings & totals in real time
+              setPortfolioHoldings((prev) => {
+                let pChanged = false;
+                const pUpdated = prev.map((h) => {
+                  const hSym = h.symbol.replace('-EQ', '').toUpperCase();
+                  if (hSym === sym) {
+                    pChanged = true;
+                    const newMktVal = Math.round(h.total_quantity * tickLtp * 100) / 100;
+                    const newPnl = Math.round((newMktVal - h.total_cost) * 100) / 100;
+                    const newPnlPct = h.total_cost > 0 ? Math.round((newPnl / h.total_cost) * 10000) / 100 : 0.0;
+                    return {
+                      ...h,
+                      current_ltp: tickLtp,
+                      market_value: newMktVal,
+                      unrealized_pnl: newPnl,
+                      pnl_percentage: newPnlPct,
+                      last_updated: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST'
+                    };
+                  }
+                  return h;
+                });
+
+                if (pChanged) {
+                  const totVal = pUpdated.reduce((s, x) => s + (x.market_value || 0), 0);
+                  const totCost = pUpdated.reduce((s, x) => s + (x.total_cost || 0), 0);
+                  const totPnl = totVal - totCost;
+                  const pnlPct = totCost > 0 ? (totPnl / totCost) * 100 : 0;
+                  setPortfolioTotals({
+                    totalVal: Math.round(totVal * 100) / 100,
+                    totalCost: Math.round(totCost * 100) / 100,
+                    totalPnl: Math.round(totPnl * 100) / 100,
+                    pnlPct: Math.round(pnlPct * 100) / 100
+                  });
+                }
+                return pUpdated;
               });
             } else if (msg.type === 'ORDER_UPDATE' && msg.order) {
               setDrawerOrders((prev) => {

@@ -43,6 +43,13 @@ def reconcile_broker_holdings(
         active_symbols.add(raw_sym)
         valid_count += 1
 
+        if token and token != "0":
+            try:
+                from app.services.market_stream_engine import market_stream_engine
+                market_stream_engine.register_symbol_and_token(sym, token)
+            except Exception:
+                pass
+
         t1_qty = int(h.get("t1quantity", 0))
         realised_qty = int(h.get("realisedquantity", qty))
         auth_qty = int(h.get("authorisedquantity", qty))

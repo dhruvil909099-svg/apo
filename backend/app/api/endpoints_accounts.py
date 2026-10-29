@@ -746,6 +746,12 @@ def get_account_holdings(
         holdings_status = "HISTORICAL" if is_disconnected else ("CACHED" if cached_only else "LIVE")
         for s in snapshots:
             clean_sym = s.symbol.replace("-EQ", "").strip().upper()
+            if s.symbol_token and s.symbol_token != "0":
+                try:
+                    from app.services.market_stream_engine import market_stream_engine
+                    market_stream_engine.register_symbol_and_token(clean_sym, s.symbol_token)
+                except Exception:
+                    pass
             tick = smartapi_ws_service.get_latest_quote(clean_sym)
             live_ltp = float(tick["ltp"]) if (tick and isinstance(tick.get("ltp"), (int, float)) and tick.get("ltp") > 0) else s.ltp
             inv = s.invested_value if (s.invested_value is not None and s.invested_value > 0) else round(s.quantity * s.average_price, 2)

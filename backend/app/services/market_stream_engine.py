@@ -26,11 +26,17 @@ class MarketStreamEngine:
         self._is_running = False
         self._task: Optional[asyncio.Task] = None
         self._subscribed_tokens: Set[str] = set()
-        self._poll_interval = 1.0  # 1-second live streaming cadence
+        self._poll_interval = 0.5  # Sub-second live streaming cadence (500ms)
 
     def register_token(self, token: str):
         if token and str(token).strip() != "0":
             self._subscribed_tokens.add(str(token).strip())
+
+    def register_symbol_and_token(self, symbol: str, token: str):
+        if token and str(token).strip() != "0":
+            self._subscribed_tokens.add(str(token).strip())
+        if symbol:
+            smartapi_ws_service.register_instrument(symbol, token or "0")
 
     def start(self):
         if self._is_running:
@@ -51,7 +57,7 @@ class MarketStreamEngine:
             try:
                 # Only poll upstream when at least one frontend WebSocket is listening
                 if not market_feed_manager.active_connections:
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.0)
                     continue
 
                 # Query active tokens and live account credentials from DB
@@ -61,7 +67,7 @@ class MarketStreamEngine:
                 all_tokens = list(set(tokens) | self._subscribed_tokens)
 
                 if not all_tokens or not live_acc:
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.0)
                     continue
 
                 # Fetch live batch quotes from Angel One SmartAPI
@@ -109,20 +115,44 @@ class MarketStreamEngine:
                 break
             except Exception as e:
                 logger.warning(f"MarketStreamEngine loop exception: {e}")
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)
 
     @staticmethod
     def _get_tokens_and_live_account():
         db = SessionLocal()
         try:
-            # Get tokens from holding snapshots
-            tokens = [
-                s.symbol_token for s in db.query(AccountHoldingSnapshot).filter(
-                    AccountHoldingSnapshot.quantity > 0
-                ).all() if s.symbol_token and s.symbol_token != "0"
-            ]
+            from app.models.instrument import Instrument
+            from app.models.ipo import Allotment, IPO
 
-            # Find connected live Angel One account
+            tokens = []
+
+            # 1. Get tokens from holding snapshots & auto-resolve missing tokens from Instrument master
+            snapshots = db.query(AccountHoldingSnapshot).filter(
+                AccountHoldingSnapshot.quantity > 0
+            ).all()
+            for s in snapshots:
+                if not s.symbol_token or s.symbol_token == "0":
+                    clean = s.symbol.replace("-EQ", "").strip().upper()
+                    inst = db.query(Instrument).filter(
+                        (Instrument.tradingsymbol == f"{clean}-EQ") |
+                        (Instrument.tradingsymbol == clean) |
+                        (Instrument.name == clean)
+                    ).first()
+                    if inst and inst.symbol_token:
+                        s.symbol_token = str(inst.symbol_token)
+                        db.commit()
+                if s.symbol_token and s.symbol_token != "0":
+                    tokens.append(s.symbol_token)
+
+            # 2. Get tokens from IPO Allotments
+            allotments = db.query(Allotment).join(IPO).filter(
+                Allotment.allotted_quantity > 0
+            ).all()
+            for a in allotments:
+                if a.ipo and a.ipo.symbol_token and a.ipo.symbol_token != "0":
+                    tokens.append(a.ipo.symbol_token)
+
+            # 3. Find connected live Angel One account (or any authorized account with stored credentials)
             acc = db.query(Account).filter(
                 Account.is_enabled == True,
                 Account.is_demo == False,
@@ -130,13 +160,21 @@ class MarketStreamEngine:
             ).first()
 
             if not acc:
-                return tokens, None
+                acc = db.query(Account).filter(
+                    Account.is_enabled == True,
+                    Account.is_demo == False,
+                    Account.encrypted_api_key.isnot(None),
+                    Account.encrypted_api_key != ""
+                ).first()
+
+            if not acc:
+                return list(set(tokens)), None
 
             raw_key = cipher.decrypt(acc.encrypted_api_key)
             raw_pin = cipher.decrypt(acc.encrypted_pin)
             raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
 
-            return tokens, {
+            return list(set(tokens)), {
                 "id": acc.id,
                 "client_code": acc.client_code,
                 "api_key": raw_key,
