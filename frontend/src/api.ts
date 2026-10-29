@@ -463,9 +463,16 @@ export const api = {
 
   // Market Data
   getQuotes: () => fetchJson<MarketQuote[]>(`${getApiBase()}/market/quotes`),
-  getMarketCandles: (symbol: string, interval = 'ONE_DAY', rangePeriod = '1M') => fetchJson<import('./types').MarketCandleResponse>(
-    `${getApiBase()}/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&range_period=${rangePeriod}`
-  ),
+  getMarketCandles: (symbol: string, interval = 'ONE_DAY', rangePeriod = '1M', exchange?: string, symbolToken?: string) => {
+    const params = new URLSearchParams({
+      symbol,
+      interval,
+      range_period: rangePeriod,
+    });
+    if (exchange) params.append('exchange', exchange);
+    if (symbolToken) params.append('symbol_token', symbolToken);
+    return fetchJson<import('./types').MarketCandleResponse>(`${getApiBase()}/market/candles?${params.toString()}`);
+  },
   updatePrice: (symbol: string, price: number) => fetchJson<any>(
     `${getApiBase()}/market/update-price?symbol=${encodeURIComponent(symbol)}&price=${price}`,
     { method: 'POST' }

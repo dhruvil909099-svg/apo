@@ -19,6 +19,8 @@ import { api, getWebSocketUrl } from '../api';
 
 interface StockChartProps {
   symbol: string;
+  exchange?: string;
+  symbolToken?: string;
   initialInterval?: string;
   initialRange?: string;
   initialLtp?: number;
@@ -152,6 +154,8 @@ const istClock = () => {
 // ---------------------------------------------------------------------------
 export const StockChart: React.FC<StockChartProps> = ({
   symbol,
+  exchange,
+  symbolToken,
   initialInterval = 'FIVE_MINUTE',
   initialRange = '1D',
   initialLtp,
@@ -290,7 +294,7 @@ export const StockChart: React.FC<StockChartProps> = ({
     setIsLoading(true);
     setError(null);
 
-    api.getMarketCandles(cleanSym, interval, range)
+    api.getMarketCandles(symbol, interval, range, exchange, symbolToken)
       .then((data) => {
         if (cancelled) return;
         setMeta(data);
@@ -333,7 +337,7 @@ export const StockChart: React.FC<StockChartProps> = ({
       });
 
     return () => { cancelled = true; };
-  }, [cleanSym, interval, range, reloadKey, applyLtp]);
+  }, [symbol, cleanSym, exchange, symbolToken, interval, range, reloadKey, applyLtp]);
 
   // -- Live ticks from IPOPro WebSocket (SmartStream relay) --------------------
   useEffect(() => {
@@ -393,8 +397,15 @@ export const StockChart: React.FC<StockChartProps> = ({
         if (!alive) return;
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'TICK' && msg.symbol && String(msg.symbol).replace('-EQ', '').toUpperCase() === cleanSym) {
-            handleTick(msg);
+          if (msg.type === 'TICK') {
+            const sym = msg.symbol ? String(msg.symbol).toUpperCase() : '';
+            const tok = msg.symbol_token ? String(msg.symbol_token).trim() : '';
+            const isMatch =
+              (sym && (sym === symbol.toUpperCase() || sym.replace('-EQ', '') === cleanSym)) ||
+              (symbolToken && tok && tok === String(symbolToken).trim());
+            if (isMatch) {
+              handleTick(msg);
+            }
           }
         } catch {
           /* ignore non-JSON frames */
@@ -413,7 +424,7 @@ export const StockChart: React.FC<StockChartProps> = ({
       if (retry) clearTimeout(retry);
       ws?.close();
     };
-  }, [cleanSym, applyLtp]);
+  }, [cleanSym, symbol, symbolToken, applyLtp]);
 
   // -- IST clock --------------------------------------------------------------
   useEffect(() => {

@@ -39,8 +39,15 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [orderTicketSide, setOrderTicketSide] = useState<'BUY' | 'SELL'>('BUY');
   
-  // Selected for Chart view
-  const [chartSymbol, setChartSymbol] = useState<string | null>('HINDCOPPER-EQ');
+  // Selected for TradingView Lightweight Chart Modal
+  const [chartSelection, setChartSelection] = useState<{
+    symbol: string;
+    exchange: string;
+    symbolToken?: string;
+    companyName?: string;
+    currentLtp?: number;
+    lotSize?: number;
+  } | null>(null);
   
   // Selected for Order Ticket
   const [orderTicketInstrument, setOrderTicketInstrument] = useState<MarketInstrument | null>(null);
@@ -437,7 +444,14 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
                         <div className="flex items-center justify-center gap-1">
                           {row.call && (
                             <button
-                              onClick={() => setChartSymbol(row.call!.tradingsymbol)}
+                              onClick={() => setChartSelection({
+                                symbol: row.call!.tradingsymbol,
+                                exchange: row.call!.exchange || 'NFO',
+                                symbolToken: row.call!.symbol_token,
+                                companyName: `${optionUnderlying} CE ${row.strike}`,
+                                currentLtp: row.call!.current_ltp || undefined,
+                                lotSize: row.call!.lot_size,
+                              })}
                               className="px-2 py-0.5 text-[10px] rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100 font-medium"
                               title="Inspect Call Chart"
                             >
@@ -446,7 +460,14 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
                           )}
                           {row.put && (
                             <button
-                              onClick={() => setChartSymbol(row.put!.tradingsymbol)}
+                              onClick={() => setChartSelection({
+                                symbol: row.put!.tradingsymbol,
+                                exchange: row.put!.exchange || 'NFO',
+                                symbolToken: row.put!.symbol_token,
+                                companyName: `${optionUnderlying} PE ${row.strike}`,
+                                currentLtp: row.put!.current_ltp || undefined,
+                                lotSize: row.put!.lot_size,
+                              })}
                               className="px-2 py-0.5 text-[10px] rounded bg-rose-50 text-rose-700 hover:bg-rose-100 font-medium"
                               title="Inspect Put Chart"
                             >
@@ -512,7 +533,14 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
                   <div className="flex items-center justify-between pt-2">
                     <span className="text-[10px] text-slate-400">Hours: {comm.trading_hours}</span>
                     <button
-                      onClick={() => setChartSymbol(comm.tradingsymbol)}
+                      onClick={() => setChartSelection({
+                        symbol: comm.tradingsymbol,
+                        exchange: comm.exchange || 'MCX',
+                        symbolToken: comm.symbol_token,
+                        companyName: comm.contract_name || comm.commodity_name,
+                        currentLtp: comm.current_ltp || undefined,
+                        lotSize: comm.lot_size,
+                      })}
                       className="px-2.5 py-1 text-xs rounded bg-slate-900 text-white hover:bg-slate-800 font-medium"
                     >
                       View Chart
@@ -616,7 +644,14 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
                       <td className="py-2.5 px-4 text-center">
                         <div className="flex items-center justify-center gap-1.5">
                           <button
-                            onClick={() => setChartSymbol(inst.tradingsymbol)}
+                            onClick={() => setChartSelection({
+                              symbol: inst.tradingsymbol,
+                              exchange: inst.exchange || 'NSE',
+                              symbolToken: inst.symbol_token,
+                              companyName: inst.name || inst.tradingsymbol,
+                              currentLtp: inst.current_ltp || undefined,
+                              lotSize: inst.lot_size,
+                            })}
                             className="px-2.5 py-1 text-xs rounded border border-slate-200 bg-white hover:bg-slate-50 font-medium text-slate-700"
                           >
                             Chart
@@ -638,63 +673,55 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
         </div>
       )}
 
-      {/* Interactive Candlestick Chart Drawer / Panel */}
-      {chartSymbol && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <BarChart2 className="w-5 h-5 text-brand-600" />
-              <h2 className="text-base font-bold text-slate-900">Interactive OHLCV Chart: {chartSymbol}</h2>
-            </div>
-            <button
-              onClick={() => setChartSymbol(null)}
-              className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded"
-            >
-              Close Chart
-            </button>
+      {/* Interactive TradingView Lightweight Chart Modal */}
+      {chartSelection && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-[#0b0b0d] text-slate-100 rounded-2xl shadow-2xl border border-slate-800 w-full max-w-6xl overflow-hidden flex flex-col max-h-[92vh]">
+            <StockChart
+              key={`${chartSelection.exchange}_${chartSelection.symbolToken || chartSelection.symbol}`}
+              symbol={chartSelection.symbol}
+              exchange={chartSelection.exchange}
+              symbolToken={chartSelection.symbolToken}
+              companyName={chartSelection.companyName}
+              initialLtp={chartSelection.currentLtp}
+              height={520}
+              onClose={() => setChartSelection(null)}
+              onBuy={(price) => {
+                handleOpenOrderTicket(
+                  {
+                    tradingsymbol: chartSelection.symbol,
+                    name: chartSelection.companyName || chartSelection.symbol,
+                    exchange: chartSelection.exchange,
+                    symbol_token: chartSelection.symbolToken || '',
+                    current_ltp: price,
+                    lot_size: chartSelection.lotSize || 1,
+                    tick_size: 0.05,
+                    segment: chartSelection.exchange,
+                    instrument_type: 'EQUITY',
+                    is_active: true,
+                  } as any,
+                  'BUY'
+                );
+              }}
+              onSell={(price) => {
+                handleOpenOrderTicket(
+                  {
+                    tradingsymbol: chartSelection.symbol,
+                    name: chartSelection.companyName || chartSelection.symbol,
+                    exchange: chartSelection.exchange,
+                    symbol_token: chartSelection.symbolToken || '',
+                    current_ltp: price,
+                    lot_size: chartSelection.lotSize || 1,
+                    tick_size: 0.05,
+                    segment: chartSelection.exchange,
+                    instrument_type: 'EQUITY',
+                    is_active: true,
+                  } as any,
+                  'SELL'
+                );
+              }}
+            />
           </div>
-          <StockChart
-            symbol={chartSymbol}
-            onClose={() => setChartSymbol(null)}
-            onBuy={(price) => {
-              const sym = chartSymbol.replace('-EQ', '');
-              const found = instruments.find((i) => i.tradingsymbol === chartSymbol || i.tradingsymbol === sym);
-              handleOpenOrderTicket(
-                found || ({
-                  tradingsymbol: chartSymbol,
-                  name: chartSymbol,
-                  exchange: 'NSE',
-                  symbol_token: '',
-                  current_ltp: price,
-                  lot_size: 1,
-                  tick_size: 0.05,
-                  segment: 'NSE_EQ',
-                  instrument_type: 'EQUITY',
-                  is_active: true,
-                } as any),
-                'BUY'
-              );
-            }}
-            onSell={(price) => {
-              const sym = chartSymbol.replace('-EQ', '');
-              const found = instruments.find((i) => i.tradingsymbol === chartSymbol || i.tradingsymbol === sym);
-              handleOpenOrderTicket(
-                found || ({
-                  tradingsymbol: chartSymbol,
-                  name: chartSymbol,
-                  exchange: 'NSE',
-                  symbol_token: '',
-                  current_ltp: price,
-                  lot_size: 1,
-                  tick_size: 0.05,
-                  segment: 'NSE_EQ',
-                  instrument_type: 'EQUITY',
-                  is_active: true,
-                } as any),
-                'SELL'
-              );
-            }}
-          />
         </div>
       )}
 

@@ -206,8 +206,10 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
           {/* TAB 1: CHARTS — TradingView Lightweight Charts fed by SmartAPI candles + live ticks */}
           {tab === 'chart' && (
             <StockChart
-              key={cleanSym}
-              symbol={cleanSym}
+              key={`${holding.exchange || 'NSE'}_${holding.symbol_token || cleanSym}`}
+              symbol={holding.trading_symbol || holding.symbol || cleanSym}
+              exchange={holding.exchange || 'NSE'}
+              symbolToken={holding.symbol_token}
               initialInterval="FIVE_MINUTE"
               initialRange="1D"
               initialLtp={baseLtp}

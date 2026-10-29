@@ -279,24 +279,35 @@ def get_market_candles(
     symbol: str,
     interval: str = "ONE_DAY",
     range_period: str = "1M",
+    exchange: Optional[str] = None,
+    symbol_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
-    Returns historical OHLCV candles using official SmartAPI getCandleData.
+    Returns authentic historical OHLCV candles using official SmartAPI getCandleData
+    across all supported exchanges (NSE, BSE, NFO, BFO, MCX).
     Never generates fictitious random-walk candles. If the broker historical feed is
-    temporarily unavailable or the market session is closed, returns clean status.
+    unavailable or market session is closed, returns genuine empty state.
     """
     sym = symbol.upper().strip()
     
-    inst = db.query(Instrument).filter(
-        (Instrument.tradingsymbol == sym) | 
-        (Instrument.tradingsymbol == f"{sym}-EQ") |
-        (Instrument.symbol_token == sym)
-    ).first()
+    # Clean symbol for DB query if ends with -EQ
+    clean_sym = sym[:-3] if sym.endswith("-EQ") else sym
 
-    company_name = inst.name if inst else f"{sym}"
-    exchange = inst.exchange if inst else "NSE"
-    symbol_token = inst.symbol_token if inst else sym
+    inst = None
+    if symbol_token and symbol_token != "0":
+        inst = db.query(Instrument).filter(Instrument.symbol_token == str(symbol_token).strip()).first()
+    if not inst:
+        inst = db.query(Instrument).filter(
+            (Instrument.tradingsymbol == sym) | 
+            (Instrument.tradingsymbol == clean_sym) |
+            (Instrument.tradingsymbol == f"{clean_sym}-EQ") |
+            (Instrument.symbol_token == sym)
+        ).first()
+
+    company_name = inst.name if inst else (inst.contract_name if hasattr(inst, 'contract_name') and inst.contract_name else f"{sym}")
+    resolved_exchange = (exchange or (inst.exchange if inst else "NSE")).upper().strip()
+    resolved_token = str(symbol_token).strip() if (symbol_token and symbol_token != "0") else (inst.symbol_token if inst else sym)
 
     interval = _normalize_candle_interval(interval)
     range_period = (range_period or "1M").upper()
@@ -315,11 +326,26 @@ def get_market_candles(
     is_stale = True
 
     adapter = get_any_active_market_adapter(db)
-    if adapter and symbol_token and symbol_token != "0":
+    if adapter and resolved_token and resolved_token != "0" and resolved_token != sym:
         try:
             candles = adapter.get_candle_data(
-                exchange=exchange,
-                symbol_token=symbol_token,
+                exchange=resolved_exchange,
+                symbol_token=resolved_token,
+                interval=interval,
+                from_date=from_date,
+                to_date=to_date
+            )
+            if candles:
+                data_source = "SMARTAPI_HISTORICAL_API"
+                is_stale = False
+        except Exception:
+            pass
+    elif adapter and resolved_token:
+        # Try direct fetch even if token equals sym
+        try:
+            candles = adapter.get_candle_data(
+                exchange=resolved_exchange,
+                symbol_token=resolved_token,
                 interval=interval,
                 from_date=from_date,
                 to_date=to_date
@@ -332,34 +358,20 @@ def get_market_candles(
 
     # Check live cached tick from SmartAPI WebSocket stream
     from app.services.smartapi_websocket import smartapi_ws_service
-    cached_tick = smartapi_ws_service.get_latest_quote(sym) or smartapi_ws_service.get_latest_quote(f"{sym}-EQ")
+    cached_tick = (
+        smartapi_ws_service.get_latest_quote(sym)
+        or smartapi_ws_service.get_latest_quote(clean_sym)
+        or (smartapi_ws_service.get_latest_quote(resolved_token) if resolved_token else None)
+    )
 
     ltp = candles[-1]["close"] if candles else (cached_tick["ltp"] if cached_tick else (inst.current_ltp if inst else None))
-    prev_close = candles[-2]["close"] if len(candles) > 1 else (cached_tick["previous_close"] if cached_tick else (inst.previous_close if inst else None))
+    prev_close = (
+        candles[-2]["close"] if len(candles) > 1 
+        else (cached_tick["previous_close"] if cached_tick 
+        else (inst.previous_close if inst else None))
+    )
 
-    # If no historical candles returned from SmartAPI (or session offline), generate intraday candles from verified LTP
-    if not candles and ltp and ltp > 0:
-        base_p = prev_close or ltp
-        step_count = 24
-        candles = []
-        for i in range(step_count):
-            t = now - timedelta(minutes=(step_count - i) * 15)
-            # Progressive walk toward current LTP
-            ratio = i / (step_count - 1)
-            p = round(base_p + (ltp - base_p) * ratio, 2)
-            c_open = round(p - 0.20, 2)
-            c_high = round(max(c_open, p) + 0.35, 2)
-            c_low = round(min(c_open, p) - 0.30, 2)
-            candles.append({
-                "timestamp": t.strftime("%Y-%m-%d %H:%M:%S"),
-                "open": c_open,
-                "high": c_high,
-                "low": c_low,
-                "close": p,
-                "volume": 12500 + i * 450
-            })
-        data_source = "LIVE_TICK_STREAM_CANDLES"
-        is_stale = False
+    # Strictly no synthetic or fictitious random candles per specification
 
     change = round(ltp - prev_close, 2) if (ltp and prev_close) else None
     change_pct = round((change / prev_close) * 100, 2) if (change is not None and prev_close and prev_close > 0) else None
@@ -367,8 +379,8 @@ def get_market_candles(
     return {
         "symbol": sym,
         "company_name": company_name,
-        "exchange": exchange,
-        "symbol_token": symbol_token,
+        "exchange": resolved_exchange,
+        "symbol_token": resolved_token,
         "current_ltp": ltp,
         "previous_close": prev_close,
         "change": change,
@@ -380,7 +392,7 @@ def get_market_candles(
         "data_source": data_source,
         "is_stale": is_stale,
         "status": "SUCCESS" if candles else "HISTORICAL_CANDLES_UNAVAILABLE",
-        "message": "Live candles loaded from SmartAPI" if data_source == "SMARTAPI_HISTORICAL_API" else "Real-time candles active",
+        "message": "Live candles loaded from SmartAPI" if data_source == "SMARTAPI_HISTORICAL_API" else "No historical candles available for this instrument from broker",
         "last_updated": now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
     }
 
