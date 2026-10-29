@@ -202,4 +202,23 @@ def run_safe_migrations(target_engine=None):
                     conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {col_name} {col_type};"))
             conn.commit()
 
+    # Column definitions to verify for 'account_holding_snapshots'
+    holding_snapshot_columns_to_add = [
+        ("collateral_quantity", "INTEGER DEFAULT 0"),
+        ("collateral_type", "VARCHAR(50)"),
+        ("blocked_in_open_orders", "INTEGER DEFAULT 0"),
+        ("sellable_quantity", "INTEGER"),
+        ("verification_status", "VARCHAR(30) DEFAULT 'VERIFIED'"),
+        ("verification_timestamp", "TIMESTAMP"),
+    ]
+
+    if "account_holding_snapshots" in existing_tables:
+        existing_cols = {col["name"] for col in inspector.get_columns("account_holding_snapshots")}
+        with active_engine.connect() as conn:
+            for col_name, col_type in holding_snapshot_columns_to_add:
+                if col_name not in existing_cols:
+                    logger.info(f"Adding missing column account_holding_snapshots.{col_name} ({col_type})")
+                    conn.execute(text(f"ALTER TABLE account_holding_snapshots ADD COLUMN {col_name} {col_type};"))
+            conn.commit()
+
     logger.info("Schema verification and safe migrations completed.")

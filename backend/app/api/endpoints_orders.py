@@ -91,17 +91,43 @@ def preview_single_order(
             )
     else:  # SELL
         balance_label = "Sellable Shares"
-        allotment = db.query(Allotment).join(IPO).filter(
-            Allotment.account_id == account.id,
-            IPO.symbol == clean_symbol
-        ).first()
-        available_balance = float(allotment.allotted_quantity) if allotment else 0.0
-        if available_balance < req.quantity:
+        from app.services.holdings_service import get_holding_for_symbol
+        holding_info = get_holding_for_symbol(db, account.id, clean_symbol)
+        
+        if not holding_info:
+            available_balance = 0.0
             blocking_reasons.append(
-                f"Insufficient holdings: Requested {req.quantity} shares, but only {int(available_balance)} available."
+                f"Insufficient holdings: Requested {req.quantity} shares of {clean_symbol}, but no verified holdings exist for account '{account.nickname}'."
             )
-        if account.ddpi_status != "ACTIVE" and not account.edis_authorized_today:
-            warnings.append("DDPI is not active for this account. CDSL T-PIN authorization (eDIS) will be required prior to broker settlement.")
+        else:
+            total_owned = holding_info["quantity"]
+            sellable_qty = holding_info["sellable_quantity"]
+            blocked_qty = holding_info["blocked_quantity"]
+            ver_status = holding_info["verification_status"]
+            available_balance = float(sellable_qty)
+
+            if req.quantity > total_owned:
+                blocking_reasons.append(
+                    f"Insufficient holdings: Requested {req.quantity} shares, but total owned quantity is only {total_owned}."
+                )
+            elif req.quantity > sellable_qty:
+                if blocked_qty > 0:
+                    blocking_reasons.append(
+                        f"Insufficient sellable quantity: Requested {req.quantity} shares, but only {sellable_qty} available to sell ({blocked_qty} shares currently blocked in open orders)."
+                    )
+                else:
+                    blocking_reasons.append(
+                        f"Insufficient sellable quantity: Requested {req.quantity} shares, but only {sellable_qty} available."
+                    )
+
+            if ver_status == "VERIFICATION_REQUIRED":
+                warnings.append(
+                    "Sellability verification required: DDPI is not active. CDSL T-PIN authorization (eDIS) will be required prior to broker settlement."
+                )
+            elif ver_status == "DISCONNECTED":
+                blocking_reasons.append(
+                    f"Account '{account.nickname}' is disconnected. Reconnection required before submitting broker orders."
+                )
 
     is_valid = len(blocking_reasons) == 0
 

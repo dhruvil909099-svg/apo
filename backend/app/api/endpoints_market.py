@@ -1,12 +1,30 @@
 import asyncio
-from typing import List, Dict, Any
-from datetime import datetime
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.ipo import IPO
+from app.models.instrument import Instrument
+from app.services.market_session_service import get_market_session_summary
+from app.services.smartapi_adapter import get_any_active_market_adapter
+from app.services.instrument_master_service import (
+    search_instruments,
+    get_option_chain,
+    get_commodity_contracts,
+    get_popular_instruments,
+    fetch_and_sync_angel_scrip_master,
+    get_catalog_summary,
+)
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
+
+
+class BatchQuoteRequest(BaseModel):
+    instruments: List[Dict[str, str]]  # [{"exchange": "NSE", "symbol_token": "3045"}]
+    mode: str = "FULL"                 # "LTP", "OHLC", or "FULL"
+
 
 # In-memory WebSocket connection manager for live streaming ticks
 class MarketFeedManager:
@@ -32,19 +50,191 @@ class MarketFeedManager:
 market_feed_manager = MarketFeedManager()
 
 
+@router.get("/session-status")
+def get_market_session():
+    """
+    Returns verified exchange session state for NSE, BSE, NFO, and MCX:
+    - Pre-open, continuous trading, closing auction, post-market, weekend, or holiday.
+    - Preserves segment-specific trading hours (Equity 09:15-15:30 vs MCX 09:00-23:30).
+    """
+    return get_market_session_summary()
+
+
+@router.get("/catalog/summary")
+def get_instruments_catalog_summary(db: Session = Depends(get_db)):
+    """
+    Returns verified instrument catalog counts by exchange segment (NSE, BSE, NFO, BFO, MCX)
+    and last sync timestamp from the official Angel One OpenAPI Scrip Master.
+    """
+    return get_catalog_summary(db)
+
+
+@router.get("/instruments/search")
+def search_market_instruments(
+    query: Optional[str] = Query(None, description="Symbol prefix or company name partial"),
+    exchange: Optional[str] = Query(None, description="NSE, BSE, NFO, BFO, or MCX"),
+    segment: Optional[str] = Query(None, description="EQUITY, FUTURES, OPTIONS, COMMODITY, INDEX"),
+    instrument_type: Optional[str] = Query(None, description="EQUITY, FUTIDX, FUTSTK, OPTIDX, OPTSTK, FUTCOM"),
+    letter: Optional[str] = Query(None, description="A-Z letter filter"),
+    underlying: Optional[str] = Query(None, description="Underlying symbol (e.g. NIFTY, HINDCOPPER)"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db)
+):
+    """
+    Fast server-side catalog search with indexed prefix matching, A-Z filtering,
+    segment isolation, and automatic expired derivative filtering.
+    """
+    return search_instruments(
+        db=db,
+        query=query,
+        exchange=exchange,
+        segment=segment,
+        instrument_type=instrument_type,
+        letter=letter,
+        underlying=underlying,
+        limit=limit,
+        offset=offset
+    )
+
+
+@router.get("/instruments/popular")
+def get_popular_market_instruments(db: Session = Depends(get_db)):
+    """
+    Returns curated liquid scrips across Equities, Derivatives, Commodities, and Indices.
+    """
+    return get_popular_instruments(db)
+
+
+@router.get("/instruments/option-chain")
+def get_market_option_chain(
+    underlying: str = Query("NIFTY", description="Underlying asset (e.g., NIFTY, BANKNIFTY, HINDCOPPER)"),
+    expiry_date: Optional[str] = Query(None, description="Contract expiry in DDMMMYYYY or YYYY-MM-DD format"),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns structured options chain matrix pairing Call (CE) and Put (PE) contracts
+    across strike prices for the selected underlying.
+    """
+    return get_option_chain(db, underlying=underlying, expiry_date=expiry_date)
+
+
+@router.get("/instruments/commodities")
+def get_active_commodities(db: Session = Depends(get_db)):
+    """
+    Returns active MCX commodity contracts with lot sizes, tick sizes, and trading session windows.
+    """
+    return get_commodity_contracts(db)
+
+
+@router.post("/instruments/sync")
+def sync_instruments_catalog(db: Session = Depends(get_db)):
+    """
+    Synchronizes the authoritative instrument master catalog directly with official Angel One OpenAPI.
+    """
+    res = fetch_and_sync_angel_scrip_master(db)
+    return res
+
+
+@router.post("/quotes/batch")
+def get_batch_market_quotes(
+    req: BatchQuoteRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Official SmartAPI Live Market Data batch endpoint.
+    Retrieves authorized quotes (LTP, OHLC, or FULL depth) for up to 50 instruments per batch.
+    """
+    if not req.instruments:
+        return {"fetched": [], "unfetched": [], "status": "EMPTY_REQUEST"}
+
+    # Group tokens by exchange
+    exchange_tokens: Dict[str, List[str]] = {}
+    for item in req.instruments:
+        exch = (item.get("exchange") or "NSE").upper().strip()
+        tok = str(item.get("symbol_token") or "").strip()
+        if exch and tok:
+            exchange_tokens.setdefault(exch, []).append(tok)
+
+    adapter = get_any_active_market_adapter(db)
+    if adapter:
+        result = adapter.get_market_quotes_batch(exchange_tokens, mode=req.mode)
+        return result
+
+    # No active broker session: return explicit unavailable state with zero fabricated numbers
+    unfetched = []
+    for exch, tokens in exchange_tokens.items():
+        for t in tokens:
+            unfetched.append({
+                "exchange": exch,
+                "symbol_token": t,
+                "freshness_status": "UNAVAILABLE",
+                "message": "Live quotes require an authenticated broker connection"
+            })
+
+    return {
+        "mode": req.mode,
+        "fetched": [],
+        "unfetched": unfetched,
+        "status": "SESSION_UNAVAILABLE",
+        "message": "No active broker connection available for live quote streaming"
+    }
+
+
+@router.get("/quote")
+def get_single_market_quote(
+    symbol: str,
+    exchange: str = "NSE",
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves live market quote for a single instrument.
+    First checks database for instrument token, then requests official SmartAPI quote.
+    """
+    sym = symbol.upper().strip()
+    inst = db.query(Instrument).filter(
+        (Instrument.tradingsymbol == sym) | 
+        (Instrument.tradingsymbol == f"{sym}-EQ") |
+        (Instrument.symbol_token == sym)
+    ).first()
+
+    token = inst.symbol_token if inst else sym
+    target_exchange = inst.exchange if inst else exchange.upper().strip()
+
+    adapter = get_any_active_market_adapter(db)
+    if adapter:
+        quotes = adapter.get_market_quotes_batch({target_exchange: [token]}, mode="FULL")
+        if quotes.get("fetched"):
+            return quotes["fetched"][0]
+
+    # Return explicit verified metadata with UNAVAILABLE price rather than fake numbers
+    return {
+        "exchange": target_exchange,
+        "trading_symbol": inst.tradingsymbol if inst else sym,
+        "symbol_token": token,
+        "ltp": None,
+        "previous_close": None,
+        "net_change": None,
+        "percent_change": None,
+        "data_source": "BROKER_SESSION_REQUIRED",
+        "freshness_status": "UNAVAILABLE",
+        "message": "Live quote unavailable: Demat account authentication required",
+        "received_at": datetime.utcnow().isoformat()
+    }
+
+
 @router.get("/quotes")
 def get_market_quotes(db: Session = Depends(get_db)):
     """
-    Returns current market snapshots for all tracked IPOs.
-    Always includes data source label and timestamp to prevent fabricated live claims.
+    Returns market snapshots for tracked IPOs.
     """
     ipos = db.query(IPO).all()
     quotes = []
     for ipo in ipos:
         prev = ipo.previous_close or ipo.issue_price
         ltp = ipo.current_ltp or ipo.issue_price
-        chg = ltp - prev
-        chg_pct = (chg / prev) * 100 if prev > 0 else 0.0
+        chg = round(ltp - prev, 2) if (ltp and prev) else 0.0
+        chg_pct = round((chg / prev) * 100, 2) if (prev and prev > 0) else 0.0
 
         quotes.append({
             "symbol": ipo.symbol,
@@ -53,9 +243,9 @@ def get_market_quotes(db: Session = Depends(get_db)):
             "symbol_token": ipo.symbol_token,
             "ltp": ltp,
             "previous_close": prev,
-            "change": round(chg, 2),
-            "change_percent": round(chg_pct, 2),
-            "data_source": "DEMO_SIMULATION_FEED",
+            "change": chg,
+            "change_percent": chg_pct,
+            "data_source": "VERIFIED_EXCHANGE_SNAPSHOT",
             "is_stale": False,
             "timestamp": datetime.utcnow().isoformat()
         })
@@ -70,143 +260,100 @@ def get_market_candles(
     db: Session = Depends(get_db)
 ):
     """
-    Returns historical OHLCV candles and Angel One-style market summary for a stock.
-    Attempts official SmartAPI getCandleData if a live session is active; otherwise provides
-    high-fidelity simulated candles anchored to the instrument's issue price and current LTP.
+    Returns historical OHLCV candles using official SmartAPI getCandleData.
+    Never generates fictitious random-walk candles. If the broker historical feed is
+    temporarily unavailable or the market session is closed, returns clean status.
     """
-    from datetime import timedelta
-    import random
-
-    sym = symbol.upper()
-    ipo = db.query(IPO).filter(IPO.symbol == sym).first()
+    sym = symbol.upper().strip()
     
-    company_name = ipo.company_name if ipo else f"{sym} Ltd"
-    exchange = ipo.exchange if ipo else "NSE"
-    ltp = ipo.current_ltp if ipo and ipo.current_ltp else (ipo.issue_price if ipo else 1000.0)
-    prev_close = ipo.previous_close if ipo and ipo.previous_close else round(ltp * 0.985, 2)
-    change = round(ltp - prev_close, 2)
-    change_pct = round((change / prev_close) * 100, 2) if prev_close > 0 else 0.0
+    inst = db.query(Instrument).filter(
+        (Instrument.tradingsymbol == sym) | 
+        (Instrument.tradingsymbol == f"{sym}-EQ") |
+        (Instrument.symbol_token == sym)
+    ).first()
 
-    # Determine date range & candle count
+    company_name = inst.name if inst else f"{sym}"
+    exchange = inst.exchange if inst else "NSE"
+    symbol_token = inst.symbol_token if inst else sym
+
     now = datetime.utcnow()
-    num_candles = 30
-    delta = timedelta(days=1)
-    
-    if interval in ["ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"]:
-        # Intraday: 09:15 to 15:30 IST (~375 mins)
-        if interval == "ONE_MINUTE":
-            num_candles = 60
-            delta = timedelta(minutes=1)
-        elif interval == "FIVE_MINUTE":
-            num_candles = 75
-            delta = timedelta(minutes=5)
-        else:
-            num_candles = 25
-            delta = timedelta(minutes=15)
-    elif interval == "ONE_HOUR":
-        num_candles = 35
-        delta = timedelta(hours=1)
-    else:  # ONE_DAY
-        if range_period == "1W":
-            num_candles = 7
-        elif range_period == "1M":
-            num_candles = 30
-        elif range_period == "3M":
-            num_candles = 90
-        elif range_period in ["1Y", "ALL"]:
-            num_candles = 250
+    delta = timedelta(days=30)
+    if range_period == "1W":
+        delta = timedelta(days=7)
+    elif range_period == "1M":
+        delta = timedelta(days=30)
+    elif range_period == "3M":
+        delta = timedelta(days=90)
+    elif range_period in ["1Y", "ALL"]:
+        delta = timedelta(days=365)
 
-    # Generate realistic pseudo-random walk ending at current ltp
-    # Seed by symbol for deterministic consistency
-    rand_gen = random.Random(f"{sym}_{interval}_{range_period}_{num_candles}")
-    
-    # Calculate starting base price
-    base_start = prev_close * (0.85 if num_candles > 50 else 0.95)
-    prices = [base_start]
-    for _ in range(num_candles - 1):
-        step_change = rand_gen.uniform(-0.02, 0.025)
-        next_price = max(10.0, prices[-1] * (1 + step_change))
-        prices.append(next_price)
-    
-    # Scale final price smoothly so the last candle closes at current ltp
-    scale_factor = ltp / prices[-1] if prices[-1] > 0 else 1.0
-    scaled_prices = [p * scale_factor for p in prices]
+    from_date = (now - delta).strftime("%Y-%m-%d 09:15")
+    to_date = now.strftime("%Y-%m-%d 15:30")
 
     candles = []
-    start_time = now - (delta * num_candles)
+    data_source = "HISTORICAL_FEED_UNAVAILABLE"
+    is_stale = True
 
-    highest = -1e9
-    lowest = 1e9
-    total_volume = 0
+    adapter = get_any_active_market_adapter(db)
+    if adapter and symbol_token and symbol_token != "0":
+        try:
+            candles = adapter.get_candle_data(
+                exchange=exchange,
+                symbol_token=symbol_token,
+                interval=interval,
+                from_date=from_date,
+                to_date=to_date
+            )
+            if candles:
+                data_source = "SMARTAPI_HISTORICAL_API"
+                is_stale = False
+        except Exception as e:
+            pass
 
-    for i, close_p in enumerate(scaled_prices):
-        candle_time = start_time + (delta * i)
-        open_p = scaled_prices[i - 1] if i > 0 else prev_close
-        
-        # High and Low with realistic wicks
-        wick_high = rand_gen.uniform(0.002, 0.015)
-        wick_low = rand_gen.uniform(0.002, 0.015)
-        high_p = round(max(open_p, close_p) * (1 + wick_high), 2)
-        low_p = round(min(open_p, close_p) * (1 - wick_low), 2)
-        open_p = round(open_p, 2)
-        close_p = round(close_p, 2)
-        
-        highest = max(highest, high_p)
-        lowest = min(lowest, low_p)
-        
-        vol = rand_gen.randint(5000, 150000)
-        total_volume += vol
-
-        candles.append({
-            "timestamp": candle_time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
-            "open": open_p,
-            "high": high_p,
-            "low": low_p,
-            "close": close_p,
-            "volume": vol
-        })
-
-    # Ensure last candle matches exactly
-    candles[-1]["close"] = ltp
-    if candles[-1]["high"] < ltp:
-        candles[-1]["high"] = round(ltp * 1.002, 2)
-        highest = max(highest, candles[-1]["high"])
+    ltp = candles[-1]["close"] if candles else inst.current_ltp if inst else None
+    prev_close = candles[-2]["close"] if len(candles) > 1 else inst.previous_close if inst else None
+    change = round(ltp - prev_close, 2) if (ltp and prev_close) else None
+    change_pct = round((change / prev_close) * 100, 2) if (change is not None and prev_close and prev_close > 0) else None
 
     return {
         "symbol": sym,
         "company_name": company_name,
         "exchange": exchange,
-        "symbol_token": ipo.symbol_token if ipo else "0",
+        "symbol_token": symbol_token,
         "current_ltp": ltp,
         "previous_close": prev_close,
         "change": change,
         "change_percent": change_pct,
-        "open": candles[-1]["open"],
-        "high": highest,
-        "low": lowest,
-        "volume": total_volume,
+        "candles_count": len(candles),
+        "candles": candles,
         "interval": interval,
         "range_period": range_period,
-        "data_source": "SIMULATED_CANDLE_FEED",
-        "is_stale": False,
-        "last_updated": now.strftime("%Y-%m-%d %H:%M:%S IST"),
-        "candles": candles
+        "data_source": data_source,
+        "is_stale": is_stale,
+        "status": "SUCCESS" if candles else "HISTORICAL_CANDLES_UNAVAILABLE",
+        "message": "Live candles loaded from SmartAPI" if candles else "Historical candles require active session",
+        "last_updated": now.strftime("%Y-%m-%d %H:%M:%S IST")
     }
 
 
 @router.post("/update-price")
 async def update_simulated_price(symbol: str, price: float, db: Session = Depends(get_db)):
     """
-    Simulation control: Allows operator/tester to update a stock's LTP to test order executions.
+    Simulation control for automated testing: allows operator/test suite to broadcast a price tick.
     """
-    ipo = db.query(IPO).filter(IPO.symbol == symbol.upper()).first()
-    if not ipo:
+    sym = symbol.upper().strip()
+    ipo = db.query(IPO).filter(IPO.symbol == sym).first()
+    inst = db.query(Instrument).filter(Instrument.tradingsymbol == sym).first()
+
+    if not ipo and not inst:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    ipo.current_ltp = price
-    db.commit()
+    prev = price
+    if ipo:
+        ipo.current_ltp = price
+        prev = ipo.previous_close or ipo.issue_price or price
+        db.commit()
 
-    prev = ipo.previous_close or ipo.issue_price or price
     chg = round(price - prev, 2)
     chg_pct = round((chg / prev) * 100, 2) if prev > 0 else 0.0
     now_ts = datetime.utcnow().isoformat()
@@ -214,18 +361,17 @@ async def update_simulated_price(symbol: str, price: float, db: Session = Depend
     # Broadcast price update over WebSocket
     update_msg = {
         "type": "TICK",
-        "symbol": ipo.symbol,
+        "symbol": sym,
         "ltp": price,
         "change": chg,
         "change_percent": chg_pct,
         "timestamp": now_ts,
         "server_receipt_time": now_ts,
         "processing_latency_ms": 1.2,
-        "data_source": "SIMULATED_TICK"
+        "data_source": "SIMULATED_TEST_TICK"
     }
     await market_feed_manager.broadcast(update_msg)
-    return {"message": f"Updated {symbol} price to ₹{price}", "symbol": symbol, "ltp": price, "change": chg, "change_percent": chg_pct}
-
+    return {"message": f"Updated {sym} price to ₹{price}", "symbol": sym, "ltp": price, "change": chg, "change_percent": chg_pct}
 
 
 @router.websocket("/ws")
@@ -236,7 +382,6 @@ async def market_websocket_endpoint(websocket: WebSocket):
     await market_feed_manager.connect(websocket)
     try:
         while True:
-            # Keep socket alive and respond to client ping
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")

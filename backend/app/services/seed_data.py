@@ -1,5 +1,6 @@
 import logging
 from sqlalchemy.orm import Session
+from app.core.config import settings
 from app.models.account import Account
 from app.models.ipo import IPO, Allotment
 from app.models.order import Order
@@ -56,4 +57,17 @@ def seed_demo_data(db: Session):
     if db.query(IPO).count() == 0:
         logger.info("Fresh database detected. Initializing authoritative IPO catalog...")
         IPOFeedService.sync_feed(db)
+
+    import os
+    if os.getenv("TESTING", "").lower() not in ("true", "1") and settings.TRADING_MODE != "TEST":
+        from app.models.instrument import Instrument
+        from app.services.instrument_master_service import fetch_and_sync_angel_scrip_master
+
+        if db.query(Instrument).count() == 0:
+            logger.info("Fresh database detected. Ingesting official Angel One OpenAPI Scrip Master...")
+            try:
+                fetch_and_sync_angel_scrip_master(db)
+            except Exception as e:
+                logger.warning(f"Background instrument catalog sync deferred: {e}")
+
 

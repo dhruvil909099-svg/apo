@@ -54,12 +54,9 @@ class PaperTradingService:
 
         allotment = None
         if order.transaction_type == "SELL":
-            allotment = db.query(Allotment).join(IPO).filter(
-                Allotment.account_id == account.id,
-                IPO.symbol == clean_symbol
-            ).first()
-            
-            holding_qty = allotment.allotted_quantity if allotment else 0
+            from app.services.holdings_service import get_holding_for_symbol
+            holding_info = get_holding_for_symbol(db, account.id, clean_symbol)
+            holding_qty = holding_info["quantity"] if holding_info else 0
             if order.quantity > holding_qty:
                 order.status = "REJECTED"
                 order.rejection_reason = f"Insufficient holdings: requested {order.quantity}, available {holding_qty}."
@@ -115,54 +112,22 @@ class PaperTradingService:
         # Update cash and holdings upon execution
         if order.status == "EXECUTED":
             exec_p = order.execution_price or order.price or effective_ltp
+            from app.services.holdings_service import update_holding_on_order_fill
+            update_holding_on_order_fill(
+                db=db,
+                account_id=account.id,
+                symbol=clean_symbol,
+                quantity=order.filled_quantity,
+                price=exec_p,
+                side=order.transaction_type,
+                exchange=order.exchange or "NSE",
+                symbol_token=order.symbol_token or "0"
+            )
             if order.transaction_type == "SELL":
-                if allotment:
-                    allotment.allotted_quantity -= order.filled_quantity
                 account.available_cash = round(account.available_cash + (order.filled_quantity * exec_p), 2)
             elif order.transaction_type == "BUY":
                 actual_cost = order.filled_quantity * exec_p
                 account.available_cash = max(0.0, round(account.available_cash - actual_cost, 2))
-
-                # Ensure instrument exists in IPO table
-                if not ipo:
-                    ipo = IPO(
-                        symbol=clean_symbol,
-                        company_name=clean_symbol,
-                        exchange=order.exchange or "NSE",
-                        issue_price=exec_p,
-                        lot_size=1,
-                        current_ltp=exec_p,
-                        previous_close=exec_p,
-                        status="LISTED"
-                    )
-                    db.add(ipo)
-                    db.flush()
-
-                # Find or create allotment record
-                allotment = db.query(Allotment).filter(
-                    Allotment.ipo_id == ipo.id,
-                    Allotment.account_id == account.id
-                ).first()
-                if not allotment:
-                    allotment = Allotment(
-                        ipo_id=ipo.id,
-                        account_id=account.id,
-                        applied_quantity=order.filled_quantity,
-                        allotted_quantity=order.filled_quantity,
-                        acquisition_cost=exec_p,
-                        status="DEMAT_CREDITED",
-                        demat_verified=True,
-                        verification_source="PAPER_TRADING"
-                    )
-                    db.add(allotment)
-                else:
-                    total_qty = allotment.allotted_quantity + order.filled_quantity
-                    if total_qty > 0:
-                        new_cost = ((allotment.allotted_quantity * allotment.acquisition_cost) + (order.filled_quantity * exec_p)) / total_qty
-                        allotment.acquisition_cost = round(new_cost, 2)
-                    allotment.allotted_quantity = total_qty
-                    allotment.status = "DEMAT_CREDITED"
-                    allotment.demat_verified = True
 
         db.commit()
         db.refresh(order)

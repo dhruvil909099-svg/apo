@@ -556,13 +556,11 @@ def get_account_overview(account_id: int, db: Session = Depends(get_db)):
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # Fetch holdings from verified Demat allotments
-    allotments = db.query(Allotment).join(IPO).filter(
-        Allotment.account_id == account_id,
-        Allotment.allotted_quantity > 0
-    ).all()
-    holdings_count = len(allotments)
-    holdings_val = sum(a.allotted_quantity * (a.ipo.current_ltp or a.ipo.issue_price) for a in allotments)
+    # Fetch holdings from unified holdings model
+    from app.services.holdings_service import get_unified_account_holdings
+    unified_h = get_unified_account_holdings(db, account_id)
+    holdings_count = len(unified_h)
+    holdings_val = sum(h["valuation"] for h in unified_h)
 
     # Check connection and freshness states
     is_disconnected = (not account.is_demo and account.auth_status != "CONNECTED")

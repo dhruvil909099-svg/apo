@@ -11,10 +11,12 @@ from app.models.notification import Notification
 from app.models.chat import ChatMessage
 
 from app.models.holding import AccountHoldingSnapshot
+from app.models.instrument import Instrument
 
 __all__ = [
     "Account",
     "AccountHoldingSnapshot",
+    "Instrument",
     "IPO",
     "Allotment",
     "IPODataSource",

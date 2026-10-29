@@ -631,5 +631,68 @@ export const api = {
     `${getApiBase()}/operations/remediate`,
     { method: 'POST', body: JSON.stringify({ action, payload }) }
   ),
+
+  // Market & Genuine Angel One Instruments Catalog
+  searchInstruments: (params?: {
+    query?: string;
+    exchange?: string;
+    segment?: string;
+    instrument_type?: string;
+    letter?: string;
+    underlying?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.query) sp.append('query', params.query);
+    if (params?.exchange) sp.append('exchange', params.exchange);
+    if (params?.segment) sp.append('segment', params.segment);
+    if (params?.instrument_type) sp.append('instrument_type', params.instrument_type);
+    if (params?.letter) sp.append('letter', params.letter);
+    if (params?.underlying) sp.append('underlying', params.underlying);
+    if (params?.limit) sp.append('limit', params.limit.toString());
+    if (params?.offset) sp.append('offset', params.offset.toString());
+    const qs = sp.toString() ? `?${sp.toString()}` : '';
+    return fetchJson<{
+      total_count: number;
+      limit: number;
+      offset: number;
+      has_more: boolean;
+      instruments: import('./types').MarketInstrument[];
+    }>(`${getApiBase()}/market/instruments/search${qs}`);
+  },
+
+  getPopularInstruments: () => fetchJson<import('./types').MarketInstrument[]>(`${getApiBase()}/market/instruments/popular`),
+
+  getOptionChain: (underlying: string = 'NIFTY', expiryDate?: string) => {
+    const sp = new URLSearchParams({ underlying });
+    if (expiryDate) sp.append('expiry_date', expiryDate);
+    return fetchJson<import('./types').OptionChainResponse>(`${getApiBase()}/market/instruments/option-chain?${sp.toString()}`);
+  },
+
+  getCommodities: () => fetchJson<import('./types').CommodityContract[]>(`${getApiBase()}/market/instruments/commodities`),
+
+  getMarketSessionStatus: () => fetchJson<import('./types').MarketSessionStatus>(`${getApiBase()}/market/session-status`),
+
+  getCatalogSummary: () => fetchJson<import('./types').CatalogSummaryResponse>(`${getApiBase()}/market/catalog/summary`),
+
+  syncInstrumentsCatalog: () => fetchJson<{ status: string; total_persisted: number; counts_by_exchange: Record<string, number> }>(
+    `${getApiBase()}/market/instruments/sync`,
+    { method: 'POST' }
+  ),
+
+  getSingleMarketQuote: (symbol: string, exchange: string = 'NSE') => fetchJson<any>(
+    `${getApiBase()}/market/quote?symbol=${encodeURIComponent(symbol)}&exchange=${encodeURIComponent(exchange)}`
+  ),
+
+  getBatchMarketQuotes: (instruments: Array<{ exchange: string; symbol_token: string }>, mode: string = 'FULL') => fetchJson<{
+    mode: string;
+    fetched: any[];
+    unfetched: any[];
+    status?: string;
+  }>(`${getApiBase()}/market/quotes/batch`, {
+    method: 'POST',
+    body: JSON.stringify({ instruments, mode })
+  }),
 };
 

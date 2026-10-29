@@ -463,6 +463,8 @@ export interface AccountOverviewResponse {
 }
 
 export interface AccountHoldingItem {
+  account_id?: number;
+  source_type?: string;
   symbol: string;
   trading_symbol?: string;
   exchange?: string;
@@ -483,7 +485,7 @@ export interface AccountHoldingItem {
   day_pnl_percentage?: number;
   close_price?: number;
   is_broker_reported?: boolean;
-  data_source: string;
+  data_source?: string;
   holdings_status?: string;
   price_source?: string;
   is_market_price_live?: boolean;
@@ -757,4 +759,143 @@ export interface AIOpsDiagnosticsResponse {
   total_issues: number;
   diagnostics: AIOpsDiagnostic[];
 }
+
+export interface MarketInstrument {
+  id: number;
+  symbol_token: string;
+  instrument_token?: string;
+  tradingsymbol: string;
+  name: string;
+  exchange: 'NSE' | 'BSE' | 'NFO' | 'BFO' | 'MCX' | string;
+  segment: 'EQUITY' | 'FUTURES' | 'OPTIONS' | 'COMMODITY' | 'INDEX' | string;
+  instrument_type: string;
+  underlying_symbol?: string;
+  isin?: string;
+  expiry?: string | null;
+  strike?: number | null;
+  option_type?: 'CE' | 'PE' | null;
+  lot_size: number;
+  tick_size: number;
+  current_ltp?: number | null;
+  previous_close?: number | null;
+  day_change?: number | null;
+  day_change_percentage?: number | null;
+  volume?: number;
+  open_interest?: number;
+  trading_status: string;
+  last_sync_at?: string | null;
+}
+
+export interface OptionContractDetails {
+  symbol_token: string;
+  tradingsymbol: string;
+  exchange: string;
+  lot_size: number;
+  tick_size: number;
+  current_ltp?: number | null;
+  previous_close?: number | null;
+  day_change?: number | null;
+  day_change_percentage?: number | null;
+  open_interest?: number;
+  volume?: number;
+}
+
+export interface OptionChainStrike {
+  strike: number;
+  call: OptionContractDetails | null;
+  put: OptionContractDetails | null;
+}
+
+export interface OptionChainResponse {
+  underlying: string;
+  selected_expiry: string | null;
+  available_expiries: string[];
+  strikes_count: number;
+  strikes: OptionChainStrike[];
+}
+
+export interface CommodityContract {
+  symbol_token: string;
+  tradingsymbol: string;
+  commodity_name: string;
+  contract_name: string;
+  exchange: string;
+  segment: string;
+  expiry?: string | null;
+  lot_size: number;
+  tick_size: number;
+  current_ltp?: number | null;
+  previous_close?: number | null;
+  day_change?: number | null;
+  day_change_percentage?: number | null;
+  trading_hours: string;
+  status: string;
+}
+
+export interface MarketSessionStatus {
+  timestamp_ist: string;
+  date: string;
+  time: string;
+  day_of_week: string;
+  equity_segment: {
+    exchange: string;
+    segment: string;
+    is_open: boolean;
+    session_code: string;
+    session_name: string;
+    description: string;
+    next_open?: string;
+    ends_at?: string;
+  };
+  commodity_segment: {
+    exchange: string;
+    segment: string;
+    is_open: boolean;
+    session_code: string;
+    session_name: string;
+    description: string;
+    next_open?: string;
+    ends_at?: string;
+  };
+  is_equity_open: boolean;
+  is_commodity_open: boolean;
+  server_source: string;
+}
+
+export interface CatalogSummaryResponse {
+  total_instruments: number;
+  counts_by_exchange: Record<string, number>;
+  last_sync_timestamp: string | null;
+  data_source: string;
+}
+
+export interface MarketCandleItem {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface MarketCandlesResponse {
+  symbol: string;
+  company_name: string;
+  exchange: string;
+  symbol_token: string;
+  current_ltp?: number | null;
+  previous_close?: number | null;
+  change?: number | null;
+  change_percent?: number | null;
+  candles_count: number;
+  candles: MarketCandleItem[];
+  interval: string;
+  range_period: string;
+  data_source: string;
+  is_stale: boolean;
+  status: string;
+  message?: string;
+  last_updated?: string;
+}
+
 

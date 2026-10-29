@@ -23,7 +23,7 @@ interface AccountsViewProps {
 }
 
 type MainTab = 'overview' | 'portfolio' | 'activity' | 'reconnect';
-type DrawerTab = 'overview' | 'holdings' | 'positions' | 'orders' | 'trades' | 'security';
+type DrawerTab = 'overview' | 'holdings' | 'positions' | 'orders' | 'trades' | 'markets' | 'watchlist' | 'security';
 type CapitalFilter = 'all' | 'live' | 'demo';
 
 export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh }) => {
@@ -37,6 +37,15 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
   const [selectedAccountForDrawer, setSelectedAccountForDrawer] = useState<Account | null>(null);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('overview');
+
+  // Markets & Watchlist in Drawer
+  const [drawerMarketsSearch, setDrawerMarketsSearch] = useState<string>('');
+  const [drawerMarketsSegment, setDrawerMarketsSegment] = useState<'ALL' | 'NSE' | 'BSE' | 'FUTURES' | 'OPTIONS' | 'MCX'>('ALL');
+  const [drawerMarketsLetter, setDrawerMarketsLetter] = useState<string>('ALL');
+  const [drawerMarketsResults, setDrawerMarketsResults] = useState<import('../types').MarketInstrument[]>([]);
+  const [isLoadingDrawerMarkets, setIsLoadingDrawerMarkets] = useState<boolean>(false);
+  const [drawerWatchlists, setDrawerWatchlists] = useState<import('../types').Watchlist[]>([]);
+  const [isLoadingDrawerWatchlist, setIsLoadingDrawerWatchlist] = useState<boolean>(false);
 
   // Drawer Data States
   const [drawerOverview, setDrawerOverview] = useState<AccountOverviewResponse | null>(null);
@@ -599,6 +608,66 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
       fetchActivityLogs();
     }
   }, [activeTab, fetchConsolidatedPortfolio, fetchActivityLogs]);
+
+  // Drawer Markets search effect
+  useEffect(() => {
+    if (drawerTab !== 'markets') return;
+    let isSubscribed = true;
+    const fetchMarkets = async () => {
+      setIsLoadingDrawerMarkets(true);
+      try {
+        let exchange: string | undefined = undefined;
+        let segment: string | undefined = undefined;
+        if (drawerMarketsSegment === 'NSE') { exchange = 'NSE'; segment = 'EQUITY'; }
+        else if (drawerMarketsSegment === 'BSE') { exchange = 'BSE'; segment = 'EQUITY'; }
+        else if (drawerMarketsSegment === 'FUTURES') { segment = 'FUTURES'; }
+        else if (drawerMarketsSegment === 'OPTIONS') { segment = 'OPTIONS'; }
+        else if (drawerMarketsSegment === 'MCX') { exchange = 'MCX'; segment = 'COMMODITY'; }
+
+        const letter = drawerMarketsLetter !== 'ALL' ? drawerMarketsLetter : undefined;
+        const res = await api.searchInstruments({
+          query: drawerMarketsSearch || undefined,
+          exchange,
+          segment,
+          letter,
+          limit: 30,
+          offset: 0
+        });
+        if (isSubscribed) {
+          setDrawerMarketsResults(res.instruments || []);
+        }
+      } catch (err) {
+        console.error('Failed to search markets for account drawer:', err);
+      } finally {
+        if (isSubscribed) setIsLoadingDrawerMarkets(false);
+      }
+    };
+
+    const t = setTimeout(fetchMarkets, 200);
+    return () => { isSubscribed = false; clearTimeout(t); };
+  }, [drawerTab, drawerMarketsSearch, drawerMarketsSegment, drawerMarketsLetter]);
+
+  // Drawer Watchlist fetch effect
+  useEffect(() => {
+    if (drawerTab !== 'watchlist') return;
+    let isSubscribed = true;
+    const fetchWatchlists = async () => {
+      setIsLoadingDrawerWatchlist(true);
+      try {
+        const wl = await api.getWatchlists();
+        if (isSubscribed) {
+          setDrawerWatchlists(wl || []);
+        }
+      } catch (err) {
+        console.error('Failed to load watchlists for account drawer:', err);
+      } finally {
+        if (isSubscribed) setIsLoadingDrawerWatchlist(false);
+      }
+    };
+    fetchWatchlists();
+    return () => { isSubscribed = false; };
+  }, [drawerTab]);
+
 
   const togglePortfolioExpand = (key: string) => {
     setExpandedPortfolioKeys((prev) => {
@@ -1565,9 +1634,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
               </div>
             )}
 
-            {/* Drawer Tabs */}
+            {/* Drawer Tabs (Angel One Style 8-Tab Terminal) */}
             <div className="flex items-center gap-1 px-6 border-b border-slate-200 bg-white overflow-x-auto">
-              {(['overview', 'holdings', 'positions', 'orders', 'trades', 'security'] as DrawerTab[]).map((tab) => (
+              {(['overview', 'holdings', 'positions', 'orders', 'trades', 'markets', 'watchlist', 'security'] as DrawerTab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setDrawerTab(tab)}
@@ -1577,7 +1646,17 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                       : 'border-transparent text-slate-500 hover:text-slate-800'
                   }`}
                 >
-                  <span>{tab === 'orders' ? 'Order Book' : tab === 'trades' ? 'Executed Trades' : tab}</span>
+                  <span>
+                    {tab === 'orders'
+                      ? 'Order Book'
+                      : tab === 'trades'
+                      ? 'Executed Trades'
+                      : tab === 'markets'
+                      ? 'Markets / Search & Trade'
+                      : tab === 'watchlist'
+                      ? 'Watchlist'
+                      : tab}
+                  </span>
                   {tab === 'holdings' && drawerHoldings.length > 0 && (
                     <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700 font-mono font-bold">
                       {drawerHoldings.length}
@@ -2087,6 +2166,260 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                               })}
                             </tbody>
                           </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* TAB: MARKETS / SEARCH & TRADE (Account Specific Trading) */}
+                  {drawerTab === 'markets' && (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <h4 className="font-bold text-xs text-slate-900">Exchange Discovery & Quick Trade</h4>
+                            <p className="text-[11px] text-slate-500">
+                              Search 151,000+ exchange instruments and execute directly for <strong>{selectedAccountForDrawer.nickname}</strong>.
+                            </p>
+                          </div>
+                          <div className="relative w-64">
+                            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                            <input
+                              type="text"
+                              placeholder="Search stock, F&O, MCX..."
+                              value={drawerMarketsSearch}
+                              onChange={(e) => setDrawerMarketsSearch(e.target.value)}
+                              className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-brand-500"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Segment Filter Pills */}
+                        <div className="flex items-center gap-1.5 overflow-x-auto text-[11px] pt-1">
+                          {(['ALL', 'NSE', 'BSE', 'FUTURES', 'OPTIONS', 'MCX'] as const).map((seg) => (
+                            <button
+                              key={seg}
+                              onClick={() => setDrawerMarketsSegment(seg)}
+                              className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                                drawerMarketsSegment === seg
+                                  ? 'bg-slate-900 text-white'
+                                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              {seg === 'ALL' ? 'All Segments' : seg}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* A-Z Letter Selector */}
+                        <div className="flex items-center gap-1 overflow-x-auto pt-1 text-[10px]">
+                          <span className="text-slate-400 font-semibold px-0.5">A–Z:</span>
+                          {['ALL', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'].map((ltr) => (
+                            <button
+                              key={ltr}
+                              onClick={() => setDrawerMarketsLetter(ltr)}
+                              className={`px-1.5 py-0.5 rounded transition-colors font-medium ${
+                                drawerMarketsLetter === ltr
+                                  ? 'bg-brand-600 text-white font-bold'
+                                  : 'text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              {ltr}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {isLoadingDrawerMarkets ? (
+                        <div className="py-16 text-center text-xs text-slate-400">
+                          <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-brand-600" />
+                          <span>Searching authoritative instrument master...</span>
+                        </div>
+                      ) : drawerMarketsResults.length === 0 ? (
+                        <div className="py-16 text-center text-xs text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
+                          <Search className="w-6 h-6 mx-auto text-slate-300 mb-1" />
+                          <p className="font-semibold text-slate-600">No matching exchange instruments found</p>
+                          <p className="text-[11px] text-slate-400">Try modifying your query or segment filter above</p>
+                        </div>
+                      ) : (
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold border-b border-slate-200">
+                              <tr>
+                                <th className="py-2.5 px-3">Symbol / Company</th>
+                                <th className="py-2.5 px-3">Segment</th>
+                                <th className="py-2.5 px-3">Type</th>
+                                <th className="py-2.5 px-3 text-right">Lot Size</th>
+                                <th className="py-2.5 px-3 text-right">LTP</th>
+                                <th className="py-2.5 px-4 text-center">Trade Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-[11px]">
+                              {drawerMarketsResults.map((inst) => (
+                                <tr key={`${inst.exchange}_${inst.symbol_token}`} className="hover:bg-slate-50">
+                                  <td className="py-2.5 px-3">
+                                    <div className="font-bold text-slate-900">{inst.tradingsymbol}</div>
+                                    <div className="text-[10px] text-slate-500 truncate max-w-xs">{inst.name}</div>
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <span className="font-semibold text-slate-700">{inst.exchange}</span>
+                                    <span className="ml-1 text-[10px] px-1 py-0.2 rounded bg-slate-100 text-slate-600">
+                                      {inst.segment}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-slate-600">
+                                    {inst.instrument_type}
+                                    {inst.strike ? ` (₹${inst.strike})` : ''}
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                                    {inst.lot_size}
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
+                                    {inst.current_ltp ? `₹${inst.current_ltp.toFixed(2)}` : (
+                                      <span className="text-[10px] text-slate-400 font-normal">Live quote req</span>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-center">
+                                    <div className="flex items-center justify-center gap-1.5">
+                                      <button
+                                        onClick={() => {
+                                          setSelectedStockForDetails({
+                                            account_id: selectedAccountForDrawer.id,
+                                            symbol: inst.tradingsymbol,
+                                            trading_symbol: inst.tradingsymbol,
+                                            company_name: inst.name,
+                                            exchange: inst.exchange,
+                                            quantity: 0,
+                                            average_price: inst.current_ltp || 100,
+                                            current_ltp: inst.current_ltp || 100,
+                                            source_type: 'SNAPSHOT'
+                                          });
+                                          setDetailsModalView('chart');
+                                          setIsDetailsModalOpen(true);
+                                        }}
+                                        className="px-2 py-1 text-[11px] rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-medium"
+                                      >
+                                        Chart
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setSelectedStockForOrder({
+                                            account_id: selectedAccountForDrawer.id,
+                                            symbol: inst.tradingsymbol,
+                                            trading_symbol: inst.tradingsymbol,
+                                            company_name: inst.name,
+                                            exchange: inst.exchange,
+                                            quantity: 0,
+                                            average_price: inst.current_ltp || 100,
+                                            current_ltp: inst.current_ltp || 100,
+                                            source_type: 'SNAPSHOT'
+                                          });
+                                          setOrderTicketSide('BUY');
+                                          setIsOrderTicketOpen(true);
+                                        }}
+                                        className="px-2.5 py-1 text-[11px] rounded bg-emerald-600 hover:bg-emerald-700 font-bold text-white shadow-2xs"
+                                      >
+                                        Buy
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setSelectedStockForOrder({
+                                            account_id: selectedAccountForDrawer.id,
+                                            symbol: inst.tradingsymbol,
+                                            trading_symbol: inst.tradingsymbol,
+                                            company_name: inst.name,
+                                            exchange: inst.exchange,
+                                            quantity: 0,
+                                            average_price: inst.current_ltp || 100,
+                                            current_ltp: inst.current_ltp || 100,
+                                            source_type: 'SNAPSHOT'
+                                          });
+                                          setOrderTicketSide('SELL');
+                                          setIsOrderTicketOpen(true);
+                                        }}
+                                        className="px-2.5 py-1 text-[11px] rounded bg-rose-600 hover:bg-rose-700 font-bold text-white shadow-2xs"
+                                      >
+                                        Sell
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* TAB: WATCHLIST */}
+                  {drawerTab === 'watchlist' && (
+                    <div className="space-y-4">
+                      <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-xs text-slate-900">Monitored Watchlists</h4>
+                          <p className="text-[11px] text-slate-500">Quick market access for securities tracked by your account portfolio.</p>
+                        </div>
+                      </div>
+
+                      {isLoadingDrawerWatchlist ? (
+                        <div className="py-16 text-center text-xs text-slate-400">
+                          <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-brand-600" />
+                          <span>Loading watchlists...</span>
+                        </div>
+                      ) : drawerWatchlists.length === 0 ? (
+                        <div className="py-16 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
+                          <Eye className="w-6 h-6 mx-auto text-slate-300 mb-1" />
+                          <p className="font-semibold text-slate-600">No watchlists configured</p>
+                          <p className="text-[11px] text-slate-400">Add securities to watchlists from the Stock Explorer or Markets tab</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {drawerWatchlists.map((wl) => (
+                            <div key={wl.id} className="p-4 bg-white rounded-xl border border-slate-200 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-xs text-slate-900">{wl.name}</span>
+                                <span className="text-[10px] text-slate-400 font-mono font-medium">
+                                  {wl.items?.length || 0} items
+                                </span>
+                              </div>
+                              {wl.items && wl.items.length > 0 && (
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                  {wl.items.map((item) => (
+                                    <div
+                                      key={item.id}
+                                      className="p-2.5 rounded-lg border border-slate-200 hover:border-slate-300 bg-slate-50 flex items-center justify-between"
+                                    >
+                                      <div>
+                                        <span className="font-bold text-xs text-slate-900">{item.symbol}</span>
+                                        <span className="text-[10px] text-slate-400 block">{item.exchange || 'NSE'}</span>
+                                      </div>
+                                      <button
+                                        onClick={() => {
+                                          setSelectedStockForOrder({
+                                            account_id: selectedAccountForDrawer.id,
+                                            symbol: item.symbol,
+                                            trading_symbol: item.symbol,
+                                            company_name: item.symbol,
+                                            exchange: item.exchange || 'NSE',
+                                            quantity: 0,
+                                            average_price: 100,
+                                            current_ltp: 100,
+                                            source_type: 'SNAPSHOT'
+                                          });
+                                          setOrderTicketSide('BUY');
+                                          setIsOrderTicketOpen(true);
+                                        }}
+                                        className="px-2 py-0.5 text-[10px] font-bold rounded bg-brand-600 text-white hover:bg-brand-700"
+                                      >
+                                        Trade
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>

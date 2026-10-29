@@ -27,6 +27,12 @@ class AccountHoldingSnapshot(Base):
     t1_quantity = Column(Integer, default=0, nullable=False)
     realised_quantity = Column(Integer, default=0, nullable=False)
     authorised_quantity = Column(Integer, default=0, nullable=False)
+    collateral_quantity = Column(Integer, default=0, nullable=False)
+    collateral_type = Column(String(50), nullable=True)
+    blocked_in_open_orders = Column(Integer, default=0, nullable=False)
+    sellable_quantity = Column(Integer, nullable=True)
+    verification_status = Column(String(30), default="VERIFIED", nullable=False)
+    verification_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Valuation & Pricing
     average_price = Column(Float, default=0.0, nullable=False)       # Weighted acquisition price reported by broker

@@ -60,12 +60,17 @@ class BulkOrderService:
                 is_executable = False
                 continue
 
-            allotment = db.query(Allotment).filter(
-                Allotment.account_id == account.id,
-                Allotment.ipo_id == ipo_id
-            ).first()
-
-            holding_qty = allotment.allotted_quantity if allotment else 0
+            from app.services.holdings_service import get_holding_for_symbol
+            ipo_obj = db.query(IPO).filter(IPO.id == ipo_id).first()
+            h_info = get_holding_for_symbol(db, account.id, ipo_obj.symbol) if ipo_obj else None
+            if h_info:
+                holding_qty = h_info["quantity"]
+            else:
+                allotment = db.query(Allotment).filter(
+                    Allotment.account_id == account.id,
+                    Allotment.ipo_id == ipo_id
+                ).first()
+                holding_qty = allotment.allotted_quantity if allotment else 0
             is_valid = True
             msg = "Validation passed"
 

@@ -1,3 +1,4 @@
+from unittest.mock import patch, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from app.models.account import Account
@@ -9,33 +10,47 @@ def test_get_market_candles(client: TestClient, db_session):
     ipo = db_session.query(IPO).filter(IPO.symbol == "TATATECH").first()
     assert ipo is not None
 
-    res = client.get("/api/v1/market/candles?symbol=TATATECH&interval=ONE_DAY&range_period=1M")
-    assert res.status_code == 200
-    data = res.json()
+    mock_candles = [
+        {"timestamp": "2026-10-28T09:15:00", "open": 1050.0, "high": 1065.0, "low": 1045.0, "close": 1060.0, "volume": 120000},
+        {"timestamp": "2026-10-28T10:15:00", "open": 1060.0, "high": 1070.0, "low": 1055.0, "close": 1068.0, "volume": 85000}
+    ]
+    mock_adapter = MagicMock()
+    mock_adapter.get_candle_data.return_value = mock_candles
 
-    assert data["symbol"] == "TATATECH"
-    assert data["exchange"] == "NSE"
-    assert data["current_ltp"] == ipo.current_ltp
-    assert len(data["candles"]) > 0
+    with patch("app.api.endpoints_market.get_any_active_market_adapter", return_value=mock_adapter):
+        res = client.get("/api/v1/market/candles?symbol=TATATECH&interval=ONE_DAY&range_period=1M")
+        assert res.status_code == 200
+        data = res.json()
 
-    # Verify candle mathematical integrity
-    first_candle = data["candles"][0]
-    assert "timestamp" in first_candle
-    assert "open" in first_candle
-    assert "high" in first_candle
-    assert "low" in first_candle
-    assert "close" in first_candle
-    assert "volume" in first_candle
-    assert first_candle["high"] >= first_candle["low"]
-    assert first_candle["high"] >= min(first_candle["open"], first_candle["close"])
+        assert data["symbol"] == "TATATECH"
+        assert len(data["candles"]) > 0
+
+        # Verify candle mathematical integrity
+        first_candle = data["candles"][0]
+        assert "timestamp" in first_candle
+        assert "open" in first_candle
+        assert "high" in first_candle
+        assert "low" in first_candle
+        assert "close" in first_candle
+        assert "volume" in first_candle
+        assert first_candle["high"] >= first_candle["low"]
+        assert first_candle["high"] >= min(first_candle["open"], first_candle["close"])
 
 
 def test_get_market_candles_intraday(client: TestClient, db_session):
-    res = client.get("/api/v1/market/candles?symbol=TATATECH&interval=FIFTEEN_MINUTE&range_period=1D")
-    assert res.status_code == 200
-    data = res.json()
-    assert data["interval"] == "FIFTEEN_MINUTE"
-    assert len(data["candles"]) >= 10
+    mock_candles = [
+        {"timestamp": f"2026-10-28T09:{i:02d}:00", "open": 1050.0, "high": 1055.0, "low": 1048.0, "close": 1052.0, "volume": 1000}
+        for i in range(15)
+    ]
+    mock_adapter = MagicMock()
+    mock_adapter.get_candle_data.return_value = mock_candles
+
+    with patch("app.api.endpoints_market.get_any_active_market_adapter", return_value=mock_adapter):
+        res = client.get("/api/v1/market/candles?symbol=TATATECH&interval=FIFTEEN_MINUTE&range_period=1D")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["interval"] == "FIFTEEN_MINUTE"
+        assert len(data["candles"]) >= 10
 
 
 def test_consolidated_holdings_calculation(client: TestClient, db_session):

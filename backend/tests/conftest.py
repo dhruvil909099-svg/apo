@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 # Set test environment
 os.environ["TRADING_MODE"] = "PAPER"
+os.environ["TESTING"] = "true"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["APP_ENCRYPTION_KEY"] = "UOq2vBkYP1PnplztDgeVbfI3UTQvdREy-EsbYI0g3C4="
 

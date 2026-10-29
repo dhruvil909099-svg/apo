@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 import logging
 import threading
 import random
@@ -706,6 +707,101 @@ class SmartAPIAdapter:
                 pass
 
         return None
+
+    def get_market_quotes_batch(
+        self,
+        exchange_tokens: Dict[str, List[str]],
+        mode: str = "FULL"
+    ) -> Dict[str, Any]:
+        """
+        Retrieves official SmartAPI Live Market Data for a batch of instruments.
+        Supports documented quote modes: 'LTP', 'OHLC', 'FULL'.
+        Enforces rate limiting (3 req/s) and batches max 50 tokens per upstream call.
+        """
+        if not self._ensure_authenticated():
+            logger.warning(f"Session not authenticated for market quote batch ({self.client_code})")
+            return {"fetched": [], "unfetched": [], "error": "NOT_AUTHENTICATED"}
+
+        valid_modes = {"LTP", "OHLC", "FULL"}
+        target_mode = mode.upper() if mode.upper() in valid_modes else "FULL"
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/market/v1/quote"
+
+        # Deduplicate tokens per exchange
+        clean_exchange_tokens: Dict[str, List[str]] = {}
+        for exch, tokens in exchange_tokens.items():
+            if exch and tokens:
+                unique_toks = list(dict.fromkeys(str(t).strip() for t in tokens if str(t).strip()))
+                if unique_toks:
+                    clean_exchange_tokens[exch.upper()] = unique_toks
+
+        if not clean_exchange_tokens:
+            return {"fetched": [], "unfetched": []}
+
+        all_fetched = []
+        all_unfetched = []
+
+        # Split into batches of at most 50 tokens per request (SmartAPI limit)
+        for exch, tokens in clean_exchange_tokens.items():
+            batch_size = 50
+            for i in range(0, len(tokens), batch_size):
+                chunk = tokens[i:i + batch_size]
+                payload = {
+                    "mode": target_mode,
+                    "exchangeTokens": {
+                        exch: chunk
+                    }
+                }
+                
+                try:
+                    data = self._send_request("POST", url, json_payload=payload, rate_limit_seconds=0.34)
+                    if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
+                        res_data = data["data"]
+                        fetched = res_data.get("fetched") or []
+                        unfetched = res_data.get("unfetched") or []
+                        
+                        for item in fetched:
+                            ltp = float(item.get("ltp") or 0.0)
+                            prev_close = float(item.get("close") or 0.0)
+                            chg = round(ltp - prev_close, 2)
+                            chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+                            
+                            all_fetched.append({
+                                "exchange": item.get("exchange") or exch,
+                                "trading_symbol": item.get("tradingSymbol", ""),
+                                "symbol_token": str(item.get("symbolToken", "")),
+                                "ltp": ltp,
+                                "open": float(item.get("open") or 0.0),
+                                "high": float(item.get("high") or 0.0),
+                                "low": float(item.get("low") or 0.0),
+                                "close": prev_close,
+                                "volume": int(item.get("totalTradedVolume") or 0),
+                                "last_traded_qty": int(item.get("lastTradedQty") or 0),
+                                "total_traded_value": float(item.get("totalTradedValue") or 0.0),
+                                "high_52week": float(item.get("52WeekHigh") or 0.0),
+                                "low_52week": float(item.get("52WeekLow") or 0.0),
+                                "depth": item.get("depth"),
+                                "exchange_feed_time": item.get("exchFeedTime") or "",
+                                "net_change": chg,
+                                "percent_change": chg_pct,
+                                "data_source": "ANGEL_ONE_SMARTAPI_LIVE",
+                                "freshness_status": "LIVE",
+                                "received_at": datetime.utcnow().isoformat()
+                            })
+                        
+                        all_unfetched.extend(unfetched)
+                    else:
+                        all_unfetched.extend([{"exchange": exch, "symbolToken": t} for t in chunk])
+                except Exception as ex:
+                    logger.error(f"Error fetching quote batch for {exch} tokens {chunk[:5]}: {ex}")
+                    all_unfetched.extend([{"exchange": exch, "symbolToken": t} for t in chunk])
+
+        return {
+            "mode": target_mode,
+            "fetched": all_fetched,
+            "unfetched": all_unfetched,
+            "fetched_count": len(all_fetched),
+            "unfetched_count": len(all_unfetched)
+        }
 
     def _enforce_rate_limit(self, min_interval_seconds: float = 1.0, category: str = "default"):
         """

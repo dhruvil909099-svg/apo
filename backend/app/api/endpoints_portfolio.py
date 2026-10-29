@@ -391,41 +391,54 @@ def get_holding_detail(symbol: str, db: Session = Depends(get_db)):
 
 
 @router.get("/accounts")
-def get_account_portfolios(db: Session = Depends(get_db)):
+def get_account_portfolios(
+    account_ids: Optional[str] = Query(None, description="Comma-separated list of account IDs to include"),
+    db: Session = Depends(get_db)
+):
     """
     Returns account-level holdings, cash balances, and synchronization health.
     """
-    accounts = db.query(Account).filter(Account.is_enabled == True).all()
+    account_query = db.query(Account).filter(Account.is_enabled == True)
+    if account_ids:
+        try:
+            ids = [int(x.strip()) for x in account_ids.split(",") if x.strip()]
+            account_query = account_query.filter(Account.id.in_(ids))
+        except ValueError:
+            pass
+    accounts = account_query.all()
     results = []
 
+    from app.services.holdings_service import get_unified_account_holdings
+
     for acc in accounts:
+        unified_h = get_unified_account_holdings(db, acc.id)
         holdings = []
         tot_val = 0.0
         tot_cost = 0.0
 
-        for a in acc.allotments:
-            if a.allotted_quantity > 0:
-                ltp = a.ipo.current_ltp or a.ipo.issue_price
-                val = a.allotted_quantity * ltp
-                cost = a.allotted_quantity * a.acquisition_cost
-                pnl = val - cost
-                pnl_pct = (pnl / cost) * 100 if cost > 0 else 0.0
-
-                tot_val += val
-                tot_cost += cost
-
-                holdings.append({
-                    "allotment_id": a.id,
-                    "symbol": a.ipo.symbol,
-                    "company_name": a.ipo.company_name,
-                    "isin": a.ipo.isin or "—",
-                    "quantity": a.allotted_quantity,
-                    "acquisition_cost": a.acquisition_cost,
-                    "current_ltp": ltp,
-                    "market_value": round(val, 2),
-                    "unrealized_pnl": round(pnl, 2),
-                    "pnl_percentage": round(pnl_pct, 2)
-                })
+        for h in unified_h:
+            tot_val += h["valuation"]
+            tot_cost += h["invested_amount"]
+            holdings.append({
+                "allotment_id": h.get("allotment_id", 0),
+                "symbol": h["symbol"],
+                "trading_symbol": h["trading_symbol"],
+                "company_name": h["company_name"],
+                "exchange": h["exchange"],
+                "isin": h["isin"],
+                "quantity": h["quantity"],
+                "sellable_quantity": h["sellable_quantity"],
+                "available_quantity": h["available_quantity"],
+                "t1_quantity": h.get("t1_quantity", 0),
+                "settled_quantity": h.get("settled_quantity", h["quantity"]),
+                "acquisition_cost": h["average_price"],
+                "current_ltp": h["current_ltp"],
+                "market_value": round(h["valuation"], 2),
+                "unrealized_pnl": round(h["unrealized_pnl"], 2),
+                "pnl_percentage": round(h["pnl_percentage"], 2),
+                "verification_status": h.get("verification_status", "VERIFIED"),
+                "verification_note": h.get("verification_note", "")
+            })
 
         pnl_tot = tot_val - tot_cost
         pnl_tot_pct = (pnl_tot / tot_cost) * 100 if tot_cost > 0 else 0.0
