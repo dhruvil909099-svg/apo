@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.database import engine, Base, SessionLocal, run_safe_migrations
+import app.models
 from app.api.api_v1 import api_v1_router
 from app.services.seed_data import seed_demo_data
 from app.services.scheduler_service import sync_manager

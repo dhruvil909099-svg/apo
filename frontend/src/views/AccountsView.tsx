@@ -301,7 +301,14 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
       };
 
       setLastSyncTimestamp(new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
-      setDrawerDataFreshness('LIVE');
+      const isAccountLive = !account.is_demo && account.auth_status === 'CONNECTED' && (ovRes.status !== 'fulfilled' || !ovRes.value?.is_disconnected);
+      if (account.is_demo) {
+        setDrawerDataFreshness('CACHED');
+      } else if (!isAccountLive) {
+        setDrawerDataFreshness('DISCONNECTED');
+      } else {
+        setDrawerDataFreshness('LIVE');
+      }
     } catch (err: any) {
       setDrawerError(err.message || 'Failed to fetch account drawer details.');
       setDrawerDataFreshness('STALE');
@@ -1486,7 +1493,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                       </span>
                     )}
                     {/* Live Data Freshness Badge */}
-                    {drawerDataFreshness === 'LIVE' && (
+                    {!selectedAccountForDrawer.is_demo && selectedAccountForDrawer.auth_status === 'CONNECTED' && !isDrawerSessionExpired && drawerDataFreshness === 'LIVE' && (
                       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                         LIVE STREAM
@@ -1510,9 +1517,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                         STALE DATA
                       </span>
                     )}
-                    {drawerDataFreshness === 'DISCONNECTED' && (
+                    {(drawerDataFreshness === 'DISCONNECTED' || selectedAccountForDrawer.auth_status !== 'CONNECTED' || isDrawerSessionExpired) && drawerDataFreshness !== 'SYNCING' && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-300">
-                        DISCONNECTED
+                        {isDrawerSessionExpired ? 'SESSION EXPIRED' : selectedAccountForDrawer.auth_status === 'ERROR' ? 'AUTH ERROR' : 'DISCONNECTED'}
                       </span>
                     )}
                     {lastSyncTimestamp && (

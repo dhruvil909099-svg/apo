@@ -11,6 +11,7 @@ from app.models.account import Account
 from app.models.audit import AuditLog
 from app.models.ipo import Allotment, IPO
 from app.models.order import Order
+from app.models.holding import AccountHoldingSnapshot
 from app.schemas.account import (
     AccountCreate, AccountUpdate, AccountReconnectRequest, AccountResponse, AccountTestResult, AccountTestPayload,
     AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
@@ -642,10 +643,10 @@ def get_account_holdings(
                     status_code=401,
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
-            if adapter.last_error and (live_holdings is None or not live_holdings):
+            if live_holdings is None or adapter.last_error:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Failed to retrieve delivery holdings from Angel One: {adapter.last_error}"
+                    detail=f"Failed to retrieve delivery holdings from Angel One: {adapter.last_error or 'Upstream broker error'}"
                 )
 
             if live_holdings is not None:
@@ -723,7 +724,48 @@ def get_account_holdings(
         except Exception as e:
             logger.warning(f"Live holdings fetch failed for {account.masked_client_code}, serving verified DB ledger: {str(e)}")
 
-    # Fallback / Cached / Disconnected / Demo accounts / Verified Ledger
+    # 1. Primary: Check dedicated AccountHoldingSnapshot table for verified demat delivery holdings
+    snapshots = db.query(AccountHoldingSnapshot).filter(
+        AccountHoldingSnapshot.account_id == account_id,
+        AccountHoldingSnapshot.quantity > 0
+    ).all()
+
+    if snapshots:
+        results = []
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
+        is_disconnected = (not account.is_demo and account.auth_status != "CONNECTED")
+        holdings_status = "HISTORICAL" if is_disconnected else ("CACHED" if cached_only else "LIVE")
+        for s in snapshots:
+            results.append(AccountHoldingItem(
+                symbol=s.symbol,
+                trading_symbol=s.tradingsymbol,
+                exchange=s.exchange or "NSE",
+                company_name=s.symbol,
+                isin=s.isin or "—",
+                symbol_token=s.symbol_token or "0",
+                quantity=s.quantity,
+                available_quantity=s.quantity,
+                t1_quantity=s.t1_quantity,
+                authorised_quantity=s.authorised_quantity,
+                average_price=s.average_price,
+                current_ltp=s.ltp,
+                valuation=s.market_value,
+                invested_amount=s.invested_value,
+                unrealized_pnl=s.unrealized_pnl,
+                pnl_percentage=s.pnl_percentage,
+                day_pnl=s.day_pnl,
+                day_pnl_percentage=s.day_pnl_percentage,
+                close_price=s.close_price,
+                is_broker_reported=s.is_broker_reported,
+                data_source=s.data_source,
+                holdings_status=holdings_status,
+                price_source="SMARTAPI",
+                is_market_price_live=not is_disconnected,
+                source_timestamp=s.last_sync_time.strftime("%Y-%m-%d %H:%M:%S IST") if s.last_sync_time else now_str
+            ))
+        return results
+
+    # 2. Fallback: Query allotments ledger for legacy / un-migrated test accounts
     allotments = db.query(Allotment).join(IPO).filter(
         Allotment.account_id == account_id,
         Allotment.allotted_quantity > 0
@@ -842,10 +884,10 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
 
-            if adapter.last_error and (live_pos is None or not live_pos):
+            if live_pos is None or adapter.last_error:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Failed to retrieve positions from Angel One: {adapter.last_error}"
+                    detail=f"Failed to retrieve positions from Angel One: {adapter.last_error or 'Upstream broker error'}"
                 )
 
             if live_pos is not None and not adapter.last_error:
@@ -907,10 +949,10 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
 
-            if adapter.last_error and (broker_orders is None or not broker_orders):
+            if broker_orders is None or adapter.last_error:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Failed to retrieve order book from Angel One: {adapter.last_error}"
+                    detail=f"Failed to retrieve order book from Angel One: {adapter.last_error or 'Upstream broker error'}"
                 )
 
             # Valid response received (either list of orders or empty list [])
@@ -997,10 +1039,10 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
 
-            if adapter.last_error and (broker_trades is None or not broker_trades):
+            if broker_trades is None or adapter.last_error:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Failed to retrieve trade executions from Angel One: {adapter.last_error}"
+                    detail=f"Failed to retrieve trade executions from Angel One: {adapter.last_error or 'Upstream broker error'}"
                 )
 
             # Valid response received (either list of trades or empty list [])

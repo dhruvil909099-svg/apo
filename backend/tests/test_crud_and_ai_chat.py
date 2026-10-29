@@ -283,20 +283,22 @@ def test_broker_holdings_reconciliation(db_session):
     valid_count = reconcile_broker_holdings(db_session, account, mock_broker_holdings, sync_time)
     assert valid_count == 2
 
+    from app.models.holding import AccountHoldingSnapshot
+
     # Check holdings exist
-    tatatech = db_session.query(Allotment).join(IPO).filter(
-        Allotment.account_id == account.id,
-        IPO.symbol == "TATATECH"
+    tatatech = db_session.query(AccountHoldingSnapshot).filter(
+        AccountHoldingSnapshot.account_id == account.id,
+        AccountHoldingSnapshot.symbol == "TATATECH"
     ).first()
     assert tatatech is not None
-    assert tatatech.allotted_quantity == 30
+    assert tatatech.quantity == 30
 
-    newstock = db_session.query(Allotment).join(IPO).filter(
-        Allotment.account_id == account.id,
-        IPO.symbol == "NEWSTOCK"
+    newstock = db_session.query(AccountHoldingSnapshot).filter(
+        AccountHoldingSnapshot.account_id == account.id,
+        AccountHoldingSnapshot.symbol == "NEWSTOCK"
     ).first()
     assert newstock is not None
-    assert newstock.allotted_quantity == 50
+    assert newstock.quantity == 50
 
     # Case 2: Broker reports that NEWSTOCK was sold (not in holdings response)
     mock_sold_holdings = [
@@ -313,6 +315,6 @@ def test_broker_holdings_reconciliation(db_session):
     ]
     reconcile_broker_holdings(db_session, account, mock_sold_holdings, datetime.utcnow())
 
-    # NEWSTOCK must now be zeroed out
+    # NEWSTOCK snapshot must now be zeroed out
     db_session.refresh(newstock)
-    assert newstock.allotted_quantity == 0
+    assert newstock.quantity == 0

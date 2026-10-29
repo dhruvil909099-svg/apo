@@ -456,6 +456,10 @@ export interface AccountOverviewResponse {
   last_sync_time?: string | null;
   data_source: string;
   stale_data_warning: boolean;
+  trading_enabled?: boolean;
+  holdings_freshness?: string;
+  market_price_freshness?: string;
+  is_disconnected?: boolean;
 }
 
 export interface AccountHoldingItem {

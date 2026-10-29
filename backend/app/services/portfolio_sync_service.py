@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from app.models.account import Account
 from app.models.ipo import IPO, Allotment
+from app.models.holding import AccountHoldingSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +17,10 @@ def reconcile_broker_holdings(
 ) -> int:
     """
     Reconciles live broker Demat holdings with local records for an account.
-    - Adds or updates instruments in the IPO/stock catalog with real-time LTP and close.
-    - Creates or updates Allotment records with allotted_quantity and weighted acquisition cost.
-    - Zeroes out any previously tracked broker holdings that are no longer in the broker's portfolio.
+    - Persists ordinary delivery holdings into the dedicated `account_holding_snapshots` table.
+    - Segregates ordinary holdings from the IPO `allotments` table, preserving IPO allotment integrity.
+    - If a holding corresponds to a known IPO allotment, verifies demat credit without corrupting IPO metadata.
+    - Zeroes out stale snapshots no longer returned by the broker.
     - Returns the count of active holdings.
     """
     active_symbols = set()
@@ -33,48 +35,16 @@ def reconcile_broker_holdings(
         close = float(h.get("close", ltp))
         isin = str(h.get("isin", "")).strip()
         token = str(h.get("symboltoken", "")).strip()
+        exchange = str(h.get("exchange", "NSE")).strip()
 
-        if not sym or qty <= 0:
+        if not raw_sym or qty <= 0:
             continue
 
-        active_symbols.add(sym)
+        active_symbols.add(raw_sym)
         valid_count += 1
 
-        # Instrument catalog
-        ipo = db.query(IPO).filter(IPO.symbol == sym).first()
-        if not ipo:
-            ipo = IPO(
-                symbol=sym,
-                company_name=str(h.get("symbolname", sym)),
-                exchange=str(h.get("exchange", "NSE")),
-                issue_price=avg_price,
-                lot_size=1,
-                isin=isin if isin else None,
-                symbol_token=token if token else None,
-                current_ltp=ltp,
-                previous_close=close,
-                status="LISTED",
-                source_name="ANGEL_ONE_HOLDINGS",
-                source_timestamp=sync_time
-            )
-            db.add(ipo)
-            db.flush()
-        else:
-            ipo.current_ltp = ltp
-            ipo.previous_close = close
-            if isin and not ipo.isin:
-                ipo.isin = isin
-            if token and not ipo.symbol_token:
-                ipo.symbol_token = token
-            ipo.last_sync_at = sync_time
-
-        # Account holding record
-        allotment = db.query(Allotment).filter(
-            Allotment.ipo_id == ipo.id,
-            Allotment.account_id == account.id
-        ).first()
-
         t1_qty = int(h.get("t1quantity", 0))
+        realised_qty = int(h.get("realisedquantity", qty))
         auth_qty = int(h.get("authorisedquantity", qty))
         invested_val = float(h.get("invested", round(qty * avg_price, 2)))
         mkt_val = round(qty * ltp, 2)
@@ -97,69 +67,103 @@ def reconcile_broker_holdings(
         day_pnl = round((ltp - close) * qty, 2)
         day_pnl_pct = round(((ltp - close) / close) * 100, 2) if close > 0 else 0.0
 
-        if not allotment:
-            allotment = Allotment(
-                ipo_id=ipo.id,
+        # 1. Upsert dedicated AccountHoldingSnapshot
+        snapshot = db.query(AccountHoldingSnapshot).filter(
+            AccountHoldingSnapshot.account_id == account.id,
+            AccountHoldingSnapshot.tradingsymbol == raw_sym
+        ).first()
+
+        if not snapshot:
+            snapshot = AccountHoldingSnapshot(
                 account_id=account.id,
-                applied_quantity=qty,
-                allotted_quantity=qty,
-                acquisition_cost=avg_price,
+                tradingsymbol=raw_sym,
+                symbol=sym,
+                symbol_token=token if token else None,
+                exchange=exchange,
+                isin=isin if isin else None,
+                product="DELIVERY",
+                quantity=qty,
                 t1_quantity=t1_qty,
+                realised_quantity=realised_qty,
                 authorised_quantity=auth_qty,
+                average_price=avg_price,
+                ltp=ltp,
+                close_price=close,
                 invested_value=invested_val,
-                current_market_value=mkt_val,
+                market_value=mkt_val,
                 unrealized_pnl=unrealized_pnl,
                 pnl_percentage=pnl_pct,
                 day_pnl=day_pnl,
                 day_pnl_percentage=day_pnl_pct,
-                close_price=close,
                 is_broker_reported=is_broker_rep,
-                allotment_status="ALLOTTED",
-                demat_credit_status="CREDITED",
-                status="DEMAT_CREDITED",
-                demat_verified=True,
-                verification_source="ANGEL_ONE_HOLDINGS",
-                verification_timestamp=sync_time
+                data_source="ANGEL_ONE_HOLDINGS",
+                last_sync_time=sync_time,
+                raw_payload=h
             )
-            db.add(allotment)
+            db.add(snapshot)
         else:
-            allotment.allotted_quantity = qty
-            allotment.applied_quantity = qty
-            allotment.acquisition_cost = avg_price
-            allotment.t1_quantity = t1_qty
-            allotment.authorised_quantity = auth_qty
-            allotment.invested_value = invested_val
-            allotment.current_market_value = mkt_val
-            allotment.unrealized_pnl = unrealized_pnl
-            allotment.pnl_percentage = pnl_pct
-            allotment.day_pnl = day_pnl
-            allotment.day_pnl_percentage = day_pnl_pct
-            allotment.close_price = close
-            allotment.is_broker_reported = is_broker_rep
-            allotment.allotment_status = "ALLOTTED"
-            allotment.demat_credit_status = "CREDITED"
-            allotment.status = "DEMAT_CREDITED"
-            allotment.demat_verified = True
-            allotment.verification_source = "ANGEL_ONE_HOLDINGS"
-            allotment.verification_timestamp = sync_time
+            snapshot.symbol = sym
+            if token and not snapshot.symbol_token:
+                snapshot.symbol_token = token
+            if isin and not snapshot.isin:
+                snapshot.isin = isin
+            snapshot.exchange = exchange
+            snapshot.quantity = qty
+            snapshot.t1_quantity = t1_qty
+            snapshot.realised_quantity = realised_qty
+            snapshot.authorised_quantity = auth_qty
+            snapshot.average_price = avg_price
+            snapshot.ltp = ltp
+            snapshot.close_price = close
+            snapshot.invested_value = invested_val
+            snapshot.market_value = mkt_val
+            snapshot.unrealized_pnl = unrealized_pnl
+            snapshot.pnl_percentage = pnl_pct
+            snapshot.day_pnl = day_pnl
+            snapshot.day_pnl_percentage = day_pnl_pct
+            snapshot.is_broker_reported = is_broker_rep
+            snapshot.last_sync_time = sync_time
+            snapshot.raw_payload = h
 
-    # Reconcile verified broker portfolio without wiping historical records on empty/failed responses
+        # 2. Update real-time LTP cache on known catalog instruments if present
+        ipo = db.query(IPO).filter((IPO.symbol == sym) | (IPO.isin == isin if isin else False)).first()
+        if ipo:
+            ipo.current_ltp = ltp
+            ipo.previous_close = close
+            if isin and not ipo.isin:
+                ipo.isin = isin
+            if token and not ipo.symbol_token:
+                ipo.symbol_token = token
+            ipo.last_sync_at = sync_time
+
+            # 3. Explicit cross-reconciliation for genuine IPO allotments
+            matching_allotment = db.query(Allotment).filter(
+                Allotment.ipo_id == ipo.id,
+                Allotment.account_id == account.id
+            ).first()
+            if matching_allotment:
+                matching_allotment.demat_verified = True
+                matching_allotment.demat_credit_status = "CREDITED"
+                matching_allotment.verification_source = "ANGEL_ONE_DEMAT_RECONCILIATION"
+                matching_allotment.verification_timestamp = sync_time
+
+    # 4. Zero out stale holdings snapshots no longer in the broker's active portfolio
     if active_symbols:
-        stale_allotments = db.query(Allotment).join(IPO).filter(
-            Allotment.account_id == account.id,
-            Allotment.verification_source == "ANGEL_ONE_HOLDINGS",
-            ~IPO.symbol.in_(active_symbols)
+        stale_snapshots = db.query(AccountHoldingSnapshot).filter(
+            AccountHoldingSnapshot.account_id == account.id,
+            ~AccountHoldingSnapshot.tradingsymbol.in_(active_symbols)
         ).all()
-        for sa in stale_allotments:
-            sa.allotted_quantity = 0
-            sa.current_market_value = 0.0
-            sa.unrealized_pnl = 0.0
-            sa.invested_value = 0.0
-            sa.day_pnl = 0.0
+        for s in stale_snapshots:
+            s.quantity = 0
+            s.market_value = 0.0
+            s.unrealized_pnl = 0.0
+            s.invested_value = 0.0
+            s.day_pnl = 0.0
+            s.last_sync_time = sync_time
     else:
         logger.warning(
             f"No active symbols returned in broker snapshot for account {account.nickname}. "
-            "Preserving previously saved historical allotments without zeroing."
+            "Preserving previously saved snapshots without zeroing."
         )
 
     db.commit()

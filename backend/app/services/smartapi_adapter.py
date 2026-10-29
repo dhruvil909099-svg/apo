@@ -75,6 +75,21 @@ class SmartAPIAdapter:
     """
     BASE_URL = "https://apiconnect.angelone.in"
 
+    # Documented Angel One SmartAPI endpoint rate limits (minimum inter-request spacing)
+    DEFAULT_RATE_LIMITS: Dict[str, float] = {
+        "orders": 0.10,          # 10 req/s for order placement / modification / cancellation
+        "order_book": 1.0,       # 1 req/s for order book
+        "trade_book": 1.0,       # 1 req/s for trade executions
+        "positions": 1.0,        # 1 req/s for open / closed positions
+        "holdings": 1.0,         # 1 req/s for demat delivery portfolio
+        "rms": 1.0,              # 1 req/s for funds and limits
+        "profile": 1.0,          # 1 req/s for user profile & DP type
+        "quote": 0.34,           # 3 req/s for market quotes / LTP
+        "candles": 0.34,         # 3 req/s for historical candle data
+        "auth": 1.5,             # Spacing to prevent TOTP replay / rate limit rejection
+        "default": 1.0,
+    }
+
     def __init__(self, api_key: str, client_code: str, pin: str, totp_secret: str, account_id: Optional[int] = None):
         self.account_id = account_id
         self.api_key = (api_key or "").strip()
@@ -87,6 +102,7 @@ class SmartAPIAdapter:
         self.feed_token: Optional[str] = None
         self.token_expiry_timestamp: float = 0
         self._last_request_time: float = 0
+        self._endpoint_last_request_time: Dict[str, float] = {}
         self.last_sync_time: Optional[float] = None
         self.is_session_expired: bool = False
         self.consecutive_errors: int = 0
@@ -117,6 +133,7 @@ class SmartAPIAdapter:
         json_payload: Optional[Dict[str, Any]] = None,
         timeout: float = 10.0,
         rate_limit_seconds: float = 1.0,
+        rate_limit_category: str = "default",
         max_retries: int = 2,
         _is_reauth_attempt: bool = False
     ) -> Optional[Dict[str, Any]]:
@@ -129,7 +146,7 @@ class SmartAPIAdapter:
             self.last_error = f"Upstream broker temporarily throttled (Circuit breaker open for {wait_left}s). Serving last verified data."
             return None
 
-        self._enforce_rate_limit(rate_limit_seconds)
+        self._enforce_rate_limit(rate_limit_seconds, category=rate_limit_category)
         endpoint_name = url.split("/")[-1]
         
         for attempt in range(1, max_retries + 1):
@@ -289,7 +306,7 @@ class SmartAPIAdapter:
                 "totp": totp_code
             }
 
-            self._enforce_rate_limit(1.0)
+            self._enforce_rate_limit(1.5, category="auth")
             try:
                 # Login must NEVER send Authorization header
                 resp = self.session.post(url, json=payload, headers=self._get_headers(include_auth=False), timeout=10)
@@ -421,7 +438,7 @@ class SmartAPIAdapter:
         2. /portfolio/v1/getHolding (standard Demat holdings list)
         Returns:
         - List of holding dicts if successful (empty list [] if no delivery holdings)
-        - None if session failed or broker returned an error
+        - None if session failed or upstream broker returned an error
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for holdings fetch ({self.client_code})")
@@ -429,7 +446,7 @@ class SmartAPIAdapter:
 
         # 1. Primary: getAllHolding
         url_all = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getAllHolding"
-        data = self._send_request("GET", url_all, rate_limit_seconds=1.0)
+        data = self._send_request("GET", url_all, rate_limit_seconds=1.0, rate_limit_category="holdings")
         if data and (data.get("status") is True or data.get("success") is True):
             self.last_error = None
             raw = data.get("data")
@@ -442,11 +459,11 @@ class SmartAPIAdapter:
 
         # Stop if an authorization or broker error occurred
         if self.last_error and ("AG8004" in self.last_error or "expired" in self.last_error.lower()):
-            return []
+            return None
 
         # 2. Fallback: getHolding
         url_std = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getHolding"
-        data_std = self._send_request("GET", url_std, rate_limit_seconds=1.0)
+        data_std = self._send_request("GET", url_std, rate_limit_seconds=1.0, rate_limit_category="holdings")
         if data_std and (data_std.get("status") is True or data_std.get("success") is True):
             self.last_error = None
             raw_std = data_std.get("data")
@@ -456,6 +473,8 @@ class SmartAPIAdapter:
                 return raw_std.get("holdings", [])
             return []
 
+        if self.last_error:
+            return None
         return []
 
     def get_rms(self) -> Dict[str, Any]:
@@ -467,25 +486,26 @@ class SmartAPIAdapter:
             return {}
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/user/v1/getRMS"
-        data = self._send_request("GET", url, rate_limit_seconds=1.0)
+        data = self._send_request("GET", url, rate_limit_seconds=1.0, rate_limit_category="rms")
         if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
             return data["data"] if isinstance(data["data"], dict) else {}
         return {}
 
-    def get_positions(self) -> List[Dict[str, Any]]:
+    def get_positions(self) -> Optional[List[Dict[str, Any]]]:
         """
         Retrieves open and closed intraday/F&O positions from /order/v1/getPosition (Rate limit: 1 req/sec).
         Returns:
-        - List of positions if successful (empty list [] if 0 positions or error)
+        - List of positions if successful (empty list [] if 0 positions today)
+        - None if an upstream error or network failure occurred.
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for positions fetch ({self.client_code})")
-            return []
+            return None
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getPosition"
-        data = self._send_request("GET", url, rate_limit_seconds=1.0)
+        data = self._send_request("GET", url, rate_limit_seconds=1.0, rate_limit_category="positions")
         if data is None:
-            return []
+            return None
 
         if data.get("status") is True or data.get("success") is True:
             self.last_error = None
@@ -499,23 +519,24 @@ class SmartAPIAdapter:
             return []
 
         self.last_error = data.get("message") or "Broker returned error fetching positions"
-        return []
+        return None
 
-    def get_order_book(self) -> List[Dict[str, Any]]:
+    def get_order_book(self) -> Optional[List[Dict[str, Any]]]:
         """
         Retrieves the day's order book from /order/v1/getOrderBook (Rate limit: 1 req/sec).
         Returns status of all submitted, executed, rejected, and open orders.
         Returns:
-        - List of orders if successful (empty list [] if no orders today or error)
+        - List of orders if successful (empty list [] if 0 orders placed today)
+        - None if an upstream error or network failure occurred.
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for order book fetch ({self.client_code})")
-            return []
+            return None
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getOrderBook"
-        data = self._send_request("GET", url, rate_limit_seconds=1.0)
+        data = self._send_request("GET", url, rate_limit_seconds=1.0, rate_limit_category="order_book")
         if data is None:
-            return []
+            return None
 
         if data.get("status") is True or data.get("success") is True:
             self.last_error = None
@@ -530,23 +551,24 @@ class SmartAPIAdapter:
             return []
 
         self.last_error = data.get("message") or "Broker returned error fetching order book"
-        return []
+        return None
 
-    def get_trade_book(self) -> List[Dict[str, Any]]:
+    def get_trade_book(self) -> Optional[List[Dict[str, Any]]]:
         """
         Retrieves confirmed executed trades from /order/v1/getTradeBook (Rate limit: 1 req/sec).
         Never misrepresents an acknowledged order as an executed trade.
         Returns:
-        - List of confirmed trades if successful (empty list [] if no trades today or error)
+        - List of confirmed trades if successful (empty list [] if 0 trades executed today)
+        - None if an upstream error or network failure occurred.
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for trade book fetch ({self.client_code})")
-            return []
+            return None
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getTradeBook"
-        data = self._send_request("GET", url, rate_limit_seconds=1.0)
+        data = self._send_request("GET", url, rate_limit_seconds=1.0, rate_limit_category="trade_book")
         if data is None:
-            return []
+            return None
 
         if data.get("status") is True or data.get("success") is True:
             self.last_error = None
@@ -560,7 +582,7 @@ class SmartAPIAdapter:
             return []
 
         self.last_error = data.get("message") or "Broker returned error fetching trade book"
-        return []
+        return None
 
     def get_candle_data(
         self,
@@ -685,13 +707,24 @@ class SmartAPIAdapter:
 
         return None
 
-    def _enforce_rate_limit(self, min_interval_seconds: float):
+    def _enforce_rate_limit(self, min_interval_seconds: float = 1.0, category: str = "default"):
+        """
+        Enforces endpoint-specific per-client rate limiting based on documented SmartAPI limits.
+        Thread-safe: acquires _rate_limit_lock to record per-category request timestamps.
+        """
+        interval = min_interval_seconds
+        if category in self.DEFAULT_RATE_LIMITS:
+            interval = max(min_interval_seconds, self.DEFAULT_RATE_LIMITS[category])
+
         with self._rate_limit_lock:
-            elapsed = time.time() - self._last_request_time
-            if elapsed < min_interval_seconds:
-                jitter = random.uniform(0.02, 0.08)
-                time.sleep((min_interval_seconds - elapsed) + jitter)
-            self._last_request_time = time.time()
+            last_t = self._endpoint_last_request_time.get(category, 0.0)
+            elapsed = time.time() - last_t
+            if elapsed < interval:
+                jitter = random.uniform(0.01, 0.04)
+                time.sleep((interval - elapsed) + jitter)
+            now = time.time()
+            self._endpoint_last_request_time[category] = now
+            self._last_request_time = now
 
 
 # In-memory session pool maintaining 1:1 active broker sessions across endpoints

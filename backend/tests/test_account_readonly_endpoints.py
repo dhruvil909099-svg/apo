@@ -286,10 +286,10 @@ def test_adapter_malformed_broker_response_handling():
 
     with patch.object(adapter.session, "get", return_value=mock_resp):
         positions = adapter.get_positions()
-        assert positions == []
+        assert positions is None
 
         orders = adapter.get_order_book()
-        assert orders == []
+        assert orders is None
 
         trades = adapter.get_trade_book()
-        assert trades == []
+        assert trades is None

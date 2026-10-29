@@ -132,16 +132,22 @@ def test_broker_reported_pnl_precision_and_unrounded_arithmetic(db_session):
     )
     assert count == 1
 
-    allotment = db_session.query(Allotment).join(IPO).filter(
-        Allotment.account_id == account.id,
-        IPO.symbol == "HINDCOPPER"
+    from app.models.holding import AccountHoldingSnapshot
+
+    snapshot = db_session.query(AccountHoldingSnapshot).filter(
+        AccountHoldingSnapshot.account_id == account.id,
+        AccountHoldingSnapshot.tradingsymbol == "HINDCOPPER-EQ"
     ).first()
 
-    assert allotment is not None
-    assert allotment.is_broker_reported is True
-    assert allotment.unrealized_pnl == -1101.31
-    assert allotment.pnl_percentage == -1.1084
-    assert allotment.invested_value == 99297.31
+    assert snapshot is not None
+    assert snapshot.is_broker_reported is True
+    assert snapshot.unrealized_pnl == -1101.31
+    assert snapshot.pnl_percentage == -1.1084
+    assert snapshot.invested_value == 99297.31
+
+    # Confirm ordinary holding was not conflated with IPO allotments table
+    allotment = db_session.query(Allotment).filter(Allotment.account_id == account.id).first()
+    assert allotment is None
 
 def test_consolidated_portfolio_endpoint_accurate_totals(client: TestClient, db_session):
     """

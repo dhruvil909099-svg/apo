@@ -42,6 +42,7 @@ class Account(Base):
     # Relationships
     allotments = relationship("Allotment", back_populates="account", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="account", cascade="all, delete-orphan")
+    holding_snapshots = relationship("AccountHoldingSnapshot", back_populates="account", cascade="all, delete-orphan")
 
     @property
     def masked_client_code(self) -> str:

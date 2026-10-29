@@ -10,8 +10,11 @@ from app.models.portfolio_note import PortfolioNote
 from app.models.notification import Notification
 from app.models.chat import ChatMessage
 
+from app.models.holding import AccountHoldingSnapshot
+
 __all__ = [
     "Account",
+    "AccountHoldingSnapshot",
     "IPO",
     "Allotment",
     "IPODataSource",
