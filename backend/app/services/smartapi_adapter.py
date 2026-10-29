@@ -713,13 +713,28 @@ class SmartAPIAdapter:
         url = f"{self.BASE_URL}/rest/secure/angelbroking/margin/v1/batch"
         formatted_positions = []
         for p in positions:
+            prod = str(p.get("productType") or p.get("product_type", "DELIVERY")).upper()
+            if prod in ("CNC", "DELIVERY"):
+                prod = "DELIVERY"
+            elif prod in ("MIS", "INTRADAY"):
+                prod = "INTRADAY"
+            elif prod in ("NRML", "CARRYFORWARD"):
+                prod = "CARRYFORWARD"
+            elif prod in ("MTF", "MARGIN"):
+                prod = "MARGIN"
+
+            ot = str(p.get("orderType") or p.get("order_type", "LIMIT")).upper()
+            if ot not in ("LIMIT", "MARKET", "STOPLOSS_LIMIT", "STOPLOSS_MARKET"):
+                ot = "LIMIT"
+
             formatted_positions.append({
                 "exchange": str(p.get("exchange", "NSE")).upper(),
                 "qty": int(p.get("qty") or p.get("quantity", 1)),
                 "price": float(p.get("price", 0.0)),
-                "productType": str(p.get("productType") or p.get("product_type", "DELIVERY")).upper(),
+                "productType": prod,
                 "token": str(p.get("token") or p.get("symbol_token", "")),
-                "tradeType": str(p.get("tradeType") or p.get("trade_type") or p.get("transaction_type", "BUY")).upper()
+                "tradeType": str(p.get("tradeType") or p.get("trade_type") or p.get("transaction_type", "BUY")).upper(),
+                "orderType": ot
             })
         payload = {"positions": formatted_positions}
         data = self._send_request("POST", url, json_payload=payload, rate_limit_seconds=0.1)
@@ -981,5 +996,30 @@ def get_any_active_market_adapter(db, exclude_account_id: Optional[int] = None) 
         except Exception:
             continue
     return None
+
+
+def get_authenticated_adapter_for_account_id(db, account_id: int) -> Optional[SmartAPIAdapter]:
+    """
+    Retrieves an authenticated SmartAPIAdapter specifically for the specified account ID.
+    Enforces account isolation: queries credentials strictly for account_id and verifies downstream RMS.
+    """
+    from app.models.account import Account
+    from app.core.security import cipher
+
+    acc = db.query(Account).filter(Account.id == account_id).first()
+    if not acc or acc.is_demo or not acc.is_enabled:
+        return None
+    try:
+        raw_key = cipher.decrypt(acc.encrypted_api_key)
+        raw_pin = cipher.decrypt(acc.encrypted_pin)
+        raw_totp = cipher.decrypt(acc.encrypted_totp_secret)
+        if raw_key and raw_pin and raw_totp:
+            adapter = get_adapter_for_account(acc.id, raw_key, acc.client_code, raw_pin, raw_totp)
+            if adapter._ensure_authenticated():
+                return adapter
+    except Exception as e:
+        logger.warning(f"Failed to get authenticated adapter for account {account_id}: {e}")
+    return None
+
 
 

@@ -42,14 +42,21 @@ interface BrokerageChargesState {
   totalCharges: number | null;
   isBrokerVerified: boolean;
   dataSource: string;
+  statusLabel?: string;
   disclaimer: string;
   errorReason?: string | null;
+  accountId?: number | null;
+  accountMaskedCode?: string | null;
+  requestTimestamp?: string;
   isLoading: boolean;
 }
 
 interface MarginState {
   fullTradeValue: number;
   requiredMargin: number | null;
+  marginForOrder?: number | null;
+  totalMarginRequired?: number | null;
+  marginComponents?: Record<string, any> | null;
   availableFunds: number;
   remainingFunds: number | null;
   isSufficient: boolean | null;
@@ -57,8 +64,12 @@ interface MarginState {
   isBrokerVerified: boolean;
   dataSource: string;
   status: 'VERIFIED' | 'ESTIMATED' | 'UNAVAILABLE';
+  statusLabel?: string;
   message: string;
   errorReason?: string | null;
+  accountId?: number | null;
+  accountMaskedCode?: string | null;
+  requestTimestamp?: string;
   isLoading: boolean;
 }
 
@@ -104,9 +115,13 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   // Modals & Views
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
   const [showChargesModal, setShowChargesModal] = useState<boolean>(false);
+  const [showMarginBreakdownModal, setShowMarginBreakdownModal] = useState<boolean>(false);
   const [showBatchResultsModal, setShowBatchResultsModal] = useState<boolean>(false);
   const [batchResults, setBatchResults] = useState<any[]>([]);
   const [batchSummary, setBatchSummary] = useState<{ total: number; success: number; failed: number } | null>(null);
+
+  // Request sequence tracking to prevent stale in-flight responses from overwriting latest settings
+  const requestIdRef = useRef<number>(0);
 
   // Market Quote State
   const [quote, setQuote] = useState<MarketQuoteState>({
@@ -135,6 +150,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
     totalCharges: null,
     isBrokerVerified: false,
     dataSource: 'PENDING_INITIALIZATION',
+    statusLabel: 'UNAVAILABLE',
     disclaimer: '',
     errorReason: null,
     isLoading: false,
@@ -143,6 +159,9 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   const [margin, setMargin] = useState<MarginState>({
     fullTradeValue: 0,
     requiredMargin: null,
+    marginForOrder: null,
+    totalMarginRequired: null,
+    marginComponents: null,
     availableFunds: initialAccount?.available_cash || 0,
     remainingFunds: null,
     isSufficient: null,
@@ -150,6 +169,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
     isBrokerVerified: false,
     dataSource: 'PENDING_INITIALIZATION',
     status: 'UNAVAILABLE',
+    statusLabel: 'UNAVAILABLE',
     message: '',
     errorReason: null,
     isLoading: false,
@@ -306,9 +326,11 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   const effectivePrice = orderType === 'MARKET' ? (quote.ltp || 0) : parsedLimitPrice;
   const estimatedOrderValue = round2(quantity * effectivePrice);
 
-  // 3. Debounced Brokerage & Margin Estimation with ORDER_TYPE included
+  // 3. Debounced Brokerage & Margin Estimation with ORDER_TYPE & ACCOUNT_ID included
   useEffect(() => {
     if (!isOpen || effectivePrice <= 0 || quantity <= 0) return;
+
+    const reqId = ++requestIdRef.current;
 
     const timer = setTimeout(() => {
       // Fetch Brokerage
@@ -322,8 +344,10 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
         quantity,
         price: effectivePrice,
         order_type: orderType,
+        account_id: currentAccount?.id,
       })
         .then((res) => {
+          if (reqId !== requestIdRef.current) return;
           setCharges({
             tradeValue: res.trade_value,
             brokerage: res.brokerage,
@@ -332,26 +356,32 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
             sebiCharges: res.sebi_charges,
             stampDuty: res.stamp_duty,
             gst: res.gst,
-            dpCharges: res.dpCharges,
+            dpCharges: res.dpCharges ?? res.dp_charges ?? null,
             totalCharges: res.total_charges,
             isBrokerVerified: Boolean(res.is_broker_verified),
             dataSource: res.data_source,
+            statusLabel: res.status_label || (res.is_broker_verified ? 'BROKER ESTIMATE' : 'UNAVAILABLE'),
             disclaimer: res.disclaimer,
             errorReason: res.error_reason,
+            accountId: res.account_id ?? currentAccount?.id,
+            accountMaskedCode: res.account_masked_code ?? currentAccount?.masked_client_code,
+            requestTimestamp: res.request_timestamp,
             isLoading: false,
           });
         })
         .catch((err) => {
+          if (reqId !== requestIdRef.current) return;
           setCharges((prev) => ({
             ...prev,
             totalCharges: null,
             isBrokerVerified: false,
+            statusLabel: 'UNAVAILABLE',
             errorReason: err.message || 'Charges unavailable',
             isLoading: false,
           }));
         });
 
-      // Fetch Margin with ORDER_TYPE parameter explicitly passed
+      // Fetch Margin with ORDER_TYPE and ACCOUNT_ID explicitly passed
       setMargin((prev) => ({ ...prev, isLoading: true }));
       api.calculateMargin({
         exchange,
@@ -361,13 +391,17 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
         product_type: productType,
         quantity,
         price: effectivePrice,
-        order_type: orderType, // Critical fix for SmartAPI orderType requirement!
+        order_type: orderType,
         account_id: currentAccount?.id,
       })
         .then((res) => {
+          if (reqId !== requestIdRef.current) return;
           setMargin({
             fullTradeValue: res.full_trade_value,
             requiredMargin: res.required_margin,
+            marginForOrder: res.margin_for_order ?? res.required_margin,
+            totalMarginRequired: res.total_margin_required ?? res.required_margin,
+            marginComponents: res.margin_components ?? null,
             availableFunds: res.available_funds,
             remainingFunds: res.remaining_funds,
             isSufficient: res.is_sufficient,
@@ -375,22 +409,28 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
             isBrokerVerified: Boolean(res.is_broker_verified),
             dataSource: res.data_source,
             status: res.status as any,
+            statusLabel: res.status_label || (res.is_broker_verified ? 'BROKER ESTIMATE' : 'UNAVAILABLE'),
             message: res.message,
             errorReason: res.error_reason,
+            accountId: res.account_id ?? currentAccount?.id,
+            accountMaskedCode: res.account_masked_code ?? currentAccount?.masked_client_code,
+            requestTimestamp: res.request_timestamp,
             isLoading: false,
           });
         })
         .catch((err) => {
+          if (reqId !== requestIdRef.current) return;
           setMargin((prev) => ({
             ...prev,
             requiredMargin: null,
             isBrokerVerified: false,
             isSufficient: null,
+            statusLabel: 'UNAVAILABLE',
             errorReason: err.message || 'Margin unavailable',
             isLoading: false,
           }));
         });
-    }, 250);
+    }, 200);
 
     return () => clearTimeout(timer);
   }, [isOpen, sym, token, exchange, side, productType, orderType, quantity, effectivePrice, currentAccount?.id]);
@@ -1016,30 +1056,48 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               <div className="grid grid-cols-2 gap-3 pb-2 border-b border-slate-200">
                 {/* Required Margin */}
                 <div>
-                  <div className="flex items-center gap-1 text-[10px] text-slate-500 font-semibold uppercase">
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-semibold uppercase">
                     <span>Required Margin</span>
                     <span className="px-1 py-0.2 bg-violet-100 text-violet-700 text-[9px] font-bold rounded">
                       {productType === 'INTRADAY' ? 'MIS ~5x' : 'CNC 1x'}
                     </span>
+                    <span className={`px-1 py-0.2 text-[9px] font-bold rounded ${margin.isBrokerVerified ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                      {margin.isBrokerVerified ? 'BROKER ESTIMATE' : 'UNAVAILABLE'}
+                    </span>
                   </div>
                   <div className="text-base font-bold font-mono text-slate-900 mt-0.5">
-                    {margin.requiredMargin !== null ? (
+                    {typeof margin.requiredMargin === 'number' && Number.isFinite(margin.requiredMargin) ? (
                       `₹${margin.requiredMargin.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
                     ) : (
                       <span className="text-amber-600 text-xs font-semibold">Margin unavailable</span>
                     )}
                   </div>
-                  <div className="text-[10px] text-slate-400">
-                    {margin.isBrokerVerified
-                      ? 'Official SmartAPI broker estimate'
-                      : (margin.errorReason || 'Broker demat session required')}
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] text-slate-400">
+                      {margin.isBrokerVerified
+                        ? 'SmartAPI Margin Batch'
+                        : (margin.errorReason || 'Broker session required')}
+                    </span>
+                    {margin.requiredMargin !== null && (
+                      <button
+                        type="button"
+                        onClick={() => setShowMarginBreakdownModal(true)}
+                        className="text-[10px] text-brand-600 hover:text-brand-800 font-semibold underline flex items-center gap-0.5"
+                      >
+                        <span>Breakdown</span>
+                        <Info className="w-2.5 h-2.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 {/* Total Order Value */}
                 <div className="text-right">
-                  <div className="text-[10px] text-slate-500 font-semibold uppercase">
-                    Total Order Value
+                  <div className="flex items-center justify-end gap-1.5 text-[10px] text-slate-500 font-semibold uppercase">
+                    <span>Total Order Value</span>
+                    <span className="px-1 py-0.2 bg-slate-200 text-slate-700 text-[9px] font-bold rounded">
+                      CALCULATED
+                    </span>
                   </div>
                   <div className="text-base font-bold font-mono text-slate-900 mt-0.5">
                     ₹{estimatedOrderValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
@@ -1057,10 +1115,17 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   <span className="ml-1.5 font-mono font-bold text-slate-800">
                     ₹{((currentAccount?.available_cash) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                   </span>
+                  <span className="ml-1 text-[9px] px-1 py-0.2 bg-slate-100 text-slate-600 border border-slate-200 rounded font-semibold">
+                    {currentAccount?.is_demo ? 'SIMULATED RMS' : 'SMARTAPI RMS'}
+                  </span>
                   {margin.requiredMargin !== null ? (
-                    margin.isSufficient === false && (
+                    ((margin.requiredMargin + (charges.totalCharges || 0)) > ((currentAccount?.available_cash) || 0)) ? (
                       <span className="ml-2 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
-                        Shortfall: ₹{(margin.requiredMargin - ((currentAccount?.available_cash) || 0)).toFixed(2)}
+                        Shortfall: ₹{((margin.requiredMargin + (charges.totalCharges || 0)) - ((currentAccount?.available_cash) || 0)).toFixed(2)}
+                      </span>
+                    ) : (
+                      <span className="ml-2 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                        Sufficient
                       </span>
                     )
                   ) : (
@@ -1079,7 +1144,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   <Calculator className="w-3 h-3" />
                   <span>Charges: {typeof charges.totalCharges === 'number' && Number.isFinite(charges.totalCharges) ? `₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}</span>
                   <span className="text-[9px] bg-white px-1 rounded text-brand-800 font-bold">
-                    {charges.isBrokerVerified ? 'BROKER' : 'UNVERIFIED'}
+                    {charges.isBrokerVerified ? 'BROKER ESTIMATE' : 'UNAVAILABLE'}
                   </span>
                 </button>
               </div>
@@ -1121,37 +1186,37 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 <div className="flex justify-between text-slate-600">
                   <span>Angel One Brokerage</span>
                   <span className="font-bold text-slate-900">
-                    {typeof charges.brokerage === 'number' && Number.isFinite(charges.brokerage) ? `₹${charges.brokerage.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.brokerage === 'number' && Number.isFinite(charges.brokerage) ? `₹${charges.brokerage.toFixed(2)}` : 'Not provided'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Securities Transaction Tax (STT)</span>
                   <span className="font-bold text-slate-900">
-                    {typeof charges.stt === 'number' && Number.isFinite(charges.stt) ? `₹${charges.stt.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.stt === 'number' && Number.isFinite(charges.stt) ? `₹${charges.stt.toFixed(2)}` : 'Not provided'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Exchange Transaction Charges</span>
                   <span className="font-bold text-slate-900">
-                    {typeof charges.exchangeCharges === 'number' && Number.isFinite(charges.exchangeCharges) ? `₹${charges.exchangeCharges.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.exchangeCharges === 'number' && Number.isFinite(charges.exchangeCharges) ? `₹${charges.exchangeCharges.toFixed(2)}` : 'Not provided'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Stamp Duty (State Stamp Act)</span>
                   <span className="font-bold text-slate-900">
-                    {typeof charges.stampDuty === 'number' && Number.isFinite(charges.stampDuty) ? `₹${charges.stampDuty.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.stampDuty === 'number' && Number.isFinite(charges.stampDuty) ? `₹${charges.stampDuty.toFixed(2)}` : 'Not provided'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>SEBI Turnover Fees</span>
                   <span className="font-bold text-slate-900">
-                    {typeof charges.sebiCharges === 'number' && Number.isFinite(charges.sebiCharges) ? `₹${charges.sebiCharges.toFixed(4)}` : 'Unavailable'}
+                    {typeof charges.sebiCharges === 'number' && Number.isFinite(charges.sebiCharges) ? `₹${charges.sebiCharges.toFixed(4)}` : 'Not provided'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>GST (18% on Services)</span>
                   <span className="font-bold text-slate-900">
-                    {typeof charges.gst === 'number' && Number.isFinite(charges.gst) ? `₹${charges.gst.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.gst === 'number' && Number.isFinite(charges.gst) ? `₹${charges.gst.toFixed(2)}` : 'Not provided'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
@@ -1168,13 +1233,137 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 </div>
               </div>
 
-              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] text-slate-500">
-                {charges.disclaimer || 'Official Angel One Brokerage API estimate. Final statutory taxes applied upon exchange trade settlement.'}
+              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] text-slate-500 space-y-1">
+                <div>{charges.disclaimer || 'Official Angel One Brokerage API estimate. Final statutory taxes applied upon exchange trade settlement.'}</div>
+                {currentAccount && (
+                  <div className="font-mono text-[9px] text-slate-400">Account: {currentAccount.nickname} ({currentAccount.masked_client_code})</div>
+                )}
               </div>
 
               <button
                 type="button"
                 onClick={() => setShowChargesModal(false)}
+                className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* SmartAPI Margin & Funds Breakdown Modal */}
+        {showMarginBreakdownModal && (
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-40 animate-in fade-in duration-100">
+            <div className="bg-white rounded-2xl p-5 shadow-2xl border border-slate-200 w-full max-w-md space-y-3.5">
+              <div className="flex items-center justify-between border-b pb-2.5">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-brand-600" />
+                  <span className="font-bold text-slate-900 text-sm">SmartAPI Margin & Funds Breakdown</span>
+                </div>
+                <button onClick={() => setShowMarginBreakdownModal(false)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-2 text-xs font-mono">
+                <div className="flex justify-between text-slate-600">
+                  <span>Trade Value</span>
+                  <span className="font-bold text-slate-900">
+                    ₹{estimatedOrderValue.toFixed(2)} <span className="text-[10px] text-slate-400 font-sans font-normal">(CALCULATED)</span>
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-slate-600">
+                  <span>Angel One Brokerage</span>
+                  <span className="font-bold text-slate-900">
+                    {typeof charges.brokerage === 'number' && Number.isFinite(charges.brokerage) ? `₹${charges.brokerage.toFixed(2)}` : 'Not provided'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-slate-600">
+                  <span>External Charges (Exch/Stamp/SEBI)</span>
+                  <span className="font-bold text-slate-900">
+                    {typeof charges.exchangeCharges === 'number' && typeof charges.stampDuty === 'number'
+                      ? `₹${((charges.exchangeCharges || 0) + (charges.stampDuty || 0) + (charges.sebiCharges || 0)).toFixed(2)}`
+                      : 'Not provided'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-slate-600">
+                  <span>Taxes (STT + GST)</span>
+                  <span className="font-bold text-slate-900">
+                    {typeof charges.stt === 'number' && typeof charges.gst === 'number'
+                      ? `₹${((charges.stt || 0) + (charges.gst || 0)).toFixed(2)}`
+                      : 'Not provided'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-slate-600 pt-1 border-t border-dashed">
+                  <span>Total Charges</span>
+                  <span className="font-bold text-slate-900">
+                    + {typeof charges.totalCharges === 'number' && Number.isFinite(charges.totalCharges) ? `₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-slate-600">
+                  <span className="flex items-center gap-1">
+                    <span>Margin for Order</span>
+                    <span className="text-[9px] px-1 bg-emerald-100 text-emerald-800 rounded font-sans font-semibold">BROKER ESTIMATE</span>
+                  </span>
+                  <span className="font-bold text-slate-900">
+                    + {typeof margin.requiredMargin === 'number' && Number.isFinite(margin.requiredMargin) ? `₹${margin.requiredMargin.toFixed(2)}` : 'Unavailable'}
+                  </span>
+                </div>
+
+                {margin.marginComponents && (
+                  <div className="pl-3 py-1 bg-slate-50 rounded text-[11px] text-slate-500 space-y-0.5">
+                    {margin.marginComponents.netMargin !== undefined && (
+                      <div className="flex justify-between"><span>Net Margin:</span><span className="font-mono">₹{parseFloat(margin.marginComponents.netMargin).toFixed(2)}</span></div>
+                    )}
+                    {margin.marginComponents.varMargin !== undefined && parseFloat(margin.marginComponents.varMargin) > 0 && (
+                      <div className="flex justify-between"><span>VAR Margin:</span><span className="font-mono">₹{parseFloat(margin.marginComponents.varMargin).toFixed(2)}</span></div>
+                    )}
+                    {margin.marginComponents.extremeLossMargin !== undefined && parseFloat(margin.marginComponents.extremeLossMargin) > 0 && (
+                      <div className="flex justify-between"><span>Extreme Loss:</span><span className="font-mono">₹{parseFloat(margin.marginComponents.extremeLossMargin).toFixed(2)}</span></div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex justify-between pt-2 border-t font-sans font-bold text-slate-900 text-sm">
+                  <span>Total Required Margin</span>
+                  <span className="font-mono text-brand-700">
+                    = {typeof margin.requiredMargin === 'number' && Number.isFinite(margin.requiredMargin)
+                      ? `₹${(margin.requiredMargin + (charges.totalCharges || 0)).toFixed(2)}`
+                      : 'Unavailable'}
+                  </span>
+                </div>
+
+                <div className="flex justify-between pt-1 text-slate-600">
+                  <span>Available Funds ({currentAccount?.nickname})</span>
+                  <span className="font-bold font-mono text-slate-800">
+                    ₹{((currentAccount?.available_cash) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+
+                {margin.requiredMargin !== null && ((margin.requiredMargin + (charges.totalCharges || 0)) > ((currentAccount?.available_cash) || 0)) && (
+                  <div className="flex justify-between text-rose-600 font-bold">
+                    <span>Funds Shortfall to Add</span>
+                    <span className="font-mono">
+                      ₹{((margin.requiredMargin + (charges.totalCharges || 0)) - ((currentAccount?.available_cash) || 0)).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] text-slate-500 space-y-1">
+                <div className="font-semibold text-slate-700">Official SmartAPI Data Transparency:</div>
+                <div>Values originate directly from official SmartAPI endpoints: Margin Calculator (<span className="font-mono">/margin/v1/batch</span>) and Brokerage Calculator (<span className="font-mono">/brokerage/v1/estimateCharges</span>).</div>
+                <div className="text-[9px] text-slate-400 italic">Note: The Angel One mobile application internal UI displays an app-only figure (e.g. ₹4,148.77 in HINDCOPPER reference) which is proprietary and labeled APP-ONLY / NOT EXPOSED BY API, while the developer API exposes totalMarginRequired and charge breakups.</div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowMarginBreakdownModal(false)}
                 className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors"
               >
                 Close

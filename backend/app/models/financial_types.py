@@ -27,9 +27,15 @@ def make_financial_amount(
         "BROKER_QUOTE",
         "BROKER_MARGIN_ESTIMATE",
         "BROKER_CHARGES_ESTIMATE",
+        "BROKER_ESTIMATE",
+        "BROKER_VERIFIED",
+        "SMARTAPI_RMS",
         "USER_INPUT",
+        "CALCULATED",
         "DERIVED_FROM_VERIFIED_INPUTS",
         "UNAVAILABLE",
+        "STALE",
+        "NOT_PROVIDED",
         "INDICATIVE_REGULATORY_SCHEDULE",
         "INDICATIVE_STATUTORY_SCHEDULE"
     }

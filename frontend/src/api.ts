@@ -724,6 +724,7 @@ export const api = {
     quantity: number;
     price: number;
     order_type?: string;
+    account_id?: number;
   }) => fetchJson<{
     trade_value: number;
     brokerage: number | null;
@@ -732,14 +733,19 @@ export const api = {
     sebi_charges: number | null;
     stamp_duty: number | null;
     gst: number | null;
-    dpCharges: number | null;
+    dp_charges?: number | null;
+    dpCharges?: number | null;
     total_charges: number | null;
     is_broker_verified: boolean;
     verified: boolean;
     data_source: string;
     status: string;
+    status_label?: string;
     error_reason?: string | null;
     disclaimer: string;
+    account_id?: number | null;
+    account_masked_code?: string | null;
+    request_timestamp?: string;
     details?: Record<string, any>;
   }>(`${getApiBase()}/market/brokerage/estimate`, {
     method: 'POST',
@@ -759,6 +765,9 @@ export const api = {
   }) => fetchJson<{
     full_trade_value: number;
     required_margin: number | null;
+    margin_for_order?: number | null;
+    total_margin_required?: number | null;
+    margin_components?: Record<string, any> | null;
     available_funds: number;
     remaining_funds: number | null;
     is_sufficient: boolean | null;
@@ -766,8 +775,12 @@ export const api = {
     is_broker_verified: boolean;
     data_source: string;
     status: string;
+    status_label?: string;
     message: string;
     error_reason?: string | null;
+    account_id?: number | null;
+    account_masked_code?: string | null;
+    request_timestamp?: string;
     details?: Record<string, any>;
   }>(`${getApiBase()}/market/margin/batch`, {
     method: 'POST',

@@ -38,6 +38,7 @@ class BrokerageEstimateRequest(BaseModel):
     quantity: int = 1
     price: float = 0.0
     order_type: str = "LIMIT"
+    account_id: Optional[int] = None
 
 
 class MarginEstimateRequest(BaseModel):
@@ -421,7 +422,8 @@ def estimate_order_brokerage_charges(
         product_type=req.product_type,
         quantity=req.quantity,
         price=req.price,
-        order_type=req.order_type
+        order_type=req.order_type,
+        account_id=req.account_id
     )
     return result
 
@@ -451,7 +453,8 @@ def calculate_order_margin(
         quantity=req.quantity,
         price=req.price,
         available_funds=available_funds,
-        order_type=req.order_type
+        order_type=req.order_type,
+        account_id=req.account_id
     )
     return result
 
