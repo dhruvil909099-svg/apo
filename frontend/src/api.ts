@@ -692,9 +692,63 @@ export const api = {
     { method: 'POST' }
   ),
 
-  getSingleMarketQuote: (symbol: string, exchange: string = 'NSE') => fetchJson<any>(
-    `${getApiBase()}/market/quote?symbol=${encodeURIComponent(symbol)}&exchange=${encodeURIComponent(exchange)}`
-  ),
+  getSingleMarketQuote: (symbol: string, exchange: string = 'NSE', symbol_token?: string) => {
+    let url = `${getApiBase()}/market/quote?symbol=${encodeURIComponent(symbol)}&exchange=${encodeURIComponent(exchange)}`;
+    if (symbol_token) url += `&symbol_token=${encodeURIComponent(symbol_token)}`;
+    return fetchJson<any>(url);
+  },
+
+  estimateBrokerage: (data: {
+    exchange: string;
+    symbol_token: string;
+    tradingsymbol: string;
+    transaction_type: string;
+    product_type: string;
+    quantity: number;
+    price: number;
+    order_type?: string;
+  }) => fetchJson<{
+    trade_value: number;
+    brokerage: number;
+    stt_ctt: number;
+    exchange_charges: number;
+    sebi_charges: number;
+    stamp_duty: number;
+    gst: number;
+    dp_charges: number;
+    total_charges: number;
+    is_broker_verified: boolean;
+    data_source: string;
+    disclaimer: string;
+  }>(`${getApiBase()}/market/brokerage/estimate`, {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
+
+  calculateMargin: (data: {
+    exchange: string;
+    symbol_token: string;
+    tradingsymbol: string;
+    transaction_type: string;
+    product_type: string;
+    quantity: number;
+    price: number;
+    account_id?: number;
+  }) => fetchJson<{
+    full_trade_value: number;
+    required_margin: number;
+    available_funds: number;
+    remaining_funds: number;
+    is_sufficient: boolean;
+    leverage_multiplier: number;
+    is_broker_verified: boolean;
+    data_source: string;
+    status: string;
+    message: string;
+  }>(`${getApiBase()}/market/margin/batch`, {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
 
   getBatchMarketQuotes: (instruments: Array<{ exchange: string; symbol_token: string }>, mode: string = 'FULL') => fetchJson<{
     mode: string;
@@ -706,4 +760,5 @@ export const api = {
     body: JSON.stringify({ instruments, mode })
   }),
 };
+
 

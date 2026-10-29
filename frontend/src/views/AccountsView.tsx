@@ -2450,8 +2450,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                             exchange: inst.exchange,
                                             symbol_token: inst.symbol_token,
                                             quantity: 0,
-                                            average_price: inst.current_ltp || 100,
-                                            current_ltp: inst.current_ltp || 100,
+                                            average_price: inst.current_ltp ?? 0,
+                                            current_ltp: inst.current_ltp ?? undefined,
                                             source_type: 'SNAPSHOT'
                                           });
                                           setDetailsModalView('chart');
@@ -2471,8 +2471,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                             exchange: inst.exchange,
                                             symbol_token: inst.symbol_token,
                                             quantity: 0,
-                                            average_price: inst.current_ltp || 100,
-                                            current_ltp: inst.current_ltp || 100,
+                                            average_price: inst.current_ltp ?? 0,
+                                            current_ltp: inst.current_ltp ?? undefined,
                                             source_type: 'SNAPSHOT'
                                           });
                                           setOrderTicketSide('BUY');
@@ -2492,8 +2492,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                             exchange: inst.exchange,
                                             symbol_token: inst.symbol_token,
                                             quantity: 0,
-                                            average_price: inst.current_ltp || 100,
-                                            current_ltp: inst.current_ltp || 100,
+                                            average_price: inst.current_ltp ?? 0,
+                                            current_ltp: inst.current_ltp ?? undefined,
                                             source_type: 'SNAPSHOT'
                                           });
                                           setOrderTicketSide('SELL');

@@ -37,33 +37,52 @@ def preview_single_order(
 
     clean_symbol = req.tradingsymbol.replace("-EQ", "").strip().upper()
     ipo = db.query(IPO).filter(IPO.symbol == clean_symbol).first()
+    inst = db.query(Instrument).filter(
+        (Instrument.tradingsymbol == req.tradingsymbol) |
+        (Instrument.tradingsymbol == clean_symbol) |
+        (Instrument.tradingsymbol == f"{clean_symbol}-EQ")
+    ).first()
+
     effective_price = req.price
-    if effective_price <= 0 and ipo:
-        effective_price = ipo.current_ltp or ipo.issue_price or 100.0
-    elif effective_price <= 0:
-        effective_price = 100.0
+    if effective_price <= 0:
+        if inst and inst.current_ltp:
+            effective_price = float(inst.current_ltp)
+        elif ipo and ipo.current_ltp:
+            effective_price = float(ipo.current_ltp)
+        elif ipo and ipo.issue_price:
+            effective_price = float(ipo.issue_price)
 
-    est_value = round(req.quantity * effective_price, 2)
+    est_value = round(req.quantity * effective_price, 2) if effective_price > 0 else 0.0
 
-    # Calculate standard Indian equity delivery statutory charges:
-    # Brokerage: ₹0
-    brokerage = 0.0
-    # STT (Securities Transaction Tax): 0.1% on delivery Buy & Sell
-    stt = round(est_value * 0.001, 2)
-    # Exchange turnover charge (NSE): ~0.00345%
-    exchange_charges = round(est_value * 0.0000345, 2)
-    # GST: 18% on (brokerage + exchange charges)
-    gst = round((brokerage + exchange_charges) * 0.18, 2)
-    # SEBI turnover fees: 0.0001% (₹10/crore)
-    sebi_fees = round(est_value * 0.000001, 2)
-    # Stamp duty: 0.015% on BUY only
-    stamp_duty = round(est_value * 0.00015, 2) if req.transaction_type == "BUY" else 0.0
+    # Calculate authoritative charges using BrokerageEstimateService
+    from app.services.brokerage_estimate_service import BrokerageEstimateService
+    charges_res = BrokerageEstimateService.estimate_charges(
+        db=db,
+        exchange=inst.exchange if inst else "NSE",
+        symbol_token=inst.symbol_token if inst else (ipo.symbol_token if ipo else "0"),
+        tradingsymbol=req.tradingsymbol,
+        transaction_type=req.transaction_type,
+        product_type="DELIVERY",
+        quantity=req.quantity,
+        price=effective_price,
+        order_type=req.order_type
+    )
 
-    total_charges = round(brokerage + stt + exchange_charges + gst + sebi_fees + stamp_duty, 2)
+    brokerage = charges_res["brokerage"]
+    stt = charges_res["stt_ctt"]
+    exchange_charges = charges_res["exchange_charges"]
+    gst = charges_res["gst"]
+    sebi_fees = charges_res["sebi_charges"]
+    stamp_duty = charges_res["stamp_duty"]
+    total_charges = charges_res["total_charges"]
     net_total = round(est_value + total_charges if req.transaction_type == "BUY" else est_value - total_charges, 2)
 
     blocking_reasons = []
     warnings = []
+
+    if effective_price <= 0:
+        blocking_reasons.append("Price unavailable: Valid market quote or limit price required for order validation.")
+
 
     if not account.is_enabled:
         blocking_reasons.append(f"Account '{account.nickname}' is disabled.")
@@ -306,6 +325,9 @@ def place_single_order(
             if live_res["success"]:
                 order.status = "ACCEPTED"
                 order.broker_order_id = live_res["broker_order_id"]
+            elif live_res.get("status") == "SUBMISSION_UNKNOWN":
+                order.status = "SUBMISSION_UNKNOWN"
+                order.rejection_reason = live_res.get("message", "Live order request timed out. Status unknown.")
             else:
                 order.status = "REJECTED"
                 order.rejection_reason = live_res["message"]

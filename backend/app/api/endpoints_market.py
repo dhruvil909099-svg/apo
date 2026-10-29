@@ -5,10 +5,13 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPExce
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.models.account import Account
 from app.models.ipo import IPO
 from app.models.instrument import Instrument
 from app.services.market_session_service import get_market_session_summary
 from app.services.smartapi_adapter import get_any_active_market_adapter
+from app.services.brokerage_estimate_service import BrokerageEstimateService
+from app.services.margin_estimate_service import MarginEstimateService
 from app.services.instrument_master_service import (
     search_instruments,
     get_option_chain,
@@ -24,6 +27,29 @@ router = APIRouter(prefix="/market", tags=["Market Data"])
 class BatchQuoteRequest(BaseModel):
     instruments: List[Dict[str, str]]  # [{"exchange": "NSE", "symbol_token": "3045"}]
     mode: str = "FULL"                 # "LTP", "OHLC", or "FULL"
+
+
+class BrokerageEstimateRequest(BaseModel):
+    exchange: str = "NSE"
+    symbol_token: str
+    tradingsymbol: str
+    transaction_type: str = "BUY"
+    product_type: str = "DELIVERY"
+    quantity: int = 1
+    price: float = 0.0
+    order_type: str = "LIMIT"
+
+
+class MarginEstimateRequest(BaseModel):
+    exchange: str = "NSE"
+    symbol_token: str
+    tradingsymbol: str
+    transaction_type: str = "BUY"
+    product_type: str = "DELIVERY"
+    quantity: int = 1
+    price: float = 0.0
+    account_id: Optional[int] = None
+
 
 
 # In-memory WebSocket connection manager for live streaming ticks
@@ -185,42 +211,191 @@ def get_batch_market_quotes(
 def get_single_market_quote(
     symbol: str,
     exchange: str = "NSE",
+    symbol_token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
-    Retrieves live market quote for a single instrument.
-    First checks database for instrument token, then requests official SmartAPI quote.
+    Retrieves normalized, authentic market quote for a single instrument.
+    Never returns fabricated prices. If quote is unavailable, returns explicit
+    ltp: null and freshness_status: UNAVAILABLE.
     """
     sym = symbol.upper().strip()
-    inst = db.query(Instrument).filter(
-        (Instrument.tradingsymbol == sym) | 
-        (Instrument.tradingsymbol == f"{sym}-EQ") |
-        (Instrument.symbol_token == sym)
-    ).first()
+    target_exchange = (exchange or "NSE").upper().strip()
 
-    token = inst.symbol_token if inst else sym
-    target_exchange = inst.exchange if inst else exchange.upper().strip()
+    inst = None
+    if symbol_token and symbol_token != "0":
+        inst = db.query(Instrument).filter(
+            Instrument.symbol_token == str(symbol_token).strip(),
+            Instrument.exchange == target_exchange
+        ).first()
 
+    if not inst:
+        clean_sym = sym[:-3] if sym.endswith("-EQ") else sym
+        inst = db.query(Instrument).filter(
+            (Instrument.tradingsymbol == sym) | 
+            (Instrument.tradingsymbol == clean_sym) |
+            (Instrument.tradingsymbol == f"{clean_sym}-EQ") |
+            (Instrument.symbol_token == sym)
+        ).first()
+
+    token = str(symbol_token).strip() if (symbol_token and symbol_token != "0") else (inst.symbol_token if inst else sym)
+    if inst:
+        target_exchange = inst.exchange
+
+    tradingsymbol = inst.tradingsymbol if inst else sym
+    company_name = inst.name if inst else tradingsymbol
+    tick_size = float(inst.tick_size) if (inst and inst.tick_size) else 0.05
+    lot_size = int(inst.lot_size) if (inst and inst.lot_size) else 1
+
+    # Check live WebSocket cache first
+    from app.services.smartapi_websocket import smartapi_ws_service
+    ws_tick = smartapi_ws_service.get_latest_quote(token) or smartapi_ws_service.get_latest_quote(tradingsymbol)
+    if ws_tick and ws_tick.get("ltp") is not None:
+        ltp = float(ws_tick["ltp"])
+        prev_close = float(ws_tick.get("previous_close") or ltp)
+        chg = round(ltp - prev_close, 2)
+        chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+        return {
+            "exchange": target_exchange,
+            "trading_symbol": tradingsymbol,
+            "symbol_token": token,
+            "company_name": company_name,
+            "ltp": ltp,
+            "previous_close": prev_close,
+            "net_change": chg,
+            "percent_change": chg_pct,
+            "tick_size": tick_size,
+            "lot_size": lot_size,
+            "source": "SMARTAPI_WEBSOCKET_FEED",
+            "freshness_status": "LIVE",
+            "as_of_timestamp": ws_tick.get("timestamp") or datetime.utcnow().isoformat(),
+            "is_estimate": False
+        }
+
+    # Query active broker adapter
     adapter = get_any_active_market_adapter(db)
-    if adapter:
-        quotes = adapter.get_market_quotes_batch({target_exchange: [token]}, mode="FULL")
-        if quotes.get("fetched"):
-            return quotes["fetched"][0]
+    if adapter and token and token != "0":
+        try:
+            quotes = adapter.get_market_quotes_batch({target_exchange: [token]}, mode="FULL")
+            if quotes.get("fetched") and len(quotes["fetched"]) > 0:
+                q = quotes["fetched"][0]
+                ltp = float(q.get("ltp") or 0.0)
+                prev_close = float(q.get("close") or q.get("previous_close") or ltp)
+                chg = round(ltp - prev_close, 2)
+                chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+                return {
+                    "exchange": target_exchange,
+                    "trading_symbol": tradingsymbol,
+                    "symbol_token": token,
+                    "company_name": company_name,
+                    "ltp": ltp,
+                    "previous_close": prev_close,
+                    "net_change": chg,
+                    "percent_change": chg_pct,
+                    "tick_size": tick_size,
+                    "lot_size": lot_size,
+                    "source": "SMARTAPI_REST_QUOTE",
+                    "freshness_status": "LIVE",
+                    "as_of_timestamp": datetime.utcnow().isoformat(),
+                    "is_estimate": False
+                }
+        except Exception:
+            pass
 
-    # Return explicit verified metadata with UNAVAILABLE price rather than fake numbers
+    # Check DB snapshot if available
+    if inst and inst.current_ltp is not None:
+        ltp = float(inst.current_ltp)
+        prev_close = float(inst.previous_close or ltp)
+        chg = round(ltp - prev_close, 2)
+        chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+        return {
+            "exchange": target_exchange,
+            "trading_symbol": tradingsymbol,
+            "symbol_token": token,
+            "company_name": company_name,
+            "ltp": ltp,
+            "previous_close": prev_close,
+            "net_change": chg,
+            "percent_change": chg_pct,
+            "tick_size": tick_size,
+            "lot_size": lot_size,
+            "source": "DATABASE_SNAPSHOT",
+            "freshness_status": "CACHED",
+            "as_of_timestamp": (inst.last_synced_at.isoformat() if hasattr(inst, "last_synced_at") and inst.last_synced_at else datetime.utcnow().isoformat()),
+            "is_estimate": False
+        }
+
+    # Truly unavailable: NO arbitrary defaults
     return {
         "exchange": target_exchange,
-        "trading_symbol": inst.tradingsymbol if inst else sym,
+        "trading_symbol": tradingsymbol,
         "symbol_token": token,
+        "company_name": company_name,
         "ltp": None,
         "previous_close": None,
         "net_change": None,
         "percent_change": None,
-        "data_source": "BROKER_SESSION_REQUIRED",
+        "tick_size": tick_size,
+        "lot_size": lot_size,
+        "source": "BROKER_SESSION_REQUIRED",
         "freshness_status": "UNAVAILABLE",
-        "message": "Live quote unavailable: Demat account authentication required",
-        "received_at": datetime.utcnow().isoformat()
+        "as_of_timestamp": datetime.utcnow().isoformat(),
+        "is_estimate": False,
+        "message": "Price unavailable: Waiting for authentic market quote from broker"
     }
+
+
+@router.post("/brokerage/estimate")
+def estimate_order_brokerage_charges(
+    req: BrokerageEstimateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Computes official brokerage, statutory taxes, and exchange fees breakdown.
+    Uses official SmartAPI Brokerage Calculator API or verified statutory schedules.
+    """
+    result = BrokerageEstimateService.estimate_charges(
+        db=db,
+        exchange=req.exchange,
+        symbol_token=req.symbol_token,
+        tradingsymbol=req.tradingsymbol,
+        transaction_type=req.transaction_type,
+        product_type=req.product_type,
+        quantity=req.quantity,
+        price=req.price,
+        order_type=req.order_type
+    )
+    return result
+
+
+@router.post("/margin/batch")
+def calculate_order_margin(
+    req: MarginEstimateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Computes required margin for order using SmartAPI Margin Calculator API.
+    Differentiates required margin from total trade value (e.g. MIS intraday vs CNC delivery).
+    """
+    available_funds = 0.0
+    if req.account_id:
+        acc = db.query(Account).filter(Account.id == req.account_id).first()
+        if acc:
+            available_funds = float(acc.available_cash or 0.0)
+
+    result = MarginEstimateService.calculate_margin(
+        db=db,
+        exchange=req.exchange,
+        symbol_token=req.symbol_token,
+        tradingsymbol=req.tradingsymbol,
+        transaction_type=req.transaction_type,
+        product_type=req.product_type,
+        quantity=req.quantity,
+        price=req.price,
+        available_funds=available_funds
+    )
+    return result
+
 
 
 @router.get("/quotes")

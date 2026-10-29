@@ -655,16 +655,76 @@ class SmartAPIAdapter:
                 return {
                     "success": True,
                     "broker_order_id": broker_order_id,
+                    "status": "ACKNOWLEDGED",
                     "message": "Order successfully submitted to broker"
                 }
             return {
                 "success": False,
+                "status": "REJECTED",
                 "message": data.get("message", "Order placement rejected"),
                 "error_code": data.get("errorcode", "REJECTED")
             }
+        except requests.exceptions.Timeout:
+            logger.error(f"Live order submission timed out for {self.client_code} on {order_data.get('tradingsymbol')}")
+            return {
+                "success": False,
+                "status": "SUBMISSION_UNKNOWN",
+                "error_code": "GATEWAY_TIMEOUT",
+                "message": "Order submission timed out. Status unknown. Do not retry live order without reconciliation."
+            }
         except Exception as e:
             logger.error(f"Live order placement error for {self.client_code}: {str(e)}")
-            return {"success": False, "message": f"Network exception: {str(e)}", "error_code": "NETWORK_FAIL"}
+            return {"success": False, "status": "REJECTED", "message": f"Network exception: {str(e)}", "error_code": "NETWORK_FAIL"}
+
+    def estimate_charges(self, orders: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Calls official Angel One SmartAPI Brokerage Calculator API:
+        POST /rest/secure/angelbroking/brokerage/v1/estimateCharges
+        Rate limit: 10 req/s.
+        """
+        if not self._ensure_authenticated():
+            return {"status": False, "message": "Session not authenticated", "data": None}
+
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/brokerage/v1/estimateCharges"
+        formatted_orders = []
+        for o in orders:
+            formatted_orders.append({
+                "product_type": str(o.get("product_type", "DELIVERY")).upper(),
+                "transaction_type": str(o.get("transaction_type", "BUY")).upper(),
+                "quantity": str(o.get("quantity", "1")),
+                "price": str(o.get("price", "0.0")),
+                "exchange": str(o.get("exchange", "NSE")).upper(),
+                "symbol_name": str(o.get("symbol_name") or o.get("tradingsymbol", "")),
+                "token": str(o.get("token") or o.get("symbol_token", ""))
+            })
+        payload = {"orders": formatted_orders}
+        data = self._send_request("POST", url, json_payload=payload, rate_limit_seconds=0.1)
+        return data or {"status": False, "message": self.last_error or "Brokerage calculation failed", "data": None}
+
+    def get_margin_batch(self, positions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Calls official Angel One SmartAPI Margin Calculator API:
+        POST /rest/secure/angelbroking/margin/v1/batch
+        Rate limit: 10 req/s.
+        """
+        if not self._ensure_authenticated():
+            return {"status": False, "message": "Session not authenticated", "data": None}
+
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/margin/v1/batch"
+        formatted_positions = []
+        for p in positions:
+            formatted_positions.append({
+                "exchange": str(p.get("exchange", "NSE")).upper(),
+                "qty": int(p.get("qty") or p.get("quantity", 1)),
+                "price": float(p.get("price", 0.0)),
+                "productType": str(p.get("productType") or p.get("product_type", "DELIVERY")).upper(),
+                "token": str(p.get("token") or p.get("symbol_token", "")),
+                "tradeType": str(p.get("tradeType") or p.get("trade_type") or p.get("transaction_type", "BUY")).upper()
+            })
+        payload = {"positions": formatted_positions}
+        data = self._send_request("POST", url, json_payload=payload, rate_limit_seconds=0.1)
+        return data or {"status": False, "message": self.last_error or "Margin calculation failed", "data": None}
+
 
     def get_ltp_data(self, exchange: str, tradingsymbol: str, symbol_token: str) -> Optional[float]:
         """

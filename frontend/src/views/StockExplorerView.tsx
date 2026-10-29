@@ -862,9 +862,10 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
             trading_symbol: orderTicketInstrument.tradingsymbol,
             company_name: orderTicketInstrument.name,
             exchange: orderTicketInstrument.exchange,
+            symbol_token: orderTicketInstrument.symbol_token,
             quantity: 0,
-            average_price: orderTicketInstrument.current_ltp || 100,
-            current_ltp: orderTicketInstrument.current_ltp || 100,
+            average_price: orderTicketInstrument.current_ltp ?? 0,
+            current_ltp: orderTicketInstrument.current_ltp ?? undefined,
             source_type: 'SNAPSHOT'
           }}
           defaultSide={orderTicketSide}
