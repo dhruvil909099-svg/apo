@@ -33,12 +33,17 @@ async def lifespan(app: FastAPI):
 
     # Start background scheduler for automated IPO discovery
     sync_manager.start()
+
+    # Start live market data streaming engine for sub-second real-time quotes
+    from app.services.market_stream_engine import market_stream_engine
+    market_stream_engine.start()
         
     logger.info(f"{settings.APP_NAME} started successfully in {settings.TRADING_MODE} mode.")
     yield
     # Shutdown
     logger.info("Application shutting down. Stopping background sync scheduler...")
     sync_manager.stop()
+    market_stream_engine.stop()
     logger.info("Scheduler stopped cleanly.")
 
 

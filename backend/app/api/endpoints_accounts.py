@@ -612,19 +612,29 @@ def get_account_overview(account_id: int, db: Session = Depends(get_db)):
 def get_account_holdings(
     account_id: int,
     cached_only: bool = Query(False, description="Return cached DB holdings immediately without broker roundtrip"),
+    force_sync: bool = Query(False, description="Force fresh upstream roundtrip to Angel One"),
     db: Session = Depends(get_db)
 ):
     """
     Returns verified equity delivery holdings for the specified account.
-    Supports instant cached returns (< 50ms) and background reconciliation with SmartAPI.
+    Supports instant cached returns (< 15ms) and background reconciliation with SmartAPI.
     Keeps delivery holdings strictly separate from open intraday/derivative positions.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # If live account, connected, and cached_only is False: attempt to fetch fresh live holdings from SmartAPI
-    if not cached_only and not account.is_demo and account.auth_status == "CONNECTED":
+    # Fast path: check if verified holdings already exist in database
+    existing_snapshots = db.query(AccountHoldingSnapshot).filter(
+        AccountHoldingSnapshot.account_id == account_id,
+        AccountHoldingSnapshot.quantity > 0
+    ).all()
+
+    # Fast return (< 15ms) if snapshots exist and force_sync is not requested
+    should_fetch_live = (force_sync or (not cached_only and not existing_snapshots))
+
+    # If live account, connected, and fresh broker fetch needed: attempt SmartAPI call
+    if should_fetch_live and not account.is_demo and account.auth_status == "CONNECTED":
         try:
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
@@ -734,6 +744,17 @@ def get_account_holdings(
         is_disconnected = (not account.is_demo and account.auth_status != "CONNECTED")
         holdings_status = "HISTORICAL" if is_disconnected else ("CACHED" if cached_only else "LIVE")
         for s in snapshots:
+            clean_sym = s.symbol.replace("-EQ", "").strip().upper()
+            tick = smartapi_ws_service.get_latest_quote(clean_sym)
+            live_ltp = float(tick["ltp"]) if (tick and isinstance(tick.get("ltp"), (int, float)) and tick.get("ltp") > 0) else s.ltp
+            inv = s.invested_value if (s.invested_value is not None and s.invested_value > 0) else round(s.quantity * s.average_price, 2)
+            val = round(s.quantity * live_ltp, 2)
+            pnl = round(val - inv, 2)
+            pnl_pct = round((pnl / inv) * 100, 2) if inv > 0 else 0.0
+            close_p = s.close_price or live_ltp
+            day_pnl = round((live_ltp - close_p) * s.quantity, 2)
+            day_pnl_pct = round(((live_ltp - close_p) / close_p) * 100, 2) if close_p > 0 else 0.0
+
             results.append(AccountHoldingItem(
                 symbol=s.symbol,
                 trading_symbol=s.tradingsymbol,
@@ -746,14 +767,14 @@ def get_account_holdings(
                 t1_quantity=s.t1_quantity,
                 authorised_quantity=s.authorised_quantity,
                 average_price=s.average_price,
-                current_ltp=s.ltp,
-                valuation=s.market_value,
-                invested_amount=s.invested_value,
-                unrealized_pnl=s.unrealized_pnl,
-                pnl_percentage=s.pnl_percentage,
-                day_pnl=s.day_pnl,
-                day_pnl_percentage=s.day_pnl_percentage,
-                close_price=s.close_price,
+                current_ltp=live_ltp,
+                valuation=val,
+                invested_amount=inv,
+                unrealized_pnl=pnl,
+                pnl_percentage=pnl_pct,
+                day_pnl=day_pnl,
+                day_pnl_percentage=day_pnl_pct,
+                close_price=close_p,
                 is_broker_reported=s.is_broker_reported,
                 data_source=s.data_source,
                 holdings_status=holdings_status,

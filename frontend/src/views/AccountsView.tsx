@@ -342,6 +342,32 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
       if (cached.lastFetched) {
         setLastSyncTimestamp(new Date(cached.lastFetched).toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
       }
+    } else {
+      // Instant zero-latency fallback overview from account object (eliminates blank spinner)
+      setDrawerOverview({
+        account_id: acc.id,
+        nickname: acc.nickname,
+        masked_client_code: acc.masked_client_code,
+        account_group: acc.account_group,
+        is_enabled: acc.is_enabled,
+        is_demo: acc.is_demo,
+        auth_status: acc.auth_status,
+        ddpi_status: acc.ddpi_status,
+        edis_authorized_today: acc.edis_authorized_today,
+        available_cash: acc.available_cash,
+        total_margin: acc.available_cash,
+        utilized_margin: 0,
+        total_holdings_count: 0,
+        total_holdings_value: 0,
+        total_positions_count: 0,
+        last_sync_time: acc.last_sync_time,
+        data_source: 'ANGEL_ONE_SMARTAPI',
+        stale_data_warning: false,
+        trading_enabled: acc.auth_status === 'CONNECTED',
+        holdings_freshness: 'CACHED',
+        market_price_freshness: 'LIVE',
+        is_disconnected: acc.auth_status !== 'CONNECTED'
+      });
     }
 
     // Trigger non-blocking staged refresh
@@ -369,90 +395,101 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
     let ws: WebSocket | null = null;
     let isSubscribed = true;
+    let reconnectTimer: any = null;
 
-    try {
-      const wsUrl = getWebSocketUrl();
-      ws = new WebSocket(wsUrl);
+    const connectWs = () => {
+      try {
+        const wsUrl = getWebSocketUrl();
+        ws = new WebSocket(wsUrl);
 
-      ws.onopen = () => {
-        if (isSubscribed) {
-          setDrawerDataFreshness('LIVE');
-        }
-      };
-
-      ws.onmessage = (event) => {
-        if (!isSubscribed) return;
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
-            const sym = msg.symbol.replace('-EQ', '').toUpperCase();
-            const tickLtp = msg.ltp;
-
-            setDrawerHoldings((prev) => {
-              let changed = false;
-              const updated = prev.map((h) => {
-                const hSym = (h.trading_symbol || h.symbol).replace('-EQ', '').toUpperCase();
-                if (hSym === sym) {
-                  changed = true;
-                  const newVal = Math.round(h.quantity * tickLtp * 100) / 100;
-                  const cost = h.invested_amount || (h.average_price * h.quantity);
-                  const newPnl = Math.round((newVal - cost) * 100) / 100;
-                  const newPnlPct = cost > 0 ? Math.round((newPnl / cost) * 10000) / 100 : 0.0;
-                  const dayPnl = h.close_price ? Math.round((tickLtp - h.close_price) * h.quantity * 100) / 100 : h.day_pnl;
-                  const dayPnlPct = h.close_price ? Math.round(((tickLtp - h.close_price) / h.close_price) * 10000) / 100 : h.day_pnl_percentage;
-
-                  return {
-                    ...h,
-                    current_ltp: tickLtp,
-                    valuation: newVal,
-                    unrealized_pnl: newPnl,
-                    pnl_percentage: newPnlPct,
-                    day_pnl: dayPnl,
-                    day_pnl_percentage: dayPnlPct,
-                  };
-                }
-                return h;
-              });
-
-              if (changed) {
-                const totalVal = updated.reduce((sum, item) => sum + (item.valuation || 0), 0);
-                setDrawerOverview((prevOv) => prevOv ? {
-                  ...prevOv,
-                  total_holdings_value: Math.round(totalVal * 100) / 100,
-                } : null);
-              }
-              return updated;
-            });
-          } else if (msg.type === 'ORDER_UPDATE' && msg.order) {
-            setDrawerOrders((prev) => {
-              const idx = prev.findIndex((o) => o.order_id === msg.order.order_id);
-              if (idx >= 0) {
-                const copy = [...prev];
-                copy[idx] = { ...copy[idx], ...msg.order };
-                return copy;
-              } else {
-                return [msg.order, ...prev];
-              }
-            });
+        ws.onopen = () => {
+          if (isSubscribed) {
+            setDrawerDataFreshness('LIVE');
           }
-        } catch {
-          // ignore parsing error
-        }
-      };
+        };
 
-      ws.onerror = () => {
-        if (isSubscribed) setDrawerDataFreshness('CACHED');
-      };
+        ws.onmessage = (event) => {
+          if (!isSubscribed) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
+              const sym = msg.symbol.replace('-EQ', '').toUpperCase();
+              const tickLtp = msg.ltp;
 
-      ws.onclose = () => {
-        if (isSubscribed) setDrawerDataFreshness('DISCONNECTED');
-      };
-    } catch {
-      // WebSocket initialization failure
-    }
+              setDrawerHoldings((prev) => {
+                let changed = false;
+                const updated = prev.map((h) => {
+                  const hSym = (h.trading_symbol || h.symbol).replace('-EQ', '').toUpperCase();
+                  if (hSym === sym) {
+                    changed = true;
+                    const newVal = Math.round(h.quantity * tickLtp * 100) / 100;
+                    const cost = h.invested_amount || (h.average_price * h.quantity);
+                    const newPnl = Math.round((newVal - cost) * 100) / 100;
+                    const newPnlPct = cost > 0 ? Math.round((newPnl / cost) * 10000) / 100 : 0.0;
+                    const dayPnl = h.close_price ? Math.round((tickLtp - h.close_price) * h.quantity * 100) / 100 : h.day_pnl;
+                    const dayPnlPct = h.close_price ? Math.round(((tickLtp - h.close_price) / h.close_price) * 10000) / 100 : h.day_pnl_percentage;
+
+                    return {
+                      ...h,
+                      current_ltp: tickLtp,
+                      valuation: newVal,
+                      unrealized_pnl: newPnl,
+                      pnl_percentage: newPnlPct,
+                      day_pnl: dayPnl,
+                      day_pnl_percentage: dayPnlPct,
+                      is_market_price_live: true,
+                    };
+                  }
+                  return h;
+                });
+
+                if (changed) {
+                  const totalVal = updated.reduce((sum, item) => sum + (item.valuation || 0), 0);
+                  setDrawerOverview((prevOv) => prevOv ? {
+                    ...prevOv,
+                    total_holdings_value: Math.round(totalVal * 100) / 100,
+                  } : null);
+                }
+                return updated;
+              });
+            } else if (msg.type === 'ORDER_UPDATE' && msg.order) {
+              setDrawerOrders((prev) => {
+                const idx = prev.findIndex((o) => o.order_id === msg.order.order_id);
+                if (idx >= 0) {
+                  const copy = [...prev];
+                  copy[idx] = { ...copy[idx], ...msg.order };
+                  return copy;
+                } else {
+                  return [msg.order, ...prev];
+                }
+              });
+            }
+          } catch {
+            // ignore parsing error
+          }
+        };
+
+        ws.onerror = () => {
+          if (isSubscribed) setDrawerDataFreshness('CACHED');
+        };
+
+        ws.onclose = () => {
+          if (isSubscribed) {
+            setDrawerDataFreshness('DISCONNECTED');
+            // Auto-reconnect after 2 seconds
+            reconnectTimer = setTimeout(connectWs, 2000);
+          }
+        };
+      } catch {
+        // WebSocket initialization failure
+      }
+    };
+
+    connectWs();
 
     return () => {
       isSubscribed = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) ws.close();
     };
   }, [selectedAccountForDrawer]);
