@@ -120,6 +120,18 @@ class Allotment(Base):
     status = Column(String(30), default="ALLOTTED", nullable=False)
     demat_verified = Column(Boolean, default=False)
     
+    # Holdings & Broker Telemetry (Angel One SmartAPI aligned)
+    t1_quantity = Column(Integer, default=0, nullable=False)
+    authorised_quantity = Column(Integer, default=0, nullable=False)
+    invested_value = Column(Float, nullable=True)
+    current_market_value = Column(Float, nullable=True)
+    unrealized_pnl = Column(Float, nullable=True)
+    pnl_percentage = Column(Float, nullable=True)
+    day_pnl = Column(Float, nullable=True)
+    day_pnl_percentage = Column(Float, nullable=True)
+    close_price = Column(Float, nullable=True)
+    is_broker_reported = Column(Boolean, default=False, nullable=False)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -610,17 +610,22 @@ def get_account_overview(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{account_id}/holdings", response_model=List[AccountHoldingItem])
-def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
+def get_account_holdings(
+    account_id: int,
+    cached_only: bool = Query(False, description="Return cached DB holdings immediately without broker roundtrip"),
+    db: Session = Depends(get_db)
+):
     """
     Returns verified equity delivery holdings for the specified account.
+    Supports instant cached returns (< 50ms) and background reconciliation with SmartAPI.
     Keeps delivery holdings strictly separate from open intraday/derivative positions.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # If live account and connected, attempt to fetch live holdings from SmartAPI
-    if not account.is_demo and account.auth_status == "CONNECTED":
+    # If live account, connected, and cached_only is False: attempt to fetch fresh live holdings from SmartAPI
+    if not cached_only and not account.is_demo and account.auth_status == "CONNECTED":
         try:
             raw_key = cipher.decrypt(account.encrypted_api_key)
             raw_pin = cipher.decrypt(account.encrypted_pin)
@@ -637,51 +642,93 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
                     status_code=401,
                     detail=f"Angel One SmartAPI session expired for {account.masked_client_code}. Please reconnect."
                 )
-
             if adapter.last_error and (live_holdings is None or not live_holdings):
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Failed to retrieve delivery holdings from Angel One: {adapter.last_error}"
                 )
 
-            if live_holdings is not None and not adapter.last_error:
+            if live_holdings is not None:
+                # Reconcile into DB so Consolidated Portfolio aggregates verified Demat holdings!
+                sync_time = datetime.utcnow()
+                try:
+                    reconcile_broker_holdings(db, account, live_holdings, sync_time)
+                    account.last_sync_time = sync_time
+                    account.last_auth_error = None
+                    db.commit()
+                except Exception as sync_err:
+                    logger.warning(f"Error persisting holdings snapshot for {account.masked_client_code}: {sync_err}")
+                    db.rollback()
+
                 items = []
-                now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
+                now_str = sync_time.strftime("%Y-%m-%d %H:%M:%S IST")
                 for h in live_holdings:
-                    qty = int(h.get("quantity", h.get("totalqty", 0)))
+                    raw_sym = str(h.get("tradingsymbol", h.get("symbolname", "—"))).strip()
+                    sym_display = raw_sym.replace("-EQ", "")
+                    qty = int(h.get("quantity", h.get("realisedquantity", h.get("totalqty", 0))))
+                    t1_qty = int(h.get("t1quantity", 0))
+                    auth_qty = int(h.get("authorisedquantity", qty))
                     avg_p = float(h.get("averageprice", h.get("avgprice", 0.0)))
                     ltp = float(h.get("ltp", avg_p))
+                    close_p = float(h.get("close", ltp))
+                    invested = float(h.get("invested", round(qty * avg_p, 2)))
                     val = round(qty * ltp, 2)
-                    pnl = float(h.get("totalpnl", h.get("pnl", round(val - (qty * avg_p), 2))))
-                    pnl_pct = round((pnl / (qty * avg_p)) * 100, 2) if (qty * avg_p) > 0 else 0.0
+
+                    # Official broker-reported profit & loss
+                    raw_pnl = h.get("profitandloss")
+                    if raw_pnl is not None:
+                        pnl = float(raw_pnl)
+                        is_broker_rep = True
+                    else:
+                        pnl = round(val - invested, 2)
+                        is_broker_rep = False
+
+                    raw_pnl_pct = h.get("pnlpercentage")
+                    if raw_pnl_pct is not None:
+                        pnl_pct = float(raw_pnl_pct)
+                    else:
+                        pnl_pct = round((pnl / invested) * 100, 2) if invested > 0 else 0.0
+
+                    day_pnl = round((ltp - close_p) * qty, 2)
+                    day_pnl_pct = round(((ltp - close_p) / close_p) * 100, 2) if close_p > 0 else 0.0
+
                     items.append(AccountHoldingItem(
-                        symbol=h.get("tradingsymbol", h.get("symbolname", "—")),
-                        company_name=h.get("symbolname", h.get("tradingsymbol")),
+                        symbol=sym_display,
+                        trading_symbol=raw_sym,
+                        exchange=h.get("exchange", "NSE"),
+                        company_name=h.get("symbolname", sym_display),
                         isin=h.get("isin", "—"),
                         symbol_token=str(h.get("symboltoken", "0")),
                         quantity=qty,
-                        authorised_quantity=int(h.get("authorisedquantity", qty)) if "authorisedquantity" in h else None,
+                        available_quantity=qty,
+                        t1_quantity=t1_qty,
+                        authorised_quantity=auth_qty,
                         average_price=avg_p,
                         current_ltp=ltp,
                         valuation=val,
+                        invested_amount=invested,
                         unrealized_pnl=pnl,
                         pnl_percentage=pnl_pct,
+                        day_pnl=day_pnl,
+                        day_pnl_percentage=day_pnl_pct,
+                        close_price=close_p,
+                        is_broker_reported=is_broker_rep,
                         data_source="ANGEL_ONE_SMARTAPI",
+                        holdings_status="LIVE",
                         source_timestamp=now_str
                     ))
                 return items
         except HTTPException:
             raise
         except Exception as e:
-            logger.warning(f"Live holdings fetch failed for {account.masked_client_code}, using verified ledger: {str(e)}")
+            logger.warning(f"Live holdings fetch failed for {account.masked_client_code}, serving verified DB ledger: {str(e)}")
 
-    # Fallback / Disconnected / Demo accounts / Verified Ledger
+    # Fallback / Cached / Disconnected / Demo accounts / Verified Ledger
     allotments = db.query(Allotment).join(IPO).filter(
         Allotment.account_id == account_id,
         Allotment.allotted_quantity > 0
     ).all()
 
-    # Phase 6: Check for an active authorized market adapter from another connected client
     shared_market_adapter = None
     if not account.is_demo and account.auth_status != "CONNECTED":
         try:
@@ -693,6 +740,7 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST")
     for a in allotments:
         ltp = a.ipo.current_ltp or a.ipo.issue_price
+        close_p = a.close_price or a.ipo.previous_close or ltp
         is_live = False
         price_source = "HISTORICAL_STALE"
 
@@ -711,26 +759,52 @@ def get_account_holdings(account_id: int, db: Session = Depends(get_db)):
             except Exception as quote_err:
                 logger.debug(f"Failed to fetch shared quote for {a.ipo.symbol}: {quote_err}")
 
-        val = round(a.allotted_quantity * ltp, 2)
-        cost = round(a.allotted_quantity * a.acquisition_cost, 2)
-        pnl = round(val - cost, 2)
-        pnl_pct = round((pnl / cost) * 100, 2) if cost > 0 else 0.0
+        qty = a.allotted_quantity
+        t1_qty = a.t1_quantity or 0
+        auth_qty = a.authorised_quantity or qty
+        avg_cost = a.acquisition_cost
+        invested = a.invested_value if a.invested_value is not None else round(qty * avg_cost, 2)
+        val = round(qty * ltp, 2)
+
+        if a.is_broker_reported and a.unrealized_pnl is not None:
+            pnl = a.unrealized_pnl
+            pnl_pct = a.pnl_percentage or (round((pnl / invested) * 100, 2) if invested > 0 else 0.0)
+            is_broker_rep = True
+        else:
+            pnl = round(val - invested, 2)
+            pnl_pct = round((pnl / invested) * 100, 2) if invested > 0 else 0.0
+            is_broker_rep = False
+
+        day_pnl = a.day_pnl if a.day_pnl is not None else round((ltp - close_p) * qty, 2)
+        day_pnl_pct = a.day_pnl_percentage if a.day_pnl_percentage is not None else (round(((ltp - close_p) / close_p) * 100, 2) if close_p > 0 else 0.0)
 
         is_disconnected = (not account.is_demo and account.auth_status != "CONNECTED")
+        holdings_status = "HISTORICAL" if is_disconnected else ("CACHED" if cached_only else "LIVE")
+
+        raw_tradingsymbol = f"{a.ipo.symbol}-EQ" if not a.ipo.symbol.endswith("-EQ") else a.ipo.symbol
         results.append(AccountHoldingItem(
             symbol=a.ipo.symbol,
+            trading_symbol=raw_tradingsymbol,
+            exchange=a.ipo.exchange or "NSE",
             company_name=a.ipo.company_name,
             isin=a.ipo.isin or "—",
             symbol_token=a.ipo.symbol_token or "0",
-            quantity=a.allotted_quantity,
-            authorised_quantity=a.allotted_quantity,
-            average_price=a.acquisition_cost,
+            quantity=qty,
+            available_quantity=qty,
+            t1_quantity=t1_qty,
+            authorised_quantity=auth_qty,
+            average_price=avg_cost,
             current_ltp=ltp,
             valuation=val,
+            invested_amount=invested,
             unrealized_pnl=pnl,
             pnl_percentage=pnl_pct,
+            day_pnl=day_pnl,
+            day_pnl_percentage=day_pnl_pct,
+            close_price=close_p,
+            is_broker_reported=is_broker_rep,
             data_source="AUTHORIZED_SHARED_FEED" if is_live else ("DEMAT_ALLOTMENT_LEDGER" if account.is_demo else "HISTORICAL_LEDGER"),
-            holdings_status="HISTORICAL" if is_disconnected else "LIVE",
+            holdings_status=holdings_status,
             price_source=price_source if is_disconnected else "SMARTAPI",
             is_market_price_live=is_live if is_disconnected else True,
             source_timestamp=now_str
@@ -839,7 +913,8 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Failed to retrieve order book from Angel One: {adapter.last_error}"
                 )
 
-            if broker_orders is not None and not adapter.last_error:
+            # Valid response received (either list of orders or empty list [])
+            if broker_orders is not None:
                 results = []
                 for bo in broker_orders:
                     qty = int(bo.get("quantity", 0))
@@ -928,11 +1003,13 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
                     detail=f"Failed to retrieve trade executions from Angel One: {adapter.last_error}"
                 )
 
-            if broker_trades is not None and not adapter.last_error:
+            # Valid response received (either list of trades or empty list [])
+            if broker_trades is not None:
                 results = []
                 for bt in broker_trades:
                     fill_qty = int(bt.get("fillsize", 0))
                     fill_p = float(bt.get("fillprice", 0.0))
+                    trade_val = round(fill_qty * fill_p, 2)
                     results.append(AccountTradeItem(
                         fill_id=str(bt.get("tradeid", "")),
                         order_id=str(bt.get("orderid", "")),
@@ -942,6 +1019,7 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
                         product_type=bt.get("producttype", "DELIVERY"),
                         fill_price=fill_p,
                         fill_quantity=fill_qty,
+                        trade_value=trade_val,
                         fill_timestamp=bt.get("filltime"),
                         is_paper_trade=False
                     ))

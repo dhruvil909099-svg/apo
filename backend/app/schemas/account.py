@@ -98,16 +98,25 @@ class AccountOverviewResponse(BaseModel):
 
 class AccountHoldingItem(BaseModel):
     symbol: str
+    trading_symbol: Optional[str] = None
     company_name: Optional[str] = None
+    exchange: str = "NSE"
     isin: Optional[str] = None
     symbol_token: Optional[str] = None
     quantity: int
+    available_quantity: Optional[int] = None
+    t1_quantity: Optional[int] = 0
     authorised_quantity: Optional[int] = None
     average_price: float
     current_ltp: Optional[float] = None
+    close_price: Optional[float] = None
+    invested_amount: Optional[float] = None
     valuation: Optional[float] = None
     unrealized_pnl: Optional[float] = None
     pnl_percentage: Optional[float] = None
+    day_pnl: Optional[float] = None
+    day_pnl_percentage: Optional[float] = None
+    is_broker_reported: bool = True
     data_source: str = "ANGEL_ONE_HOLDINGS"
     holdings_status: str = "LIVE"
     price_source: str = "SMARTAPI"
@@ -159,6 +168,7 @@ class AccountTradeItem(BaseModel):
     product_type: str
     fill_price: float
     fill_quantity: int
+    trade_value: Optional[float] = None
     fill_timestamp: Optional[str] = None
     is_paper_trade: bool = False
 

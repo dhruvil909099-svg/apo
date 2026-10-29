@@ -74,6 +74,29 @@ def reconcile_broker_holdings(
             Allotment.account_id == account.id
         ).first()
 
+        t1_qty = int(h.get("t1quantity", 0))
+        auth_qty = int(h.get("authorisedquantity", qty))
+        invested_val = float(h.get("invested", round(qty * avg_price, 2)))
+        mkt_val = round(qty * ltp, 2)
+
+        # Broker-reported P&L check
+        raw_pnl = h.get("profitandloss")
+        if raw_pnl is not None:
+            unrealized_pnl = float(raw_pnl)
+            is_broker_rep = True
+        else:
+            unrealized_pnl = round(mkt_val - (qty * avg_price), 2)
+            is_broker_rep = False
+
+        raw_pnl_pct = h.get("pnlpercentage")
+        if raw_pnl_pct is not None:
+            pnl_pct = float(raw_pnl_pct)
+        else:
+            pnl_pct = round((unrealized_pnl / (qty * avg_price)) * 100, 2) if (qty * avg_price) > 0 else 0.0
+
+        day_pnl = round((ltp - close) * qty, 2)
+        day_pnl_pct = round(((ltp - close) / close) * 100, 2) if close > 0 else 0.0
+
         if not allotment:
             allotment = Allotment(
                 ipo_id=ipo.id,
@@ -81,6 +104,16 @@ def reconcile_broker_holdings(
                 applied_quantity=qty,
                 allotted_quantity=qty,
                 acquisition_cost=avg_price,
+                t1_quantity=t1_qty,
+                authorised_quantity=auth_qty,
+                invested_value=invested_val,
+                current_market_value=mkt_val,
+                unrealized_pnl=unrealized_pnl,
+                pnl_percentage=pnl_pct,
+                day_pnl=day_pnl,
+                day_pnl_percentage=day_pnl_pct,
+                close_price=close,
+                is_broker_reported=is_broker_rep,
                 allotment_status="ALLOTTED",
                 demat_credit_status="CREDITED",
                 status="DEMAT_CREDITED",
@@ -93,6 +126,16 @@ def reconcile_broker_holdings(
             allotment.allotted_quantity = qty
             allotment.applied_quantity = qty
             allotment.acquisition_cost = avg_price
+            allotment.t1_quantity = t1_qty
+            allotment.authorised_quantity = auth_qty
+            allotment.invested_value = invested_val
+            allotment.current_market_value = mkt_val
+            allotment.unrealized_pnl = unrealized_pnl
+            allotment.pnl_percentage = pnl_pct
+            allotment.day_pnl = day_pnl
+            allotment.day_pnl_percentage = day_pnl_pct
+            allotment.close_price = close
+            allotment.is_broker_reported = is_broker_rep
             allotment.allotment_status = "ALLOTTED"
             allotment.demat_credit_status = "CREDITED"
             allotment.status = "DEMAT_CREDITED"
@@ -109,6 +152,10 @@ def reconcile_broker_holdings(
         ).all()
         for sa in stale_allotments:
             sa.allotted_quantity = 0
+            sa.current_market_value = 0.0
+            sa.unrealized_pnl = 0.0
+            sa.invested_value = 0.0
+            sa.day_pnl = 0.0
     else:
         logger.warning(
             f"No active symbols returned in broker snapshot for account {account.nickname}. "

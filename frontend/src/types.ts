@@ -460,17 +460,29 @@ export interface AccountOverviewResponse {
 
 export interface AccountHoldingItem {
   symbol: string;
+  trading_symbol?: string;
+  exchange?: string;
   company_name?: string;
   isin?: string;
   symbol_token?: string;
   quantity: number;
+  available_quantity?: number;
+  t1_quantity?: number;
   authorised_quantity?: number;
   average_price: number;
   current_ltp?: number;
   valuation?: number;
+  invested_amount?: number;
   unrealized_pnl?: number;
   pnl_percentage?: number;
+  day_pnl?: number;
+  day_pnl_percentage?: number;
+  close_price?: number;
+  is_broker_reported?: boolean;
   data_source: string;
+  holdings_status?: string;
+  price_source?: string;
+  is_market_price_live?: boolean;
   source_timestamp?: string;
 }
 
@@ -518,7 +530,9 @@ export interface AccountTradeItem {
   product_type: string;
   fill_price: number;
   fill_quantity: number;
+  trade_value?: number;
   fill_timestamp?: string;
+  trade_time?: string;
   is_paper_trade: boolean;
 }
 

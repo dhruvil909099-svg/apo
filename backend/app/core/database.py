@@ -158,6 +158,16 @@ def run_safe_migrations(target_engine=None):
         ("bid_reference_no", "VARCHAR(100)"),
         ("official_portal_url", "VARCHAR(255)"),
         ("handoff_timestamp", "TIMESTAMP"),
+        ("t1_quantity", "INTEGER DEFAULT 0"),
+        ("authorised_quantity", "INTEGER DEFAULT 0"),
+        ("invested_value", "FLOAT DEFAULT 0.0"),
+        ("current_market_value", "FLOAT DEFAULT 0.0"),
+        ("unrealized_pnl", "FLOAT DEFAULT 0.0"),
+        ("pnl_percentage", "FLOAT DEFAULT 0.0"),
+        ("day_pnl", "FLOAT DEFAULT 0.0"),
+        ("day_pnl_percentage", "FLOAT DEFAULT 0.0"),
+        ("close_price", "FLOAT DEFAULT 0.0"),
+        ("is_broker_reported", "BOOLEAN DEFAULT TRUE"),
     ]
 
     if "allotments" in existing_tables:

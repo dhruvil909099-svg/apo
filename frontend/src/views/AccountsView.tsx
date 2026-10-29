@@ -1,17 +1,21 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Users, Plus, RefreshCw, CheckCircle2, AlertTriangle,
   Lock, Trash2, Power, Search, ShieldCheck, Eye,
   PieChart, Activity, Sliders, ChevronDown, ChevronRight,
   ExternalLink, Wallet, TrendingUp, TrendingDown, Clock,
-  ArrowUpRight, Shield, AlertCircle, X, KeyRound
+  ArrowUpRight, Shield, AlertCircle, X, KeyRound, Radio,
+  Filter, ArrowUpDown, SlidersHorizontal, Check, RefreshCcw
 } from 'lucide-react';
 import {
   Account, AccountCreatePayload, AccountOverviewResponse,
   AccountHoldingItem, AccountPositionItem, AccountOrderItem,
   AccountTradeItem, ConsolidatedHolding, AuditLog
 } from '../types';
-import { api } from '../api';
+import { api, getWebSocketUrl } from '../api';
+import { HoldingsTable } from '../components/HoldingsTable';
+import { OrderTicketModal } from '../components/OrderTicketModal';
+import { StockDetailsModal } from '../components/StockDetailsModal';
 
 interface AccountsViewProps {
   accounts: Account[];
@@ -47,6 +51,34 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
   const [drawerOrdersError, setDrawerOrdersError] = useState<string | null>(null);
   const [drawerTradesError, setDrawerTradesError] = useState<string | null>(null);
   const [isDrawerSessionExpired, setIsDrawerSessionExpired] = useState<boolean>(false);
+
+  // Order Ticket & Stock Details Modal states
+  const [selectedStockForOrder, setSelectedStockForOrder] = useState<AccountHoldingItem | null>(null);
+  const [orderTicketSide, setOrderTicketSide] = useState<'BUY' | 'SELL'>('BUY');
+  const [isOrderTicketOpen, setIsOrderTicketOpen] = useState<boolean>(false);
+
+  const [selectedStockForDetails, setSelectedStockForDetails] = useState<AccountHoldingItem | null>(null);
+  const [detailsModalView, setDetailsModalView] = useState<'depth' | 'chart' | 'details' | 'corporate'>('details');
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState<boolean>(false);
+
+  // Real-time telemetry & caching
+  const [drawerDataFreshness, setDrawerDataFreshness] = useState<'LIVE' | 'SYNCING' | 'CACHED' | 'STALE' | 'DISCONNECTED'>('CACHED');
+  const [lastSyncTimestamp, setLastSyncTimestamp] = useState<string | null>(null);
+  const [orderSuccessBanner, setOrderSuccessBanner] = useState<string | null>(null);
+
+  // Order Book & Trade Book search / filters
+  const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>('ALL');
+  const [tradeSearchQuery, setTradeSearchQuery] = useState<string>('');
+
+  const drawerCacheRef = useRef<Record<number, {
+    overview?: AccountOverviewResponse;
+    holdings?: AccountHoldingItem[];
+    positions?: AccountPositionItem[];
+    orders?: AccountOrderItem[];
+    trades?: AccountTradeItem[];
+    lastFetched?: number;
+  }>>({});
 
   // Sync & Cooldown State (Rate limit protection)
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<number>>(new Set());
@@ -170,8 +202,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     };
   }, [accounts]);
 
-  // Fetch drawer data whenever an account is selected
-  const fetchDrawerData = useCallback(async (account: Account) => {
+  // Fetch drawer data with staged loading & rate-limit pacing
+  const fetchDrawerData = useCallback(async (account: Account, isInitial: boolean = false) => {
     setIsLoadingDrawer(true);
     setDrawerError(null);
     setDrawerHoldingsError(null);
@@ -179,26 +211,41 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     setDrawerOrdersError(null);
     setDrawerTradesError(null);
     setIsDrawerSessionExpired(false);
+    setDrawerDataFreshness('SYNCING');
+
+    // Staged Priority 0: Fast retrieval of cached-only holdings from DB if in-memory cache was empty
+    if (isInitial && drawerHoldings.length === 0) {
+      try {
+        const cachedSnap = await api.getAccountHoldings(account.id, true);
+        if (cachedSnap && cachedSnap.length > 0) {
+          setDrawerHoldings(cachedSnap);
+          setDrawerDataFreshness('CACHED');
+        }
+      } catch {
+        // Cached snapshot fetch is opportunistic
+      }
+    }
 
     try {
-      const [ovRes, hdRes, posRes, ordRes, trRes] = await Promise.allSettled([
+      // Staged Priority 1: Account overview & fresh holdings
+      const [ovRes, hdRes] = await Promise.allSettled([
         api.getAccountOverview(account.id),
-        api.getAccountHoldings(account.id),
-        api.getAccountPositions(account.id),
-        api.getAccountOrders(account.id),
-        api.getAccountTrades(account.id),
+        api.getAccountHoldings(account.id, false),
       ]);
 
       if (ovRes.status === 'fulfilled') {
         setDrawerOverview(ovRes.value);
       } else {
-        setDrawerOverview(null);
+        const msg = ovRes.reason?.message || '';
+        if (msg.includes('401') || msg.toLowerCase().includes('expired')) {
+          setIsDrawerSessionExpired(true);
+        }
       }
 
       if (hdRes.status === 'fulfilled') {
         setDrawerHoldings(hdRes.value);
+        setDrawerHoldingsError(null);
       } else {
-        setDrawerHoldings([]);
         const errMsg = hdRes.reason?.message || 'Failed to load delivery holdings';
         setDrawerHoldingsError(errMsg);
         if (hdRes.reason?.status === 401 || errMsg.toLowerCase().includes('expired')) {
@@ -206,8 +253,18 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
         }
       }
 
+      // Staged Priority 2: Small 60ms pacing to prevent concurrent upstream broker rate-limiting
+      await new Promise((r) => setTimeout(r, 60));
+
+      const [posRes, ordRes, trRes] = await Promise.allSettled([
+        api.getAccountPositions(account.id),
+        api.getAccountOrders(account.id),
+        api.getAccountTrades(account.id),
+      ]);
+
       if (posRes.status === 'fulfilled') {
         setDrawerPositions(posRes.value);
+        setDrawerPositionsError(null);
       } else {
         setDrawerPositions([]);
         const errMsg = posRes.reason?.message || 'Failed to load derivative positions';
@@ -219,6 +276,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
       if (ordRes.status === 'fulfilled') {
         setDrawerOrders(ordRes.value);
+        setDrawerOrdersError(null);
       } else {
         setDrawerOrders([]);
         setDrawerOrdersError(ordRes.reason?.message || 'Failed to load order book');
@@ -226,21 +284,52 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
       if (trRes.status === 'fulfilled') {
         setDrawerTrades(trRes.value);
+        setDrawerTradesError(null);
       } else {
         setDrawerTrades([]);
         setDrawerTradesError(trRes.reason?.message || 'Failed to load trade executions');
       }
+
+      // Update in-memory persistent cache for this account
+      drawerCacheRef.current[account.id] = {
+        overview: ovRes.status === 'fulfilled' ? ovRes.value : drawerCacheRef.current[account.id]?.overview,
+        holdings: hdRes.status === 'fulfilled' ? hdRes.value : drawerCacheRef.current[account.id]?.holdings,
+        positions: posRes.status === 'fulfilled' ? posRes.value : drawerCacheRef.current[account.id]?.positions,
+        orders: ordRes.status === 'fulfilled' ? ordRes.value : drawerCacheRef.current[account.id]?.orders,
+        trades: trRes.status === 'fulfilled' ? trRes.value : drawerCacheRef.current[account.id]?.trades,
+        lastFetched: Date.now(),
+      };
+
+      setLastSyncTimestamp(new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
+      setDrawerDataFreshness('LIVE');
     } catch (err: any) {
       setDrawerError(err.message || 'Failed to fetch account drawer details.');
+      setDrawerDataFreshness('STALE');
     } finally {
       setIsLoadingDrawer(false);
     }
-  }, []);
+  }, [drawerHoldings.length]);
 
   const openAccountDrawer = (acc: Account, initialTab: DrawerTab = 'overview') => {
     setSelectedAccountForDrawer(acc);
     setDrawerTab(initialTab);
-    fetchDrawerData(acc);
+
+    // Instant load from memory cache if available (< 20ms)
+    const cached = drawerCacheRef.current[acc.id];
+    if (cached) {
+      if (cached.overview) setDrawerOverview(cached.overview);
+      if (cached.holdings) setDrawerHoldings(cached.holdings);
+      if (cached.positions) setDrawerPositions(cached.positions);
+      if (cached.orders) setDrawerOrders(cached.orders);
+      if (cached.trades) setDrawerTrades(cached.trades);
+      setDrawerDataFreshness('CACHED');
+      if (cached.lastFetched) {
+        setLastSyncTimestamp(new Date(cached.lastFetched).toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
+      }
+    }
+
+    // Trigger non-blocking staged refresh
+    fetchDrawerData(acc, !cached);
   };
 
   const closeAccountDrawer = () => {
@@ -255,7 +344,130 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     setDrawerOrdersError(null);
     setDrawerTradesError(null);
     setIsDrawerSessionExpired(false);
+    setDrawerDataFreshness('CACHED');
   };
+
+  // WebSocket Live Price Streaming and Order Book real-time synchronization
+  useEffect(() => {
+    if (!selectedAccountForDrawer) return;
+
+    let ws: WebSocket | null = null;
+    let isSubscribed = true;
+
+    try {
+      const wsUrl = getWebSocketUrl();
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        if (isSubscribed) {
+          setDrawerDataFreshness('LIVE');
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (!isSubscribed) return;
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
+            const sym = msg.symbol.replace('-EQ', '').toUpperCase();
+            const tickLtp = msg.ltp;
+
+            setDrawerHoldings((prev) => {
+              let changed = false;
+              const updated = prev.map((h) => {
+                const hSym = (h.trading_symbol || h.symbol).replace('-EQ', '').toUpperCase();
+                if (hSym === sym) {
+                  changed = true;
+                  const newVal = Math.round(h.quantity * tickLtp * 100) / 100;
+                  const cost = h.invested_amount || (h.average_price * h.quantity);
+                  const newPnl = Math.round((newVal - cost) * 100) / 100;
+                  const newPnlPct = cost > 0 ? Math.round((newPnl / cost) * 10000) / 100 : 0.0;
+                  const dayPnl = h.close_price ? Math.round((tickLtp - h.close_price) * h.quantity * 100) / 100 : h.day_pnl;
+                  const dayPnlPct = h.close_price ? Math.round(((tickLtp - h.close_price) / h.close_price) * 10000) / 100 : h.day_pnl_percentage;
+
+                  return {
+                    ...h,
+                    current_ltp: tickLtp,
+                    valuation: newVal,
+                    unrealized_pnl: newPnl,
+                    pnl_percentage: newPnlPct,
+                    day_pnl: dayPnl,
+                    day_pnl_percentage: dayPnlPct,
+                  };
+                }
+                return h;
+              });
+
+              if (changed) {
+                const totalVal = updated.reduce((sum, item) => sum + (item.valuation || 0), 0);
+                setDrawerOverview((prevOv) => prevOv ? {
+                  ...prevOv,
+                  total_holdings_value: Math.round(totalVal * 100) / 100,
+                } : null);
+              }
+              return updated;
+            });
+          } else if (msg.type === 'ORDER_UPDATE' && msg.order) {
+            setDrawerOrders((prev) => {
+              const idx = prev.findIndex((o) => o.order_id === msg.order.order_id);
+              if (idx >= 0) {
+                const copy = [...prev];
+                copy[idx] = { ...copy[idx], ...msg.order };
+                return copy;
+              } else {
+                return [msg.order, ...prev];
+              }
+            });
+          }
+        } catch {
+          // ignore parsing error
+        }
+      };
+
+      ws.onerror = () => {
+        if (isSubscribed) setDrawerDataFreshness('CACHED');
+      };
+
+      ws.onclose = () => {
+        if (isSubscribed) setDrawerDataFreshness('DISCONNECTED');
+      };
+    } catch {
+      // WebSocket initialization failure
+    }
+
+    return () => {
+      isSubscribed = false;
+      if (ws) ws.close();
+    };
+  }, [selectedAccountForDrawer]);
+
+  // Filtered Orders for Order Book
+  const filteredDrawerOrders = useMemo(() => {
+    return drawerOrders.filter((o) => {
+      const matchesSearch =
+        o.symbol.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+        o.order_id.toLowerCase().includes(orderSearchQuery.toLowerCase());
+      if (!matchesSearch) return false;
+
+      if (orderStatusFilter === 'ALL') return true;
+      if (orderStatusFilter === 'OPEN') return ['OPEN', 'PENDING', 'TRIGGER PENDING', 'VALIDATION PENDING'].includes(o.status.toUpperCase());
+      if (orderStatusFilter === 'COMPLETE') return ['COMPLETE', 'EXECUTED', 'TRADED'].includes(o.status.toUpperCase());
+      if (orderStatusFilter === 'CANCELLED') return ['CANCELLED', 'CANCELED'].includes(o.status.toUpperCase());
+      if (orderStatusFilter === 'REJECTED') return ['REJECTED', 'FAILED'].includes(o.status.toUpperCase());
+      return true;
+    });
+  }, [drawerOrders, orderSearchQuery, orderStatusFilter]);
+
+  // Filtered Trades for Trade Book
+  const filteredDrawerTrades = useMemo(() => {
+    return drawerTrades.filter((t) => {
+      return (
+        t.symbol.toLowerCase().includes(tradeSearchQuery.toLowerCase()) ||
+        t.fill_id.toLowerCase().includes(tradeSearchQuery.toLowerCase()) ||
+        t.order_id.toLowerCase().includes(tradeSearchQuery.toLowerCase())
+      );
+    });
+  }, [drawerTrades, tradeSearchQuery]);
 
   // Synchronize on-demand with rate limit protection
   const handleSyncAccount = async (accId: number) => {
@@ -1253,67 +1465,147 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
 
       {/* ACCOUNT COMMAND CENTER DRAWER */}
       {selectedAccountForDrawer && (
-        <div className="fixed inset-0 z-50 overflow-hidden bg-black/40 flex justify-end">
-          <div className="w-full max-w-2xl bg-white h-full shadow-2xl flex flex-col border-l border-slate-200 animate-in slide-in-from-right duration-200">
+        <div className="fixed inset-0 z-50 overflow-hidden bg-black/50 flex justify-end">
+          <div className="w-full max-w-5xl lg:max-w-6xl xl:max-w-7xl bg-white h-full shadow-2xl flex flex-col border-l border-slate-200 animate-in slide-in-from-right duration-200">
             {/* Drawer Header */}
-            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600 font-bold">
+            <div className="p-4 px-6 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600 font-bold flex-shrink-0">
                   <Users className="w-5 h-5" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-base font-bold text-slate-900">{selectedAccountForDrawer.nickname}</h3>
                     {selectedAccountForDrawer.is_demo ? (
-                      <span className="text-[10px] bg-amber-50 text-amber-700 font-bold px-1.5 py-0.5 rounded border border-amber-200">
+                      <span className="text-[10px] bg-amber-50 text-amber-700 font-bold px-2 py-0.5 rounded border border-amber-200">
                         SIMULATED
                       </span>
                     ) : (
-                      <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
+                      <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded border border-emerald-200">
                         LIVE DEMAT
+                      </span>
+                    )}
+                    {/* Live Data Freshness Badge */}
+                    {drawerDataFreshness === 'LIVE' && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        LIVE STREAM
+                      </span>
+                    )}
+                    {drawerDataFreshness === 'SYNCING' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                        <RefreshCw className="w-2.5 h-2.5 animate-spin text-blue-600" />
+                        SYNCING BROKER
+                      </span>
+                    )}
+                    {drawerDataFreshness === 'CACHED' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                        <Clock className="w-2.5 h-2.5 text-amber-600" />
+                        CACHED SNAPSHOT
+                      </span>
+                    )}
+                    {drawerDataFreshness === 'STALE' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-50 text-orange-700 border border-orange-200">
+                        <AlertTriangle className="w-2.5 h-2.5 text-orange-600" />
+                        STALE DATA
+                      </span>
+                    )}
+                    {drawerDataFreshness === 'DISCONNECTED' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-300">
+                        DISCONNECTED
+                      </span>
+                    )}
+                    {lastSyncTimestamp && (
+                      <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                        • {lastSyncTimestamp}
                       </span>
                     )}
                   </div>
                   <div className="text-xs font-mono text-slate-500 mt-0.5">
-                    Client Code: {selectedAccountForDrawer.masked_client_code} | Group: {selectedAccountForDrawer.account_group}
+                    Client Code: <span className="font-semibold text-slate-700">{selectedAccountForDrawer.masked_client_code}</span> | Group: {selectedAccountForDrawer.account_group}
                   </div>
                 </div>
               </div>
-              <button
-                onClick={closeAccountDrawer}
-                className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
+                  disabled={isLoadingDrawer}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors"
+                  title="Force refresh account data from Angel One"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDrawer ? 'animate-spin text-brand-600' : ''}`} />
+                  <span className="hidden sm:inline">Refresh</span>
+                </button>
+                <button
+                  onClick={closeAccountDrawer}
+                  className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
+            {/* Notification Banner */}
+            {orderSuccessBanner && (
+              <div className="mx-6 mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center justify-between animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                  <span className="font-semibold">{orderSuccessBanner}</span>
+                </div>
+                <button onClick={() => setOrderSuccessBanner(null)} className="text-emerald-600 hover:text-emerald-800">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
             {/* Drawer Tabs */}
-            <div className="flex items-center gap-1 px-5 border-b border-slate-200 bg-white">
+            <div className="flex items-center gap-1 px-6 border-b border-slate-200 bg-white overflow-x-auto">
               {(['overview', 'holdings', 'positions', 'orders', 'trades', 'security'] as DrawerTab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setDrawerTab(tab)}
-                  className={`py-3 px-3 text-xs font-semibold capitalize border-b-2 transition-all ${
+                  className={`py-3 px-3.5 text-xs font-semibold capitalize border-b-2 whitespace-nowrap transition-all flex items-center gap-1.5 ${
                     drawerTab === tab
                       ? 'border-brand-600 text-brand-600'
                       : 'border-transparent text-slate-500 hover:text-slate-800'
                   }`}
                 >
-                  {tab === 'orders' ? 'Order Book' : tab === 'trades' ? 'Executed Trades' : tab}
+                  <span>{tab === 'orders' ? 'Order Book' : tab === 'trades' ? 'Executed Trades' : tab}</span>
+                  {tab === 'holdings' && drawerHoldings.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700 font-mono font-bold">
+                      {drawerHoldings.length}
+                    </span>
+                  )}
+                  {tab === 'orders' && drawerOrders.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700 font-mono font-bold">
+                      {drawerOrders.length}
+                    </span>
+                  )}
+                  {tab === 'trades' && drawerTrades.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-50 text-emerald-700 font-mono font-bold">
+                      {drawerTrades.length}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
 
             {/* Drawer Body */}
-            <div className="p-5 flex-1 overflow-y-auto space-y-4">
-              {isLoadingDrawer ? (
-                <div className="py-20 text-center text-slate-400">
+            <div className="p-6 flex-1 overflow-y-auto space-y-4">
+              {isLoadingDrawer && !drawerOverview && drawerHoldings.length === 0 ? (
+                <div className="py-24 text-center text-slate-400">
                   <RefreshCw className="w-8 h-8 animate-spin mx-auto text-brand-600 mb-2" />
                   <p className="text-xs font-semibold text-slate-600">Retrieving verified broker data...</p>
                 </div>
               ) : drawerError ? (
-                <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700">
-                  {drawerError}
+                <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 flex items-center justify-between">
+                  <span>{drawerError}</span>
+                  <button
+                    onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
+                    className="px-2.5 py-1 bg-rose-600 text-white rounded text-xs font-bold"
+                  >
+                    Retry
+                  </button>
                 </div>
               ) : (
                 <>
@@ -1335,7 +1627,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                         </div>
                       )}
 
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                         <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                           <div className="text-[11px] text-slate-500 font-medium">Available Cash (RMS)</div>
                           <div className="text-xl font-bold font-mono text-slate-900 mt-1">
@@ -1352,7 +1644,37 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                           <div className="text-xl font-bold font-mono text-slate-900 mt-1">
                             ₹{drawerOverview?.total_holdings_value.toLocaleString('en-IN', { minimumFractionDigits: 2 }) || '0.00'}
                           </div>
-                          <div className="text-[10px] text-slate-500 mt-0.5">{drawerOverview?.total_holdings_count || 0} unique instruments</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">{drawerOverview?.total_holdings_count || drawerHoldings.length} unique instruments</div>
+                        </div>
+
+                        <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                          <div className="text-[11px] text-slate-500 font-medium">Total Unrealized P&L</div>
+                          {(() => {
+                            const totVal = drawerHoldings.reduce((s, h) => s + (h.valuation || 0), 0);
+                            const totCost = drawerHoldings.reduce((s, h) => s + (h.invested_amount || (h.average_price * h.quantity)), 0);
+                            const totPnl = totVal - totCost;
+                            const totPct = totCost > 0 ? (totPnl / totCost) * 100 : 0;
+                            return (
+                              <div className={`text-xl font-bold font-mono mt-1 ${totPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {totPnl >= 0 ? '+' : ''}₹{totPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                <span className="text-xs font-semibold ml-1">({totPct >= 0 ? '+' : ''}{totPct.toFixed(2)}%)</span>
+                              </div>
+                            );
+                          })()}
+                          <div className="text-[10px] text-slate-500 mt-0.5">Overall Demat ledger return</div>
+                        </div>
+
+                        <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                          <div className="text-[11px] text-slate-500 font-medium">Day's P&L</div>
+                          {(() => {
+                            const dayPnl = drawerHoldings.reduce((s, h) => s + (h.day_pnl || 0), 0);
+                            return (
+                              <div className={`text-xl font-bold font-mono mt-1 ${dayPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {dayPnl >= 0 ? '+' : ''}₹{dayPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </div>
+                            );
+                          })()}
+                          <div className="text-[10px] text-slate-500 mt-0.5">Today's market move</div>
                         </div>
                       </div>
 
@@ -1406,13 +1728,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     </div>
                   )}
 
-                  {/* TAB: HOLDINGS */}
+                  {/* TAB: HOLDINGS (Advanced Angel One Terminal) */}
                   {drawerTab === 'holdings' && (
-                    <div className="space-y-3">
-                      <div className="text-xs text-slate-500 flex items-center justify-between">
-                        <span>Verified equity delivery shares in Demat ledger</span>
-                        <span className="font-mono text-[11px] font-bold">{drawerHoldings.length} Positions</span>
-                      </div>
+                    <div>
                       {isDrawerSessionExpired ? (
                         <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between">
                           <div>
@@ -1436,53 +1754,22 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                             <span>Reconnect</span>
                           </button>
                         </div>
-                      ) : drawerHoldingsError ? (
-                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-xs text-amber-900">
-                          <span>{drawerHoldingsError}</span>
-                          <button
-                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
-                            className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      ) : drawerHoldings.length === 0 ? (
-                        <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
-                          <PieChart className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-                          <p className="font-semibold text-slate-600">No delivery holdings found</p>
-                          <p className="text-xs text-slate-400 mt-0.5">Holdings sync directly from Demat allotments or SmartAPI</p>
-                        </div>
                       ) : (
-                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
-                          <table className="w-full text-left text-xs">
-                            <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold">
-                              <tr>
-                                <th className="py-2.5 px-3">Symbol</th>
-                                <th className="py-2.5 px-3 text-right">Qty</th>
-                                <th className="py-2.5 px-3 text-right">Avg Price</th>
-                                <th className="py-2.5 px-3 text-right">LTP</th>
-                                <th className="py-2.5 px-3 text-right">Valuation</th>
-                                <th className="py-2.5 px-3 text-right">P&L</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100 text-[11px]">
-                              {drawerHoldings.map((h, idx) => (
-                                <tr key={idx} className="hover:bg-slate-50">
-                                  <td className="py-2.5 px-3 font-semibold text-slate-900">{h.symbol}</td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-medium">{h.quantity}</td>
-                                  <td className="py-2.5 px-3 text-right font-mono">₹{h.average_price.toFixed(2)}</td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">₹{(h.current_ltp || h.average_price).toFixed(2)}</td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-bold">₹{(h.valuation || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-                                  <td className={`py-2.5 px-3 text-right font-mono font-semibold ${
-                                    (h.unrealized_pnl || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'
-                                  }`}>
-                                    {(h.unrealized_pnl || 0) >= 0 ? '+' : ''}₹{(h.unrealized_pnl || 0).toFixed(2)}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                        <HoldingsTable
+                          holdings={drawerHoldings}
+                          isLoading={isLoadingDrawer}
+                          onRefresh={() => fetchDrawerData(selectedAccountForDrawer, false)}
+                          onOpenOrderTicket={(holding: AccountHoldingItem, side: 'BUY' | 'SELL') => {
+                            setSelectedStockForOrder(holding);
+                            setOrderTicketSide(side);
+                            setIsOrderTicketOpen(true);
+                          }}
+                          onOpenDetailsModal={(holding: AccountHoldingItem, view: 'depth' | 'chart' | 'details' | 'corporate') => {
+                            setSelectedStockForDetails(holding);
+                            setDetailsModalView(view);
+                            setIsDetailsModalOpen(true);
+                          }}
+                        />
                       )}
                     </div>
                   )}
@@ -1511,20 +1798,20 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                         <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
                           <span>{drawerPositionsError}</span>
                           <button
-                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
                             className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
                           >
                             Retry
                           </button>
                         </div>
                       ) : drawerPositions.length === 0 ? (
-                        <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
+                        <div className="py-16 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <Activity className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-semibold text-slate-600">No open derivative or intraday positions</p>
                           <p className="text-xs text-slate-400 mt-0.5">Angel One /order/v1/getPosition currently reports 0 open contracts</p>
                         </div>
                       ) : (
-                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
                           <table className="w-full text-left text-xs">
                             <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold">
                               <tr>
@@ -1556,55 +1843,142 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     </div>
                   )}
 
-                  {/* TAB: ORDERS */}
+                  {/* TAB: ORDER BOOK (Angel One Enhanced) */}
                   {drawerTab === 'orders' && (
                     <div className="space-y-3">
-                      <div className="text-xs text-slate-500">Order book entries across all states</div>
+                      {/* Order Book Toolbar */}
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pb-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {(['ALL', 'OPEN', 'COMPLETE', 'CANCELLED', 'REJECTED'] as const).map((st) => (
+                            <button
+                              key={st}
+                              onClick={() => setOrderStatusFilter(st)}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                                orderStatusFilter === st
+                                  ? 'bg-slate-900 text-white shadow-2xs'
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                              }`}
+                            >
+                              {st === 'ALL' ? 'All Orders' : st}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              placeholder="Search symbol or Order ID..."
+                              value={orderSearchQuery}
+                              onChange={(e) => setOrderSearchQuery(e.target.value)}
+                              className="pl-8 pr-3 py-1 text-xs border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-brand-500 w-44"
+                            />
+                          </div>
+                          <button
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
+                            disabled={isLoadingDrawer}
+                            className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs transition-colors"
+                            title="Refresh Order Book"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDrawer ? 'animate-spin text-brand-600' : ''}`} />
+                          </button>
+                        </div>
+                      </div>
+
                       {drawerOrdersError ? (
                         <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
                           <span>{drawerOrdersError}</span>
                           <button
-                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
                             className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
                           >
                             Retry
                           </button>
                         </div>
-                      ) : drawerOrders.length === 0 ? (
-                        <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
+                      ) : filteredDrawerOrders.length === 0 ? (
+                        <div className="py-16 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <Clock className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-                          <p className="font-semibold text-slate-600">No orders recorded for this account today</p>
+                          <p className="font-semibold text-slate-600">No orders available for the selected period.</p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            {orderSearchQuery || orderStatusFilter !== 'ALL'
+                              ? 'Try adjusting your search query or status filter.'
+                              : 'Angel One /order/v1/getOrderBook reports 0 orders for this trading session.'}
+                          </p>
                         </div>
                       ) : (
-                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
                           <table className="w-full text-left text-xs">
-                            <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold">
+                            <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold border-b border-slate-200">
                               <tr>
                                 <th className="py-2.5 px-3">Order ID</th>
+                                <th className="py-2.5 px-3">Time</th>
                                 <th className="py-2.5 px-3">Symbol</th>
-                                <th className="py-2.5 px-3">Side</th>
+                                <th className="py-2.5 px-3 text-center">Side</th>
+                                <th className="py-2.5 px-3">Type / Product</th>
                                 <th className="py-2.5 px-3 text-right">Qty</th>
                                 <th className="py-2.5 px-3 text-right">Price</th>
                                 <th className="py-2.5 px-3 text-center">Status</th>
+                                <th className="py-2.5 px-3">Notes</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 text-[11px]">
-                              {drawerOrders.map((o) => (
-                                <tr key={o.order_id} className="hover:bg-slate-50">
-                                  <td className="py-2.5 px-3 font-mono text-slate-600">{o.order_id}</td>
-                                  <td className="py-2.5 px-3 font-semibold text-slate-900">{o.symbol}</td>
-                                  <td className={`py-2.5 px-3 font-bold ${o.transaction_type === 'BUY' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                    {o.transaction_type}
-                                  </td>
-                                  <td className="py-2.5 px-3 text-right font-mono">{o.quantity}</td>
-                                  <td className="py-2.5 px-3 text-right font-mono">₹{o.price.toFixed(2)}</td>
-                                  <td className="py-2.5 px-3 text-center">
-                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">
-                                      {o.status}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
+                              {filteredDrawerOrders.map((o) => {
+                                const isBuy = o.transaction_type === 'BUY';
+                                const isComplete = ['COMPLETE', 'EXECUTED', 'TRADED'].includes(o.status.toUpperCase());
+                                const isPending = ['OPEN', 'PENDING', 'TRIGGER PENDING'].includes(o.status.toUpperCase());
+                                const isRejected = ['REJECTED', 'FAILED'].includes(o.status.toUpperCase());
+
+                                return (
+                                  <tr key={o.order_id} className="hover:bg-slate-50">
+                                    <td className="py-2.5 px-3 font-mono text-slate-600 text-[10px]">{o.order_id}</td>
+                                    <td className="py-2.5 px-3 text-slate-500 text-[10px] whitespace-nowrap">
+                                      {o.order_timestamp ? new Date(o.order_timestamp).toLocaleTimeString('en-IN') : '—'}
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <div className="font-semibold text-slate-900">{o.symbol}</div>
+                                      <div className="text-[10px] text-slate-400 font-mono">{o.exchange || 'NSE'}</div>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center">
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                        isBuy ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                      }`}>
+                                        {o.transaction_type}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <div className="text-slate-700 font-medium">{o.order_type || 'LIMIT'}</div>
+                                      <div className="text-[10px] text-slate-400 font-mono">{o.product_type || 'DELIVERY'}</div>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right font-mono">
+                                      <span className="font-semibold text-slate-900">{o.filled_quantity ?? o.quantity}</span>
+                                      <span className="text-slate-400">/{o.quantity}</span>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right font-mono">
+                                      <div className="font-semibold text-slate-900">₹{o.price?.toFixed(2) || '0.00'}</div>
+                                      {o.average_price && o.average_price > 0 && o.average_price !== o.price && (
+                                        <div className="text-[10px] text-slate-400">Avg ₹{o.average_price.toFixed(2)}</div>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center">
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                        isComplete
+                                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                          : isPending
+                                          ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                          : isRejected
+                                          ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                          : 'bg-slate-100 text-slate-700'
+                                      }`}>
+                                        {o.status}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-slate-500 text-[10px] max-w-xs truncate" title={o.rejection_reason || ''}>
+                                      {o.rejection_reason || '—'}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -1612,51 +1986,98 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                     </div>
                   )}
 
-                  {/* TAB: TRADES */}
+                  {/* TAB: EXECUTED TRADES (Official Trade Book) */}
                   {drawerTab === 'trades' && (
                     <div className="space-y-3">
-                      <div className="text-xs text-slate-500">Confirmed executed fills only (Unexecuted orders strictly excluded)</div>
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-900 text-xs flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                          <span>
+                            <strong>Official Broker Trade Book:</strong> Confirmed executed fills only (`/order/v1/getTradeBook`). Unexecuted and pending orders strictly excluded.
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              placeholder="Search trade..."
+                              value={tradeSearchQuery}
+                              onChange={(e) => setTradeSearchQuery(e.target.value)}
+                              className="pl-8 pr-2.5 py-1 text-xs border border-emerald-300 rounded-lg outline-none bg-white w-36"
+                            />
+                          </div>
+                          <button
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
+                            disabled={isLoadingDrawer}
+                            className="p-1 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-100 text-emerald-800 transition-colors"
+                            title="Refresh Trade Book"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDrawer ? 'animate-spin' : ''}`} />
+                          </button>
+                        </div>
+                      </div>
+
                       {drawerTradesError ? (
                         <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
                           <span>{drawerTradesError}</span>
                           <button
-                            onClick={() => fetchDrawerData(selectedAccountForDrawer)}
+                            onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
                             className="px-2.5 py-1 bg-amber-600 text-white rounded text-[11px] font-bold"
                           >
                             Retry
                           </button>
                         </div>
-                      ) : drawerTrades.length === 0 ? (
-                        <div className="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
+                      ) : filteredDrawerTrades.length === 0 ? (
+                        <div className="py-16 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
                           <CheckCircle2 className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-semibold text-slate-600">No executed trade fills today</p>
+                          <p className="text-xs text-slate-400 mt-0.5">Confirmed fills will automatically appear here once filled on exchange.</p>
                         </div>
                       ) : (
-                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
                           <table className="w-full text-left text-xs">
-                            <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold">
+                            <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold border-b border-slate-200">
                               <tr>
                                 <th className="py-2.5 px-3">Fill ID</th>
                                 <th className="py-2.5 px-3">Order ID</th>
+                                <th className="py-2.5 px-3">Time</th>
                                 <th className="py-2.5 px-3">Symbol</th>
-                                <th className="py-2.5 px-3">Side</th>
+                                <th className="py-2.5 px-3 text-center">Side</th>
                                 <th className="py-2.5 px-3 text-right">Fill Qty</th>
                                 <th className="py-2.5 px-3 text-right">Fill Price</th>
+                                <th className="py-2.5 px-3 text-right">Trade Value</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 text-[11px]">
-                              {drawerTrades.map((t) => (
-                                <tr key={t.fill_id} className="hover:bg-slate-50">
-                                  <td className="py-2.5 px-3 font-mono text-emerald-700 font-bold">{t.fill_id}</td>
-                                  <td className="py-2.5 px-3 font-mono text-slate-600">{t.order_id}</td>
-                                  <td className="py-2.5 px-3 font-semibold text-slate-900">{t.symbol}</td>
-                                  <td className={`py-2.5 px-3 font-bold ${t.transaction_type === 'BUY' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                    {t.transaction_type}
-                                  </td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-medium">{t.fill_quantity}</td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">₹{t.fill_price.toFixed(2)}</td>
-                                </tr>
-                              ))}
+                              {filteredDrawerTrades.map((t) => {
+                                const tradeVal = t.trade_value || (t.fill_quantity * t.fill_price);
+                                return (
+                                  <tr key={t.fill_id} className="hover:bg-slate-50">
+                                    <td className="py-2.5 px-3 font-mono text-emerald-700 font-bold text-[10px]">{t.fill_id}</td>
+                                    <td className="py-2.5 px-3 font-mono text-slate-600 text-[10px]">{t.order_id}</td>
+                                    <td className="py-2.5 px-3 text-slate-500 text-[10px] whitespace-nowrap">
+                                      {t.trade_time ? new Date(t.trade_time).toLocaleTimeString('en-IN') : '—'}
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <div className="font-semibold text-slate-900">{t.symbol}</div>
+                                      <div className="text-[10px] text-slate-400 font-mono">{t.exchange || 'NSE'}</div>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center">
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                        t.transaction_type === 'BUY' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                      }`}>
+                                        {t.transaction_type}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right font-mono font-medium">{t.fill_quantity}</td>
+                                    <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">₹{t.fill_price.toFixed(2)}</td>
+                                    <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
+                                      ₹{tradeVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -1702,9 +2123,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
             </div>
 
             {/* Drawer Footer Actions */}
-            <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+            <div className="p-4 px-6 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
               <div className="text-[11px] text-slate-400">
-                Account ID #{selectedAccountForDrawer.id}
+                Account ID #{selectedAccountForDrawer.id} • {selectedAccountForDrawer.nickname}
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1999,6 +2420,44 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
             </form>
           </div>
         </div>
+      )}
+
+      {/* ORDER TICKET MODAL */}
+      {isOrderTicketOpen && selectedAccountForDrawer && selectedStockForOrder && (
+        <OrderTicketModal
+          account={selectedAccountForDrawer}
+          holding={selectedStockForOrder}
+          defaultSide={orderTicketSide}
+          isOpen={isOrderTicketOpen}
+          onClose={() => {
+            setIsOrderTicketOpen(false);
+            setSelectedStockForOrder(null);
+          }}
+          onOrderSuccess={(orderMsg: string) => {
+            setOrderSuccessBanner(orderMsg);
+            setTimeout(() => setOrderSuccessBanner(null), 6000);
+            api.getAccountOrders(selectedAccountForDrawer.id).then((ords) => setDrawerOrders(ords)).catch(() => {});
+          }}
+        />
+      )}
+
+      {/* STOCK DETAILS & MARKET DEPTH MODAL */}
+      {isDetailsModalOpen && selectedStockForDetails && (
+        <StockDetailsModal
+          holding={selectedStockForDetails}
+          activeView={detailsModalView}
+          isOpen={isDetailsModalOpen}
+          onClose={() => {
+            setIsDetailsModalOpen(false);
+            setSelectedStockForDetails(null);
+          }}
+          onOpenOrderTicket={(holding: AccountHoldingItem, side: 'BUY' | 'SELL') => {
+            setIsDetailsModalOpen(false);
+            setSelectedStockForOrder(holding);
+            setOrderTicketSide(side);
+            setIsOrderTicketOpen(true);
+          }}
+        />
       )}
     </div>
   );

@@ -1,11 +1,70 @@
 import time
 import logging
 import threading
+import random
 from typing import Dict, Any, Optional, List
 import requests
 from app.core.security import generate_totp_token, sanitize_dict_for_logging
 
 logger = logging.getLogger("smartapi_adapter")
+
+
+def safe_parse_smartapi_response(
+    resp: Optional[requests.Response],
+    endpoint_name: str,
+    client_code: str = ""
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Safely parses an upstream SmartAPI HTTP response.
+    Returns (parsed_dict, error_message).
+    - Checks resp.json() first.
+    - If resp.json() raises JSONDecodeError / ValueError, checks for empty body or HTML gateway error.
+    - Robust against real requests.Response objects and MagicMock unit tests.
+    """
+    if resp is None:
+        return None, f"No response received from SmartAPI ({endpoint_name})"
+
+    # 1. Try standard JSON decoding first
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            return data, None
+        elif isinstance(data, list):
+            return {"status": True, "message": "SUCCESS", "data": data}, None
+    except Exception:
+        pass
+
+    # 2. JSON decoding failed or returned non-dict: safely inspect text/status
+    status_code = getattr(resp, "status_code", 200)
+    if not isinstance(status_code, int):
+        status_code = 200
+
+    raw_text = getattr(resp, "text", "")
+    if not isinstance(raw_text, str):
+        raw_text = ""
+
+    # Check for empty body on 200/204
+    if not raw_text.strip():
+        if status_code in (200, 204):
+            return {"status": True, "message": "SUCCESS", "data": None}, None
+        return None, f"SmartAPI returned empty HTTP {status_code} on {endpoint_name}"
+
+    # Check for HTML gateway errors
+    headers = getattr(resp, "headers", None)
+    content_type = ""
+    if isinstance(headers, dict) or (headers and hasattr(headers, "get")):
+        ct = headers.get("Content-Type", "")
+        if isinstance(ct, str):
+            content_type = ct.lower()
+
+    if "text/html" in content_type or raw_text.startswith("<!DOCTYPE") or raw_text.startswith("<html"):
+        clean_snip = raw_text[:180].replace("\n", " ").strip()
+        logger.warning(
+            f"SmartAPI gateway returned HTML on {endpoint_name} (HTTP {status_code}) for {client_code}: {clean_snip}"
+        )
+        return None, f"Upstream broker gateway error (HTTP {status_code} on {endpoint_name})"
+
+    return None, f"Broker returned unparseable response on {endpoint_name} (HTTP {status_code})"
 
 
 class SmartAPIAdapter:
@@ -34,6 +93,7 @@ class SmartAPIAdapter:
         self.circuit_open_until: Optional[float] = None
         self.session = requests.Session()
         self._auth_lock = threading.RLock()
+        self._rate_limit_lock = threading.Lock()
 
     def _get_headers(self, include_auth: bool = True) -> Dict[str, str]:
         headers = {
@@ -61,8 +121,8 @@ class SmartAPIAdapter:
         _is_reauth_attempt: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
-        Executes an HTTP request against SmartAPI with per-endpoint rate-limiting,
-        bounded retries on transient errors, circuit breaker, and automatic self-healing re-auth.
+        Executes an HTTP request against SmartAPI with thread-safe rate-limiting,
+        safe JSON validation, bounded retries on transient errors, and circuit breaker.
         """
         if self.circuit_open_until and time.time() < self.circuit_open_until:
             wait_left = int(self.circuit_open_until - time.time())
@@ -73,6 +133,8 @@ class SmartAPIAdapter:
         endpoint_name = url.split("/")[-1]
         
         for attempt in range(1, max_retries + 1):
+            correlation_id = f"corr-{self.account_id or 'anon'}-{int(time.time()*1000)}"
+            start_t = time.time()
             try:
                 headers = self._get_headers()
                 if method.upper() == "GET":
@@ -80,14 +142,16 @@ class SmartAPIAdapter:
                 else:
                     resp = self.session.post(url, json=json_payload, headers=headers, timeout=timeout)
 
+                req_duration = round(time.time() - start_t, 3)
+
                 # Session expired: Attempt transparent self-healing re-authentication
                 if resp.status_code == 401:
                     if not _is_reauth_attempt and self.totp_secret and self.api_key and self.pin and self.api_key != "AUTO_RESTORED_KEY":
-                        logger.info(f"SmartAPI session expired (HTTP 401) for {self.client_code}. Self-healing re-auth triggered...")
+                        logger.info(f"[{correlation_id}] SmartAPI session expired (HTTP 401) for {self.client_code}. Self-healing re-auth triggered...")
                         self.is_session_expired = True
                         reauth = self.authenticate(force_fresh=True)
                         if reauth.get("success"):
-                            logger.info(f"Self-healing re-auth succeeded for {self.client_code}. Retrying {endpoint_name}...")
+                            logger.info(f"[{correlation_id}] Self-healing re-auth succeeded for {self.client_code}. Retrying {endpoint_name}...")
                             return self._send_request(
                                 method=method, url=url, json_payload=json_payload,
                                 timeout=timeout, rate_limit_seconds=rate_limit_seconds,
@@ -100,26 +164,32 @@ class SmartAPIAdapter:
                 # Transient server error or rate-limit throttle -> retry if attempts remain
                 if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
                     logger.warning(
-                        f"Transient HTTP {resp.status_code} from SmartAPI ({endpoint_name}) for {self.client_code}, retrying ({attempt}/{max_retries})..."
+                        f"[{correlation_id}] Transient HTTP {resp.status_code} from SmartAPI ({endpoint_name}) for {self.client_code}, retrying ({attempt}/{max_retries})..."
                     )
-                    time.sleep(1.0)
+                    time.sleep(1.0 + random.uniform(0.1, 0.4))
                     continue
 
-                try:
-                    data = resp.json()
-                except Exception:
-                    logger.warning(f"Malformed non-JSON response from SmartAPI ({endpoint_name}) for {self.client_code}")
-                    self.last_error = f"Malformed non-JSON response from SmartAPI ({endpoint_name})"
+                data, parse_err = safe_parse_smartapi_response(resp, endpoint_name, self.client_code)
+                if parse_err:
+                    self.last_error = parse_err
+                    logger.warning(f"[{correlation_id}] {parse_err} (HTTP {resp.status_code}, duration {req_duration}s, attempt {attempt}/{max_retries})")
+                    if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                        time.sleep(1.0 + random.uniform(0.1, 0.4))
+                        continue
+                    return None
+
+                if not data:
+                    self.last_error = f"Empty data structure from SmartAPI ({endpoint_name})"
                     return None
 
                 err_code = str(data.get("errorcode", "") or data.get("errorCode", ""))
                 if err_code in ("AG8001", "AB1004", "SESSION_EXPIRED"):
                     if not _is_reauth_attempt and self.totp_secret and self.api_key and self.pin and self.api_key != "AUTO_RESTORED_KEY":
-                        logger.info(f"SmartAPI session expired ({err_code}) for {self.client_code}. Self-healing re-auth triggered...")
+                        logger.info(f"[{correlation_id}] SmartAPI session expired ({err_code}) for {self.client_code}. Self-healing re-auth triggered...")
                         self.is_session_expired = True
                         reauth = self.authenticate(force_fresh=True)
                         if reauth.get("success"):
-                            logger.info(f"Self-healing re-auth succeeded for {self.client_code}. Retrying {endpoint_name}...")
+                            logger.info(f"[{correlation_id}] Self-healing re-auth succeeded for {self.client_code}. Retrying {endpoint_name}...")
                             return self._send_request(
                                 method=method, url=url, json_payload=json_payload,
                                 timeout=timeout, rate_limit_seconds=rate_limit_seconds,
@@ -129,7 +199,7 @@ class SmartAPIAdapter:
                     self.last_error = data.get("message", "Broker session expired")
                 elif err_code == "AG8004":
                     self.last_error = "Angel One rejected request: Invalid SmartAPI API Key (AG8004). Please verify your API Key from smartapi.angelbroking.com."
-                    logger.error(f"Invalid API Key (AG8004) for {self.client_code}")
+                    logger.error(f"[{correlation_id}] Invalid API Key (AG8004) for {self.client_code}")
                 elif not (data.get("status") is True or data.get("success") is True):
                     self.last_error = data.get("message") or f"Broker API error ({err_code})"
 
@@ -152,7 +222,7 @@ class SmartAPIAdapter:
                 if self.consecutive_errors >= 5:
                     self.circuit_open_until = time.time() + 60.0
                 if attempt < max_retries:
-                    time.sleep(1.0)
+                    time.sleep(1.0 + random.uniform(0.1, 0.3))
                     continue
                 return None
             except requests.exceptions.RequestException as e:
@@ -162,7 +232,7 @@ class SmartAPIAdapter:
                 if self.consecutive_errors >= 5:
                     self.circuit_open_until = time.time() + 60.0
                 if attempt < max_retries:
-                    time.sleep(1.0)
+                    time.sleep(1.0 + random.uniform(0.1, 0.3))
                     continue
                 return None
             except Exception as e:
@@ -223,7 +293,12 @@ class SmartAPIAdapter:
             try:
                 # Login must NEVER send Authorization header
                 resp = self.session.post(url, json=payload, headers=self._get_headers(include_auth=False), timeout=10)
-                data = resp.json()
+                data, parse_err = safe_parse_smartapi_response(resp, "loginByPassword", self.client_code)
+                if parse_err or not data:
+                    self.last_error = parse_err or "Authentication response unparseable"
+                    logger.warning(f"Auth failed for {self.client_code}: {self.last_error}")
+                    return {"success": False, "message": self.last_error, "error_code": "RESPONSE_ERROR"}
+
                 if data.get("status") and data.get("data"):
                     token_data = data["data"]
                     self.jwt_token = token_data.get("jwtToken")
@@ -264,7 +339,7 @@ class SmartAPIAdapter:
                     return {"success": False, "message": diag_message, "error_code": err_code, "raw_message": msg}
             except requests.RequestException as e:
                 logger.error(f"Network error authenticating {self.client_code}: {str(e)}")
-                self.last_error = f"Connection error: {str(e)}"
+                self.last_error = f"Network connection error: {str(e)}"
                 return {"success": False, "message": self.last_error, "error_code": "NETWORK_ERROR"}
 
     def test_connection(self, manual_totp: Optional[str] = None) -> Dict[str, Any]:
@@ -339,21 +414,25 @@ class SmartAPIAdapter:
                 return False
         return True
 
-    def get_holdings(self) -> List[Dict[str, Any]]:
+    def get_holdings(self) -> Optional[List[Dict[str, Any]]]:
         """
         Retrieves equity delivery holdings with multi-tier fallback:
         1. /portfolio/v1/getAllHolding (aggregating summary + holdings array)
         2. /portfolio/v1/getHolding (standard Demat holdings list)
+        Returns:
+        - List of holding dicts if successful (empty list [] if no delivery holdings)
+        - None if session failed or broker returned an error
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for holdings fetch ({self.client_code})")
-            return []
+            return None
 
         # 1. Primary: getAllHolding
         url_all = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getAllHolding"
         data = self._send_request("GET", url_all, rate_limit_seconds=1.0)
-        if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
-            raw = data["data"]
+        if data and (data.get("status") is True or data.get("success") is True):
+            self.last_error = None
+            raw = data.get("data")
             if isinstance(raw, dict) and "holdings" in raw:
                 h_list = raw.get("holdings", [])
                 if isinstance(h_list, list) and len(h_list) > 0:
@@ -368,12 +447,14 @@ class SmartAPIAdapter:
         # 2. Fallback: getHolding
         url_std = f"{self.BASE_URL}/rest/secure/angelbroking/portfolio/v1/getHolding"
         data_std = self._send_request("GET", url_std, rate_limit_seconds=1.0)
-        if data_std and (data_std.get("status") is True or data_std.get("success") is True) and data_std.get("data"):
-            raw_std = data_std["data"]
+        if data_std and (data_std.get("status") is True or data_std.get("success") is True):
+            self.last_error = None
+            raw_std = data_std.get("data")
             if isinstance(raw_std, list):
                 return raw_std
             elif isinstance(raw_std, dict) and "holdings" in raw_std:
                 return raw_std.get("holdings", [])
+            return []
 
         return []
 
@@ -394,6 +475,8 @@ class SmartAPIAdapter:
     def get_positions(self) -> List[Dict[str, Any]]:
         """
         Retrieves open and closed intraday/F&O positions from /order/v1/getPosition (Rate limit: 1 req/sec).
+        Returns:
+        - List of positions if successful (empty list [] if 0 positions or error)
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for positions fetch ({self.client_code})")
@@ -401,18 +484,29 @@ class SmartAPIAdapter:
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getPosition"
         data = self._send_request("GET", url, rate_limit_seconds=1.0)
-        if data and data.get("status") and data.get("data"):
-            raw_positions = data["data"]
+        if data is None:
+            return []
+
+        if data.get("status") is True or data.get("success") is True:
+            self.last_error = None
+            raw_positions = data.get("data")
+            if raw_positions is None:
+                return []
             if isinstance(raw_positions, list):
                 return raw_positions
             elif isinstance(raw_positions, dict):
                 return raw_positions.get("positions", [])
+            return []
+
+        self.last_error = data.get("message") or "Broker returned error fetching positions"
         return []
 
     def get_order_book(self) -> List[Dict[str, Any]]:
         """
         Retrieves the day's order book from /order/v1/getOrderBook (Rate limit: 1 req/sec).
         Returns status of all submitted, executed, rejected, and open orders.
+        Returns:
+        - List of orders if successful (empty list [] if no orders today or error)
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for order book fetch ({self.client_code})")
@@ -420,15 +514,30 @@ class SmartAPIAdapter:
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getOrderBook"
         data = self._send_request("GET", url, rate_limit_seconds=1.0)
-        if data and data.get("status") and data.get("data"):
-            raw_orders = data["data"]
-            return raw_orders if isinstance(raw_orders, list) else []
+        if data is None:
+            return []
+
+        if data.get("status") is True or data.get("success") is True:
+            self.last_error = None
+            raw_orders = data.get("data")
+            if raw_orders is None:
+                # Documented SmartAPI response: data is null when no orders exist today
+                return []
+            if isinstance(raw_orders, list):
+                return raw_orders
+            elif isinstance(raw_orders, dict) and "orders" in raw_orders:
+                return raw_orders.get("orders", [])
+            return []
+
+        self.last_error = data.get("message") or "Broker returned error fetching order book"
         return []
 
     def get_trade_book(self) -> List[Dict[str, Any]]:
         """
         Retrieves confirmed executed trades from /order/v1/getTradeBook (Rate limit: 1 req/sec).
         Never misrepresents an acknowledged order as an executed trade.
+        Returns:
+        - List of confirmed trades if successful (empty list [] if no trades today or error)
         """
         if not self._ensure_authenticated():
             logger.warning(f"Session not authenticated for trade book fetch ({self.client_code})")
@@ -436,9 +545,21 @@ class SmartAPIAdapter:
 
         url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/getTradeBook"
         data = self._send_request("GET", url, rate_limit_seconds=1.0)
-        if data and data.get("status") and data.get("data"):
-            raw_trades = data["data"]
-            return raw_trades if isinstance(raw_trades, list) else []
+        if data is None:
+            return []
+
+        if data.get("status") is True or data.get("success") is True:
+            self.last_error = None
+            raw_trades = data.get("data")
+            if raw_trades is None:
+                return []
+            if isinstance(raw_trades, list):
+                return raw_trades
+            elif isinstance(raw_trades, dict) and "trades" in raw_trades:
+                return raw_trades.get("trades", [])
+            return []
+
+        self.last_error = data.get("message") or "Broker returned error fetching trade book"
         return []
 
     def get_candle_data(
@@ -462,13 +583,11 @@ class SmartAPIAdapter:
             "fromdate": from_date,
             "todate": to_date
         }
-        try:
-            resp = requests.post(url, json=payload, headers=self._get_headers(), timeout=10)
-            data = resp.json()
-            if data.get("status") and data.get("data"):
-                # Returns [[timestamp, open, high, low, close, volume], ...]
-                candles = []
-                for row in data["data"]:
+        data = self._send_request("POST", url, json_payload=payload, rate_limit_seconds=0.34)
+        if data and (data.get("status") is True or data.get("success") is True) and data.get("data"):
+            candles = []
+            for row in data["data"]:
+                try:
                     candles.append({
                         "timestamp": row[0],
                         "open": float(row[1]),
@@ -477,12 +596,10 @@ class SmartAPIAdapter:
                         "close": float(row[4]),
                         "volume": int(row[5])
                     })
-                return candles
-            logger.warning(f"getCandleData failed for {symbol_token}: {data.get('message')}")
-            return []
-        except Exception as e:
-            logger.error(f"Candle data fetch error for {symbol_token}: {str(e)}")
-            return []
+                except (IndexError, ValueError, TypeError):
+                    continue
+            return candles
+        return []
 
     def place_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -569,10 +686,12 @@ class SmartAPIAdapter:
         return None
 
     def _enforce_rate_limit(self, min_interval_seconds: float):
-        elapsed = time.time() - self._last_request_time
-        if elapsed < min_interval_seconds:
-            time.sleep(min_interval_seconds - elapsed)
-        self._last_request_time = time.time()
+        with self._rate_limit_lock:
+            elapsed = time.time() - self._last_request_time
+            if elapsed < min_interval_seconds:
+                jitter = random.uniform(0.02, 0.08)
+                time.sleep((min_interval_seconds - elapsed) + jitter)
+            self._last_request_time = time.time()
 
 
 # In-memory session pool maintaining 1:1 active broker sessions across endpoints

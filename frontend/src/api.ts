@@ -326,7 +326,9 @@ export const api = {
     { method: 'POST' }
   ),
   getAccountOverview: (id: number) => fetchJson<AccountOverviewResponse>(`${getApiBase()}/accounts/${id}/overview`),
-  getAccountHoldings: (id: number) => fetchJson<AccountHoldingItem[]>(`${getApiBase()}/accounts/${id}/holdings`),
+  getAccountHoldings: (id: number, cachedOnly: boolean = false) => fetchJson<AccountHoldingItem[]>(
+    `${getApiBase()}/accounts/${id}/holdings${cachedOnly ? '?cached_only=true' : ''}`
+  ),
   getAccountPositions: (id: number) => fetchJson<AccountPositionItem[]>(`${getApiBase()}/accounts/${id}/positions`),
   getAccountOrders: (id: number) => fetchJson<AccountOrderItem[]>(`${getApiBase()}/accounts/${id}/orders`),
   getAccountTrades: (id: number) => fetchJson<AccountTradeItem[]>(`${getApiBase()}/accounts/${id}/trades`),

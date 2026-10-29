@@ -119,9 +119,11 @@ def get_consolidated_holdings(
                 "accounts_breakdown": []
             }
 
-        cost_for_a = a.allotted_quantity * a.acquisition_cost
-        val_for_a = a.allotted_quantity * grouped[key]["current_ltp"]
-        day_chg_for_a = a.allotted_quantity * grouped[key]["day_change"]
+        cost_for_a = a.invested_value if (a.is_broker_reported and a.invested_value is not None and a.invested_value > 0) else (a.allotted_quantity * a.acquisition_cost)
+        val_for_a = a.current_market_value if (a.is_broker_reported and a.current_market_value is not None and a.current_market_value > 0) else (a.allotted_quantity * grouped[key]["current_ltp"])
+        pnl_for_a = a.unrealized_pnl if (a.is_broker_reported and a.unrealized_pnl is not None) else (val_for_a - cost_for_a)
+        pnl_pct_for_a = a.pnl_percentage if (a.is_broker_reported and a.pnl_percentage is not None) else (round((pnl_for_a / cost_for_a) * 100, 2) if cost_for_a > 0 else 0.0)
+        day_chg_for_a = a.day_pnl if (a.is_broker_reported and a.day_pnl is not None) else (a.allotted_quantity * grouped[key]["day_change"])
 
         is_sellable = (a.account.ddpi_status == "ACTIVE" or a.account.edis_authorized_today)
         sellable_qty = a.allotted_quantity if is_sellable else 0
@@ -129,6 +131,8 @@ def get_consolidated_holdings(
         grouped[key]["total_quantity"] += a.allotted_quantity
         grouped[key]["sellable_quantity"] += sellable_qty
         grouped[key]["total_cost"] += cost_for_a
+        grouped[key]["total_val"] = grouped[key].get("total_val", 0.0) + val_for_a
+        grouped[key]["total_pnl"] = grouped[key].get("total_pnl", 0.0) + pnl_for_a
         grouped[key]["accounts_count"] += 1
         grouped[key]["accounts_breakdown"].append({
             "account_id": a.account.id,
@@ -139,8 +143,8 @@ def get_consolidated_holdings(
             "sellable_quantity": sellable_qty,
             "acquisition_cost": a.acquisition_cost,
             "market_value": round(val_for_a, 2),
-            "unrealized_pnl": round(val_for_a - cost_for_a, 2),
-            "pnl_percentage": round(((val_for_a - cost_for_a) / cost_for_a) * 100, 2) if cost_for_a > 0 else 0.0,
+            "unrealized_pnl": round(pnl_for_a, 2),
+            "pnl_percentage": round(pnl_pct_for_a, 2),
             "ddpi_status": a.account.ddpi_status,
             "edis_authorized": a.account.edis_authorized_today,
             "sync_status": a.account.auth_status
@@ -155,8 +159,8 @@ def get_consolidated_holdings(
     for key, data in grouped.items():
         data["available_quantity"] = data["sellable_quantity"]
         data["blocked_quantity"] = data["total_quantity"] - data["sellable_quantity"]
-        data["market_value"] = round(data["total_quantity"] * data["current_ltp"], 2)
-        pnl = data["market_value"] - data["total_cost"]
+        data["market_value"] = round(data.get("total_val", data["total_quantity"] * data["current_ltp"]), 2)
+        pnl = data.get("total_pnl", data["market_value"] - data["total_cost"])
         data["unrealized_pnl"] = round(pnl, 2)
         data["pnl_percentage"] = round((pnl / data["total_cost"]) * 100, 2) if data["total_cost"] > 0 else 0.0
         data["average_cost"] = round(data["total_cost"] / data["total_quantity"], 2) if data["total_quantity"] > 0 else 0.0
