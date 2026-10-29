@@ -5,7 +5,7 @@ import {
   Clock, Database, Eye, ShoppingCart, Filter, Sparkles
 } from 'lucide-react';
 import { MarketInstrument, OptionChainResponse, CommodityContract, MarketSessionStatus, Account } from '../types';
-import { api } from '../api';
+import { api, getWebSocketUrl } from '../api';
 import { StockChart } from '../components/StockChart';
 import { OrderTicketModal } from '../components/OrderTicketModal';
 
@@ -62,6 +62,91 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
   // Commodities state
   const [commodities, setCommodities] = useState<CommodityContract[]>([]);
   const [isLoadingCommodities, setIsLoadingCommodities] = useState<boolean>(false);
+
+  // Live real-time tick prices cache
+  const [livePrices, setLivePrices] = useState<Record<string, { ltp: number; change?: number; changePercent?: number }>>({});
+
+  // Real-time live tick subscription for displayed instruments
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let pingInterval: any = null;
+
+    try {
+      ws = new WebSocket(getWebSocketUrl());
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'TICK' && msg.ltp) {
+            const ltp = Number(msg.ltp);
+            const pClose = msg.previous_close ? Number(msg.previous_close) : undefined;
+            const chg = msg.change !== undefined ? Number(msg.change) : (pClose ? ltp - pClose : undefined);
+            const chgPct = msg.change_percent !== undefined ? Number(msg.change_percent) : (pClose && chg ? (chg / pClose) * 100 : undefined);
+
+            setLivePrices((prev) => {
+              const updated = { ...prev };
+              const data = { ltp, change: chg, changePercent: chgPct };
+              if (msg.symbol) {
+                updated[msg.symbol.toUpperCase()] = data;
+                updated[msg.symbol.replace('-EQ', '').toUpperCase()] = data;
+              }
+              if (msg.symbol_token) updated[String(msg.symbol_token)] = data;
+              return updated;
+            });
+          }
+        } catch {
+          // ignore malformed tick
+        }
+      };
+
+      ws.onopen = () => {
+        pingInterval = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'PING' }));
+          }
+        }, 15000);
+      };
+    } catch {
+      // offline fallback
+    }
+
+    return () => {
+      if (pingInterval) clearInterval(pingInterval);
+      if (ws) ws.close();
+    };
+  }, []);
+
+  // Quick quote lookup map by symbol, clean symbol, or symbol_token
+  const quoteMap = useMemo(() => {
+    const map = new Map<string, { ltp: number; change: number; change_percent: number; previous_close?: number }>();
+    for (const q of quotes || []) {
+      const data = { ltp: q.ltp, change: q.change, change_percent: q.change_percent, previous_close: q.previous_close };
+      if (q.symbol) {
+        map.set(q.symbol.toUpperCase(), data);
+        map.set(q.symbol.replace('-EQ', '').toUpperCase(), data);
+      }
+      if (q.symbol_token) {
+        map.set(String(q.symbol_token), data);
+      }
+    }
+    return map;
+  }, [quotes]);
+
+  const getInstrumentPrice = (inst: MarketInstrument) => {
+    const cleanSym = inst.tradingsymbol.replace('-EQ', '').toUpperCase();
+    const live = (inst.symbol_token ? livePrices[String(inst.symbol_token)] : undefined) ||
+                 livePrices[inst.tradingsymbol.toUpperCase()] ||
+                 livePrices[cleanSym];
+    const quote = (inst.symbol_token ? quoteMap.get(String(inst.symbol_token)) : undefined) ||
+                  quoteMap.get(inst.tradingsymbol.toUpperCase()) ||
+                  quoteMap.get(cleanSym);
+
+    const ltp = live?.ltp ?? inst.current_ltp ?? quote?.ltp;
+    const pClose = inst.previous_close ?? quote?.previous_close;
+    const chg = live?.change ?? inst.day_change ?? quote?.change ?? (pClose && ltp ? ltp - pClose : undefined);
+    const chgPct = live?.changePercent ?? inst.day_change_percentage ?? quote?.change_percent ?? (pClose && chg ? (chg / pClose) * 100 : undefined);
+
+    return { ltp, change: chg, changePercent: chgPct };
+  };
 
   // Fetch catalog summary, session state, and accounts once on mount
   useEffect(() => {
@@ -604,7 +689,7 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
                     <th className="py-2.5 px-3 text-right">Lot Size</th>
                     <th className="py-2.5 px-3 text-right">Tick Size</th>
                     <th className="py-2.5 px-3">Expiry</th>
-                    <th className="py-2.5 px-3 text-right">LTP</th>
+                    <th className="py-2.5 px-4 text-right">Price</th>
                     <th className="py-2.5 px-4 text-center">Actions</th>
                   </tr>
                 </thead>
@@ -636,22 +721,48 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
                       <td className="py-2.5 px-3 text-slate-600">
                         {inst.expiry || '—'}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-semibold text-slate-900">
-                        {inst.current_ltp ? `₹${inst.current_ltp.toFixed(2)}` : (
-                          <span className="text-[10px] text-slate-400 font-normal">Live quote req</span>
-                        )}
+                      <td className="py-2.5 px-4 text-right font-mono">
+                        {(() => {
+                          const priceInfo = getInstrumentPrice(inst);
+                          if (priceInfo.ltp !== undefined && priceInfo.ltp !== null && priceInfo.ltp > 0) {
+                            const chg = priceInfo.change;
+                            const isUp = (chg ?? 0) >= 0;
+                            const isZero = (chg ?? 0) === 0;
+                            const textColor = isZero ? 'text-slate-600' : isUp ? 'text-emerald-600' : 'text-rose-600';
+                            const arrow = isZero ? '' : isUp ? '▲' : '▼';
+                            const sign = (chg ?? 0) > 0 ? '+' : '';
+
+                            return (
+                              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                <span className="font-bold text-slate-900 text-xs">
+                                  ₹{priceInfo.ltp.toFixed(2)}
+                                </span>
+                                {chg !== undefined && chg !== null && (
+                                  <span className={`text-[11px] font-semibold flex items-center gap-0.5 ${textColor}`}>
+                                    {arrow && <span className="text-[9px]">{arrow}</span>}
+                                    <span>{sign}{chg.toFixed(2)} ({sign}{(priceInfo.changePercent ?? 0).toFixed(2)}%)</span>
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          }
+                          return <span className="text-slate-400 text-xs font-normal">—</span>;
+                        })()}
                       </td>
                       <td className="py-2.5 px-4 text-center">
                         <div className="flex items-center justify-center gap-1.5">
                           <button
-                            onClick={() => setChartSelection({
-                              symbol: inst.tradingsymbol,
-                              exchange: inst.exchange || 'NSE',
-                              symbolToken: inst.symbol_token,
-                              companyName: inst.name || inst.tradingsymbol,
-                              currentLtp: inst.current_ltp || undefined,
-                              lotSize: inst.lot_size,
-                            })}
+                            onClick={() => {
+                              const p = getInstrumentPrice(inst);
+                              setChartSelection({
+                                symbol: inst.tradingsymbol,
+                                exchange: inst.exchange || 'NSE',
+                                symbolToken: inst.symbol_token,
+                                companyName: inst.name || inst.tradingsymbol,
+                                currentLtp: p.ltp || inst.current_ltp || undefined,
+                                lotSize: inst.lot_size,
+                              });
+                            }}
                             className="px-2.5 py-1 text-xs rounded border border-slate-200 bg-white hover:bg-slate-50 font-medium text-slate-700"
                           >
                             Chart

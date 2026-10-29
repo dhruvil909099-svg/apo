@@ -347,11 +347,18 @@ def search_instruments(
     items = []
     for inst in instruments:
         clean = inst.tradingsymbol.replace("-EQ", "").strip().upper()
-        live_tick = smartapi_ws_service.get_latest_quote(clean) or smartapi_ws_service.get_latest_quote(inst.tradingsymbol)
+        live_tick = (
+            smartapi_ws_service.get_latest_quote(clean) or 
+            smartapi_ws_service.get_latest_quote(inst.tradingsymbol) or
+            (smartapi_ws_service.get_latest_quote(inst.symbol_token) if inst.symbol_token else None)
+        )
         ltp = live_tick["ltp"] if live_tick else inst.current_ltp
         p_close = live_tick["previous_close"] if live_tick else inst.previous_close
-        chg = live_tick["change"] if live_tick else inst.day_change
-        chg_pct = live_tick["change_percent"] if live_tick else inst.day_change_percentage
+        chg = live_tick.get("change") if live_tick else inst.day_change
+        chg_pct = live_tick.get("change_percent") if live_tick else inst.day_change_percentage
+        if ltp and p_close and (chg is None or chg == 0):
+            chg = round(ltp - p_close, 2)
+            chg_pct = round((chg / p_close) * 100, 2) if p_close > 0 else 0.0
 
         items.append({
             "id": inst.id,
