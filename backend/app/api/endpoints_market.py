@@ -249,12 +249,14 @@ def get_single_market_quote(
 
     # Check live WebSocket cache first
     from app.services.smartapi_websocket import smartapi_ws_service
+    from app.models.financial_types import make_financial_amount
     ws_tick = smartapi_ws_service.get_latest_quote(token) or smartapi_ws_service.get_latest_quote(tradingsymbol)
     if ws_tick and ws_tick.get("ltp") is not None:
         ltp = float(ws_tick["ltp"])
         prev_close = float(ws_tick.get("previous_close") or ltp)
         chg = round(ltp - prev_close, 2)
         chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+        as_of = ws_tick.get("timestamp") or datetime.utcnow().isoformat()
         return {
             "exchange": target_exchange,
             "trading_symbol": tradingsymbol,
@@ -266,10 +268,17 @@ def get_single_market_quote(
             "percent_change": chg_pct,
             "tick_size": tick_size,
             "lot_size": lot_size,
-            "source": "SMARTAPI_WEBSOCKET_FEED",
+            "source": "BROKER_QUOTE",
+            "feed_channel": "SMARTAPI_WEBSOCKET_FEED",
             "freshness_status": "LIVE",
-            "as_of_timestamp": ws_tick.get("timestamp") or datetime.utcnow().isoformat(),
-            "is_estimate": False
+            "as_of_timestamp": as_of,
+            "is_estimate": False,
+            "verified": True,
+            "market_order_disclaimer": "Indicative reference price only. Execution price is determined by exchange matching upon fill.",
+            "details": {
+                "ltp": make_financial_amount(ltp, "BROKER_QUOTE", is_estimate=False, verified=True, as_of=as_of),
+                "previous_close": make_financial_amount(prev_close, "BROKER_QUOTE", is_estimate=False, verified=True, as_of=as_of),
+            }
         }
 
     # Query active broker adapter
@@ -283,6 +292,7 @@ def get_single_market_quote(
                 prev_close = float(q.get("close") or q.get("previous_close") or ltp)
                 chg = round(ltp - prev_close, 2)
                 chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+                as_of = datetime.utcnow().isoformat()
                 return {
                     "exchange": target_exchange,
                     "trading_symbol": tradingsymbol,
@@ -294,10 +304,17 @@ def get_single_market_quote(
                     "percent_change": chg_pct,
                     "tick_size": tick_size,
                     "lot_size": lot_size,
-                    "source": "SMARTAPI_REST_QUOTE",
+                    "source": "BROKER_QUOTE",
+                    "feed_channel": "SMARTAPI_REST_QUOTE",
                     "freshness_status": "LIVE",
-                    "as_of_timestamp": datetime.utcnow().isoformat(),
-                    "is_estimate": False
+                    "as_of_timestamp": as_of,
+                    "is_estimate": False,
+                    "verified": True,
+                    "market_order_disclaimer": "Indicative reference price only. Execution price is determined by exchange matching upon fill.",
+                    "details": {
+                        "ltp": make_financial_amount(ltp, "BROKER_QUOTE", is_estimate=False, verified=True, as_of=as_of),
+                        "previous_close": make_financial_amount(prev_close, "BROKER_QUOTE", is_estimate=False, verified=True, as_of=as_of),
+                    }
                 }
         except Exception:
             pass
@@ -308,6 +325,7 @@ def get_single_market_quote(
         prev_close = float(inst.previous_close or ltp)
         chg = round(ltp - prev_close, 2)
         chg_pct = round((chg / prev_close) * 100, 2) if prev_close > 0 else 0.0
+        as_of = (inst.last_synced_at.isoformat() if hasattr(inst, "last_synced_at") and inst.last_synced_at else datetime.utcnow().isoformat())
         return {
             "exchange": target_exchange,
             "trading_symbol": tradingsymbol,
@@ -320,12 +338,20 @@ def get_single_market_quote(
             "tick_size": tick_size,
             "lot_size": lot_size,
             "source": "DATABASE_SNAPSHOT",
+            "feed_channel": "DATABASE_SNAPSHOT",
             "freshness_status": "CACHED",
-            "as_of_timestamp": (inst.last_synced_at.isoformat() if hasattr(inst, "last_synced_at") and inst.last_synced_at else datetime.utcnow().isoformat()),
-            "is_estimate": False
+            "as_of_timestamp": as_of,
+            "is_estimate": False,
+            "verified": True,
+            "market_order_disclaimer": "Cached database price. Execution price determined upon exchange fill.",
+            "details": {
+                "ltp": make_financial_amount(ltp, "DATABASE_SNAPSHOT", is_estimate=False, verified=True, as_of=as_of),
+                "previous_close": make_financial_amount(prev_close, "DATABASE_SNAPSHOT", is_estimate=False, verified=True, as_of=as_of),
+            }
         }
 
     # Truly unavailable: NO arbitrary defaults
+    as_of = datetime.utcnow().isoformat()
     return {
         "exchange": target_exchange,
         "trading_symbol": tradingsymbol,
@@ -337,11 +363,17 @@ def get_single_market_quote(
         "percent_change": None,
         "tick_size": tick_size,
         "lot_size": lot_size,
-        "source": "BROKER_SESSION_REQUIRED",
+        "source": "UNAVAILABLE",
+        "feed_channel": "BROKER_SESSION_REQUIRED",
         "freshness_status": "UNAVAILABLE",
-        "as_of_timestamp": datetime.utcnow().isoformat(),
+        "as_of_timestamp": as_of,
         "is_estimate": False,
-        "message": "Price unavailable: Waiting for authentic market quote from broker"
+        "verified": False,
+        "message": "Price unavailable: Waiting for authentic market quote from broker",
+        "details": {
+            "ltp": make_financial_amount(None, "UNAVAILABLE", is_estimate=False, verified=False, error="Waiting for authentic market quote from broker", as_of=as_of),
+            "previous_close": make_financial_amount(None, "UNAVAILABLE", is_estimate=False, verified=False, as_of=as_of)
+        }
     }
 
 
@@ -453,123 +485,33 @@ def _normalize_candle_interval(interval: str) -> str:
 def get_market_candles(
     symbol: str,
     interval: str = "ONE_DAY",
-    range_period: str = "1M",
+    range_period: Optional[str] = "1M",
     exchange: Optional[str] = None,
     symbol_token: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    before_timestamp: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
     Returns authentic historical OHLCV candles using official SmartAPI getCandleData
     across all supported exchanges (NSE, BSE, NFO, BFO, MCX).
-    Never generates fictitious random-walk candles. If the broker historical feed is
-    unavailable or market session is closed, returns genuine empty state.
+    Supports pagination/backfill via before_timestamp or from_date/to_date.
+    Uses database cache to prevent duplicate broker queries and speed up chart loading.
+    Never fabricates missing sessions with synthetic data.
     """
-    sym = symbol.upper().strip()
-    
-    # Clean symbol for DB query if ends with -EQ
-    clean_sym = sym[:-3] if sym.endswith("-EQ") else sym
-
-    inst = None
-    if symbol_token and symbol_token != "0":
-        inst = db.query(Instrument).filter(Instrument.symbol_token == str(symbol_token).strip()).first()
-    if not inst:
-        inst = db.query(Instrument).filter(
-            (Instrument.tradingsymbol == sym) | 
-            (Instrument.tradingsymbol == clean_sym) |
-            (Instrument.tradingsymbol == f"{clean_sym}-EQ") |
-            (Instrument.symbol_token == sym)
-        ).first()
-
-    company_name = inst.name if inst else (inst.contract_name if hasattr(inst, 'contract_name') and inst.contract_name else f"{sym}")
-    resolved_exchange = (exchange or (inst.exchange if inst else "NSE")).upper().strip()
-    resolved_token = str(symbol_token).strip() if (symbol_token and symbol_token != "0") else (inst.symbol_token if inst else sym)
-
-    interval = _normalize_candle_interval(interval)
-    range_period = (range_period or "1M").upper()
-
-    now = datetime.utcnow()
-    now_ist = now + timedelta(hours=5, minutes=30)
-    days = min(CANDLE_RANGE_DAYS.get(range_period, 31), CANDLE_MAX_DAYS.get(interval, 2000))
-    delta = timedelta(days=days)
-
-    # SmartAPI expects exchange-local (IST) "yyyy-MM-dd HH:mm"
-    from_date = (now_ist - delta).strftime("%Y-%m-%d 09:15")
-    to_date = now_ist.strftime("%Y-%m-%d %H:%M")
-
-    candles = []
-    data_source = "HISTORICAL_FEED_UNAVAILABLE"
-    is_stale = True
-
-    adapter = get_any_active_market_adapter(db)
-    if adapter and resolved_token and resolved_token != "0" and resolved_token != sym:
-        try:
-            candles = adapter.get_candle_data(
-                exchange=resolved_exchange,
-                symbol_token=resolved_token,
-                interval=interval,
-                from_date=from_date,
-                to_date=to_date
-            )
-            if candles:
-                data_source = "SMARTAPI_HISTORICAL_API"
-                is_stale = False
-        except Exception:
-            pass
-    elif adapter and resolved_token:
-        # Try direct fetch even if token equals sym
-        try:
-            candles = adapter.get_candle_data(
-                exchange=resolved_exchange,
-                symbol_token=resolved_token,
-                interval=interval,
-                from_date=from_date,
-                to_date=to_date
-            )
-            if candles:
-                data_source = "SMARTAPI_HISTORICAL_API"
-                is_stale = False
-        except Exception:
-            pass
-
-    # Check live cached tick from SmartAPI WebSocket stream
-    from app.services.smartapi_websocket import smartapi_ws_service
-    cached_tick = (
-        smartapi_ws_service.get_latest_quote(sym)
-        or smartapi_ws_service.get_latest_quote(clean_sym)
-        or (smartapi_ws_service.get_latest_quote(resolved_token) if resolved_token else None)
+    from app.services.historical_candle_service import HistoricalCandleService
+    return HistoricalCandleService.get_candles(
+        db=db,
+        symbol=symbol,
+        interval=interval,
+        range_period=range_period,
+        exchange=exchange,
+        symbol_token=symbol_token,
+        from_date_str=from_date,
+        to_date_str=to_date,
+        before_timestamp=before_timestamp
     )
-
-    ltp = candles[-1]["close"] if candles else (cached_tick["ltp"] if cached_tick else (inst.current_ltp if inst else None))
-    prev_close = (
-        candles[-2]["close"] if len(candles) > 1 
-        else (cached_tick["previous_close"] if cached_tick 
-        else (inst.previous_close if inst else None))
-    )
-
-    # Strictly no synthetic or fictitious random candles per specification
-
-    change = round(ltp - prev_close, 2) if (ltp and prev_close) else None
-    change_pct = round((change / prev_close) * 100, 2) if (change is not None and prev_close and prev_close > 0) else None
-
-    return {
-        "symbol": sym,
-        "company_name": company_name,
-        "exchange": resolved_exchange,
-        "symbol_token": resolved_token,
-        "current_ltp": ltp,
-        "previous_close": prev_close,
-        "change": change,
-        "change_percent": change_pct,
-        "candles_count": len(candles),
-        "candles": candles,
-        "interval": interval,
-        "range_period": range_period,
-        "data_source": data_source,
-        "is_stale": is_stale,
-        "status": "SUCCESS" if candles else "HISTORICAL_CANDLES_UNAVAILABLE",
-        "message": "Live candles loaded from SmartAPI" if data_source == "SMARTAPI_HISTORICAL_API" else "No historical candles available for this instrument from broker",
-        "last_updated": now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
-    }
 
 
 @router.post("/update-price")

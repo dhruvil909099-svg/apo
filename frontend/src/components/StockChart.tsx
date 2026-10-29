@@ -76,21 +76,24 @@ const INTERVALS = [
   { label: '1m', value: 'ONE_MINUTE', sec: 60, maxDays: 30, legend: '1' },
   { label: '3m', value: 'THREE_MINUTE', sec: 180, maxDays: 60, legend: '3' },
   { label: '5m', value: 'FIVE_MINUTE', sec: 300, maxDays: 100, legend: '5' },
+  { label: '10m', value: 'TEN_MINUTE', sec: 600, maxDays: 100, legend: '10' },
   { label: '15m', value: 'FIFTEEN_MINUTE', sec: 900, maxDays: 200, legend: '15' },
   { label: '30m', value: 'THIRTY_MINUTE', sec: 1800, maxDays: 200, legend: '30' },
   { label: '1h', value: 'ONE_HOUR', sec: 3600, maxDays: 400, legend: '60' },
   { label: '1D', value: 'ONE_DAY', sec: 86400, maxDays: 2000, legend: '1D' },
 ];
 const RANGES = [
-  { label: '1D', value: '1D', days: 1 },
-  { label: '5D', value: '5D', days: 7 },
-  { label: '1M', value: '1M', days: 31 },
-  { label: '3M', value: '3M', days: 92 },
-  { label: '6M', value: '6M', days: 183 },
-  { label: '1Y', value: '1Y', days: 366 },
+  { label: '1D', value: '1D', days: 1, defaultInterval: 'FIVE_MINUTE' },
+  { label: '5D', value: '5D', days: 7, defaultInterval: 'FIFTEEN_MINUTE' },
+  { label: '1M', value: '1M', days: 31, defaultInterval: 'ONE_HOUR' },
+  { label: '3M', value: '3M', days: 92, defaultInterval: 'ONE_HOUR' },
+  { label: '6M', value: '6M', days: 183, defaultInterval: 'ONE_DAY' },
+  { label: '1Y', value: '1Y', days: 366, defaultInterval: 'ONE_DAY' },
+  { label: '5Y', value: '5Y', days: 1826, defaultInterval: 'ONE_DAY' },
+  { label: 'MAX', value: 'MAX', days: 2500, defaultInterval: 'ONE_DAY' },
 ];
 const INTERVAL_ALIASES: Record<string, string> = {
-  '1m': 'ONE_MINUTE', '3m': 'THREE_MINUTE', '5m': 'FIVE_MINUTE', '10m': 'TEN_MINUTE',
+  '1m': 'ONE_MINUTE', '3m': 'THREE_MINUTE', '5m': 'FIVE_MINUTE', '10m': 'TEN_MINUTE', '10min': 'TEN_MINUTE',
   '15m': 'FIFTEEN_MINUTE', '30m': 'THIRTY_MINUTE', '1h': 'ONE_HOUR', '60m': 'ONE_HOUR', '1d': 'ONE_DAY',
 };
 
@@ -190,6 +193,7 @@ export const StockChart: React.FC<StockChartProps> = ({
   const [clock, setClock] = useState(istClock());
   const [reloadKey, setReloadKey] = useState(0);
 
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -202,8 +206,16 @@ export const StockChart: React.FC<StockChartProps> = ({
   const onLtpChangeRef = useRef(onLtpChange);
   const initialLtpRef = useRef(initialLtp);
   const initialPrevCloseRef = useRef(initialPrevClose);
+  const symbolTokenRef = useRef(symbolToken);
+  const exchangeRef = useRef(exchange);
+  const barsRef = useRef<Bar[]>([]);
+  const isLoadingOlderRef = useRef(false);
+  const hasMoreHistoryRef = useRef(true);
+
   intervalRef.current = interval;
   onLtpChangeRef.current = onLtpChange;
+  symbolTokenRef.current = symbolToken;
+  exchangeRef.current = exchange;
 
   // -- LTP + dotted price line ------------------------------------------------
   const applyLtp = useCallback((price: number) => {
@@ -227,6 +239,72 @@ export const StockChart: React.FC<StockChartProps> = ({
     const chg = price - pc;
     onLtpChangeRef.current?.(price, chg, pc ? (chg / pc) * 100 : 0);
   }, []);
+
+  // -- Load more history on scrolling left (TradingView Lightweight Charts pagination) --
+  const loadOlderCandles = useCallback(() => {
+    if (isLoadingOlderRef.current || !hasMoreHistoryRef.current || !barsRef.current.length) return;
+    const oldestBar = barsRef.current[0];
+    if (!oldestBar) return;
+
+    isLoadingOlderRef.current = true;
+    setIsLoadingOlder(true);
+
+    const utcEpoch = oldestBar.time - IST_OFFSET_SEC;
+    const oldestIso = new Date(utcEpoch * 1000).toISOString();
+
+    api.getMarketCandles(
+      symbol,
+      intervalRef.current,
+      undefined,
+      exchangeRef.current,
+      symbolTokenRef.current,
+      undefined,
+      undefined,
+      oldestIso
+    )
+      .then((data) => {
+        const olderBars = normalizeBars(data.candles);
+        const candle = candleRef.current;
+        const vol = volRef.current;
+        const chart = chartRef.current;
+
+        if (!olderBars.length || olderBars[olderBars.length - 1].time >= oldestBar.time) {
+          hasMoreHistoryRef.current = false;
+          return;
+        }
+
+        if (!candle || !vol || !chart) return;
+
+        const existingMap = new Map<number, Bar>();
+        for (const b of olderBars) existingMap.set(b.time, b);
+        for (const b of barsRef.current) existingMap.set(b.time, b);
+
+        const merged = [...existingMap.values()].sort((a, b) => a.time - b.time);
+        const addedCount = merged.length - barsRef.current.length;
+        barsRef.current = merged;
+
+        candle.setData(merged.map(candlePoint));
+        vol.setData(merged.map(volPoint));
+
+        const currentRange = chart.timeScale().getVisibleLogicalRange();
+        if (currentRange && addedCount > 0) {
+          chart.timeScale().setVisibleLogicalRange({
+            from: currentRange.from + addedCount,
+            to: currentRange.to + addedCount,
+          });
+        }
+        if (data.has_more_history === false || addedCount === 0) {
+          hasMoreHistoryRef.current = false;
+        }
+      })
+      .catch(() => {
+        hasMoreHistoryRef.current = false;
+      })
+      .finally(() => {
+        isLoadingOlderRef.current = false;
+        setIsLoadingOlder(false);
+      });
+  }, [symbol]);
 
   // -- Create chart once --------------------------------------------------------
   useEffect(() => {
@@ -280,6 +358,14 @@ export const StockChart: React.FC<StockChartProps> = ({
       }
     });
 
+    // Pagination subscription on left scroll
+    chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
+      if (!logicalRange) return;
+      if (logicalRange.from < 5) {
+        loadOlderCandles();
+      }
+    });
+
     chartRef.current = chart;
     candleRef.current = candle;
     volRef.current = vol;
@@ -291,13 +377,14 @@ export const StockChart: React.FC<StockChartProps> = ({
       volRef.current = null;
       priceLineRef.current = null;
     };
-  }, []);
+  }, [loadOlderCandles]);
 
   // -- Load historical candles (backend -> SmartAPI getCandleData) -------------
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    hasMoreHistoryRef.current = true;
 
     api.getMarketCandles(symbol, interval, range, exchange, symbolToken)
       .then((data) => {
@@ -308,6 +395,9 @@ export const StockChart: React.FC<StockChartProps> = ({
         const vol = volRef.current;
         const chart = chartRef.current;
         if (!candle || !vol || !chart) return;
+
+        barsRef.current = bars;
+        hasMoreHistoryRef.current = Boolean(data.has_more_history !== false && bars.length > 0);
 
         candle.setData(bars.map(candlePoint));
         vol.setData(bars.map(volPoint));
@@ -449,12 +539,10 @@ export const StockChart: React.FC<StockChartProps> = ({
     }
   };
   const selectRange = (value: string) => {
-    const days = rangeMeta(value).days;
+    const rm = rangeMeta(value);
     setRange(value);
-    if (intervalMeta(interval).maxDays < days) {
-      const idx = INTERVALS.findIndex((i) => i.value === interval);
-      const fit = INTERVALS.find((i, j) => j >= idx && i.maxDays >= days);
-      setIntervalValue(fit ? fit.value : 'ONE_DAY');
+    if (intervalMeta(interval).maxDays < rm.days || rm.days >= 180) {
+      setIntervalValue(rm.defaultInterval);
     }
   };
 
@@ -467,11 +555,11 @@ export const StockChart: React.FC<StockChartProps> = ({
   const legendColor = legendUp ? 'text-[#089981]' : 'text-[#f23645]';
   const source = meta?.data_source;
   const sourceBadge =
-    source === 'SMARTAPI_HISTORICAL_API'
-      ? { text: 'SmartAPI historical', cls: 'bg-[#089981]/15 text-[#22c3a6]' }
+    source === 'SMARTAPI_HISTORICAL_API' || source === 'CACHE_VERIFIED'
+      ? { text: source === 'CACHE_VERIFIED' ? 'SmartAPI (Cached)' : 'SmartAPI historical', cls: 'bg-[#089981]/15 text-[#22c3a6]' }
       : source === 'LIVE_TICK_STREAM_CANDLES'
         ? { text: 'Synthetic · SmartAPI offline', cls: 'bg-amber-500/15 text-amber-400' }
-        : { text: source ? 'Feed unavailable' : '—', cls: 'bg-slate-800 text-slate-400' };
+        : { text: source ? 'Historical data unavailable' : '—', cls: 'bg-slate-800 text-slate-400' };
 
   return (
     <div className="bg-[#0b0b0d] text-slate-200 rounded-xl border border-[#222327] overflow-hidden flex flex-col">
@@ -605,6 +693,13 @@ export const StockChart: React.FC<StockChartProps> = ({
           )}
         </div>
 
+        {isLoadingOlder && (
+          <div className="absolute top-2 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1d1e22]/90 border border-[#2a2b30] text-[11px] text-[#5b7cfa] shadow-lg backdrop-blur-sm">
+            <RefreshCw className="w-3 h-3 animate-spin" />
+            <span>Loading older history…</span>
+          </div>
+        )}
+
         {isLoading && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-[#0b0b0d]/80">
             <RefreshCw className="w-6 h-6 text-[#5b7cfa] animate-spin" />
@@ -614,9 +709,9 @@ export const StockChart: React.FC<StockChartProps> = ({
         {!isLoading && (error || isEmpty) && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center text-center gap-2 bg-[#0b0b0d]/90 p-6">
             <AlertCircle className="w-7 h-7 text-[#f23645]" />
-            <div className="text-sm font-semibold text-white">Chart data unavailable</div>
+            <div className="text-sm font-semibold text-white">Historical Data Unavailable</div>
             <div className="text-xs text-slate-400 max-w-sm">
-              {error || 'SmartAPI returned no candles for this timeframe. Make sure an Angel One account session is active.'}
+              {error || 'Historical data unavailable for this instrument or period.'}
             </div>
             <button onClick={() => setReloadKey((k) => k + 1)} className="mt-1 px-4 py-1.5 rounded-lg bg-[#1d1e22] hover:bg-[#2a2b30] text-xs font-semibold text-white">
               Retry

@@ -463,7 +463,16 @@ export const api = {
 
   // Market Data
   getQuotes: () => fetchJson<MarketQuote[]>(`${getApiBase()}/market/quotes`),
-  getMarketCandles: (symbol: string, interval = 'ONE_DAY', rangePeriod = '1M', exchange?: string, symbolToken?: string) => {
+  getMarketCandles: (
+    symbol: string,
+    interval = 'ONE_DAY',
+    rangePeriod = '1M',
+    exchange?: string,
+    symbolToken?: string,
+    fromDate?: string,
+    toDate?: string,
+    beforeTimestamp?: string
+  ) => {
     const params = new URLSearchParams({
       symbol,
       interval,
@@ -471,6 +480,9 @@ export const api = {
     });
     if (exchange) params.append('exchange', exchange);
     if (symbolToken) params.append('symbol_token', symbolToken);
+    if (fromDate) params.append('from_date', fromDate);
+    if (toDate) params.append('to_date', toDate);
+    if (beforeTimestamp) params.append('before_timestamp', beforeTimestamp);
     return fetchJson<import('./types').MarketCandleResponse>(`${getApiBase()}/market/candles?${params.toString()}`);
   },
   updatePrice: (symbol: string, price: number) => fetchJson<any>(
@@ -709,17 +721,21 @@ export const api = {
     order_type?: string;
   }) => fetchJson<{
     trade_value: number;
-    brokerage: number;
-    stt_ctt: number;
-    exchange_charges: number;
-    sebi_charges: number;
-    stamp_duty: number;
-    gst: number;
-    dp_charges: number;
-    total_charges: number;
+    brokerage: number | null;
+    stt_ctt: number | null;
+    exchange_charges: number | null;
+    sebi_charges: number | null;
+    stamp_duty: number | null;
+    gst: number | null;
+    dp_charges: number | null;
+    total_charges: number | null;
     is_broker_verified: boolean;
+    verified: boolean;
     data_source: string;
+    status: string;
+    error_reason?: string | null;
     disclaimer: string;
+    details?: Record<string, any>;
   }>(`${getApiBase()}/market/brokerage/estimate`, {
     method: 'POST',
     body: JSON.stringify(data)
@@ -736,15 +752,17 @@ export const api = {
     account_id?: number;
   }) => fetchJson<{
     full_trade_value: number;
-    required_margin: number;
+    required_margin: number | null;
     available_funds: number;
-    remaining_funds: number;
-    is_sufficient: boolean;
+    remaining_funds: number | null;
+    is_sufficient: boolean | null;
     leverage_multiplier: number;
     is_broker_verified: boolean;
     data_source: string;
     status: string;
     message: string;
+    error_reason?: string | null;
+    details?: Record<string, any>;
   }>(`${getApiBase()}/market/margin/batch`, {
     method: 'POST',
     body: JSON.stringify(data)

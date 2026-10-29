@@ -100,4 +100,59 @@ Automated test suite `backend/tests/test_order_ticket_repair.py` verified:
 - `frontend/src/components/OrderTicketModal.tsx`: Comprehensive UI overhaul with live quotes, charges drawer, margin cards.
 - `frontend/src/views/StockExplorerView.tsx`: Removed `|| 100` fallbacks, passed genuine `symbol_token`.
 - `frontend/src/views/AccountsView.tsx`: Removed `|| 100` fallbacks, passed genuine `symbol_token`.
-- `index.html` & `assets/`: Synced production bundle `index-DvouQamp.js`.
+- `index.html` & `assets/`: Synced production bundle.
+
+---
+
+# Part 2: Genuine SmartAPI Financial Data Model & Provenance
+
+### 1. Eliminated Calculations & Masquerading
+- **Margin Calculation:** Completely eliminated `round(full_trade_value * 0.20236, 2)`, fixed `5x` leverage, and static `100%` fallbacks. When SmartAPI Margin Calculator API (`/rest/secure/angelbroking/margin/v1/batch`) is unreachable or returns an error, the backend now explicitly returns:
+  ```json
+  {
+    "required_margin": null,
+    "source": "UNAVAILABLE",
+    "verified": false,
+    "error_reason": "Margin Calculator API unavailable..."
+  }
+  ```
+- **Brokerage & Statutory Charges:** Eliminated hardcoded 0.03% / 0.05% brokerage and synthetic GST/STT formulas presented as broker quotes. When SmartAPI Estimate Charges API (`/rest/secure/angelbroking/service/v1/brokerage/estimate`) is unreachable, the backend returns:
+  ```json
+  {
+    "total_charges": null,
+    "source": "UNAVAILABLE",
+    "verified": false,
+    "error_reason": "SmartAPI Estimate Charges API returned no breakdown..."
+  }
+  ```
+- **DP Charges Attribution:** Explicitly labeled DP charges with disclaimer `*DP charge: Applicable on equity delivery sales, debited by depository upon payout, not included in pre-trade broker estimate`.
+- **Financial Amount Model Contract:** Implemented `make_financial_amount()` standardizing all figures with `source`, `verified`, `is_estimate`, and `as_of` timestamp.
+
+---
+
+# Part 3: Full Historical Charts for NSE, BSE, F&O, and MCX
+
+### 1. Architecture Overview
+- **Backend Service:** `app.services.historical_candle_service.HistoricalCandleService` orchestrates authentic SmartAPI historical data retrieval (`/rest/secure/angelbroking/historical/v1/getCandleData`).
+- **Database Caching:** `app.models.historical_candle.HistoricalCandle` table caches verified closed candles with a unique constraint on `(exchange, symbol_token, interval, epoch_time)` ensuring zero duplicate records and instant chart re-renders.
+- **Provider API Limits & Chunking:**
+  - `ONE_MINUTE`: 30 calendar days
+  - `THREE_MINUTE`: 60 calendar days
+  - `FIVE_MINUTE` / `TEN_MINUTE`: 100 calendar days
+  - `FIFTEEN_MINUTE` / `THIRTY_MINUTE`: 200 calendar days
+  - `ONE_HOUR`: 400 calendar days
+  - `ONE_DAY`: 2000 calendar days
+  - Automated chunking partitions larger historical windows into compliant non-overlapping requests.
+- **Multi-Segment Coverage:**
+  - `NSE`: Equities (e.g. `HINDCOPPER-EQ` token `1415`) and Indices
+  - `BSE`: Equities (e.g. `HINDCOPPER` token `500188`) and Indices
+  - `NFO`: Futures (`FUTSTK`, `FUTIDX`) and Options (`OPTSTK`, `OPTIDX`)
+  - `BFO`: BSE derivatives (e.g. `SENSEX` Options)
+  - `MCX`: Commodity futures (e.g. `CRUDEOIL`, `GOLD`)
+- **Zero Synthetic Candles:** No fake random-walk candles. If history is missing or broker demat session is offline, returns `candles: []`, `data_source: "UNAVAILABLE"`, and displays `"Historical data unavailable for this instrument or period."`
+- **TradingView Lightweight Charts Controls & Pagination:**
+  - Range buttons: `1D`, `5D`, `1M`, `3M`, `6M`, `1Y`, `5Y`, `MAX`.
+  - Interval buttons: `1m`, `3m`, `5m`, `10m`, `15m`, `30m`, `1h`, `1D`.
+  - Auto-interval mapping for macro ranges (e.g. selecting `5Y` defaults to `1D` candles).
+  - Infinite scroll / load-more-on-scroll: Subscribes to `timeScale().subscribeVisibleLogicalRangeChange()`. When scrolled near left edge (`logicalRange.from < 5`), older historical chunks are fetched via `before_timestamp` and merged seamlessly without shifting the user's visible viewport.
+

@@ -269,7 +269,12 @@ export interface MarketCandleResponse {
   range_period: string;
   data_source: string;
   is_stale: boolean;
-  last_updated: string;
+  last_updated?: string;
+  from_date?: string;
+  to_date?: string;
+  candles_count?: number;
+  has_more_history?: boolean;
+  message?: string;
   candles: MarketCandle[];
 }
 

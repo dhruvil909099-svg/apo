@@ -68,17 +68,21 @@ def preview_single_order(
         order_type=req.order_type
     )
 
-    brokerage = charges_res["brokerage"]
-    stt = charges_res["stt_ctt"]
-    exchange_charges = charges_res["exchange_charges"]
-    gst = charges_res["gst"]
-    sebi_fees = charges_res["sebi_charges"]
-    stamp_duty = charges_res["stamp_duty"]
-    total_charges = charges_res["total_charges"]
-    net_total = round(est_value + total_charges if req.transaction_type == "BUY" else est_value - total_charges, 2)
+    brokerage = charges_res.get("brokerage")
+    stt = charges_res.get("stt_ctt")
+    exchange_charges = charges_res.get("exchange_charges")
+    gst = charges_res.get("gst")
+    sebi_fees = charges_res.get("sebi_charges")
+    stamp_duty = charges_res.get("stamp_duty")
+    total_charges = charges_res.get("total_charges")
+    safe_charges = total_charges if total_charges is not None else 0.0
+    net_total = round(est_value + safe_charges if req.transaction_type == "BUY" else est_value - safe_charges, 2)
 
     blocking_reasons = []
     warnings = []
+
+    if charges_res.get("status") == "UNAVAILABLE":
+        warnings.append("Brokerage estimate unavailable: Live SmartAPI demat connection required for broker charges.")
 
     if effective_price <= 0:
         blocking_reasons.append("Price unavailable: Valid market quote or limit price required for order validation.")
