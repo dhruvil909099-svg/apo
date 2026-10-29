@@ -210,8 +210,8 @@ class HistoricalCandleService:
             try:
                 before_epoch = parse_timestamp_to_epoch(before_timestamp)
                 target_dt = datetime.utcfromtimestamp(before_epoch) + timedelta(hours=5, minutes=30)
+                window_days = min(30 if norm_interval in ("ONE_MINUTE", "THREE_MINUTE") else (max_call_days if norm_interval == "ONE_DAY" else 100), max_call_days)
                 req_to_ist = target_dt.strftime("%Y-%m-%d %H:%M")
-                window_days = min(30 if norm_interval in ("ONE_MINUTE", "THREE_MINUTE") else 100, max_call_days)
                 req_from_ist = (target_dt - timedelta(days=window_days)).strftime("%Y-%m-%d 09:15")
             except Exception:
                 req_to_ist = now_ist.strftime("%Y-%m-%d %H:%M")

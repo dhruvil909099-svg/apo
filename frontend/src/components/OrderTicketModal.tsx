@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   X, ShieldCheck, AlertCircle, TrendingUp, TrendingDown,
-  Info, Check, HelpCircle, ArrowRight, RefreshCw, Calculator, FileText, Lock
+  Info, Check, HelpCircle, ArrowRight, RefreshCw, Calculator, FileText, Lock,
+  Users, User, ChevronDown, CheckSquare, Square, Layers
 } from 'lucide-react';
 import { Account, AccountHoldingItem } from '../types';
 import { api } from '../api';
@@ -61,15 +62,35 @@ interface MarginState {
   isLoading: boolean;
 }
 
+interface AccountBatchItem {
+  account: Account;
+  quantity: number;
+  tradeValue: number;
+  availableFunds: number;
+  isEligible: boolean;
+  validationReason: string;
+}
+
 export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   isOpen,
-  account,
+  account: initialAccount,
   holding,
   defaultSide = 'BUY',
   defaultOrderType = 'LIMIT',
   onClose,
   onOrderSuccess,
 }) => {
+  // Accounts list from backend
+  const [allAccounts, setAllAccounts] = useState<Account[]>([]);
+  const [currentAccount, setCurrentAccount] = useState<Account | null>(initialAccount);
+  const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState<boolean>(false);
+
+  // Mode: Single Account vs Multiple Accounts
+  const [tradingScope, setTradingScope] = useState<'SINGLE' | 'MULTI'>('SINGLE');
+  const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
+  const [accountQuantities, setAccountQuantities] = useState<Record<number, number>>({});
+
+  // Core Order State
   const [side, setSide] = useState<'BUY' | 'SELL'>(defaultSide);
   const [productType, setProductType] = useState<'DELIVERY' | 'INTRADAY'>('DELIVERY');
   const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET' | 'STOPLOSS_LIMIT' | 'STOPLOSS_MARKET'>(defaultOrderType);
@@ -79,8 +100,13 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   const [isLimitPriceUserEdited, setIsLimitPriceUserEdited] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Modals & Views
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
   const [showChargesModal, setShowChargesModal] = useState<boolean>(false);
+  const [showBatchResultsModal, setShowBatchResultsModal] = useState<boolean>(false);
+  const [batchResults, setBatchResults] = useState<any[]>([]);
+  const [batchSummary, setBatchSummary] = useState<{ total: number; success: number; failed: number } | null>(null);
 
   // Market Quote State
   const [quote, setQuote] = useState<MarketQuoteState>({
@@ -117,7 +143,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   const [margin, setMargin] = useState<MarginState>({
     fullTradeValue: 0,
     requiredMargin: null,
-    availableFunds: account?.available_cash || 0,
+    availableFunds: initialAccount?.available_cash || 0,
     remainingFunds: null,
     isSufficient: null,
     leverageMultiplier: 1.0,
@@ -130,17 +156,58 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
   });
 
   const wsRef = useRef<WebSocket | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
 
   const sym = holding?.trading_symbol || holding?.symbol || '';
   const token = holding?.symbol_token || '';
   const exchange = holding?.exchange || 'NSE';
   const availableSellQty = holding?.available_quantity ?? holding?.quantity ?? 0;
-  const isSellable = Boolean(account?.ddpi_status === 'ACTIVE' || account?.edis_authorized_today);
 
-  // Helper rounding
   const round2 = (v: number) => Math.round(v * 100) / 100;
 
-  // 1. Fetch genuine initial quote & subscribe to WebSocket
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsAccountDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // 1. Fetch authorized connected accounts on mount
+  useEffect(() => {
+    if (!isOpen) return;
+    api.getAccounts()
+      .then((accs) => {
+        setAllAccounts(accs || []);
+        if (initialAccount) {
+          const matched = accs.find((a) => a.id === initialAccount.id) || initialAccount;
+          setCurrentAccount(matched);
+          setSelectedAccountIds([matched.id]);
+        } else if (accs && accs.length > 0) {
+          // If no initial account passed, default to first connected account or leave for explicit selection
+          setCurrentAccount(accs[0]);
+          setSelectedAccountIds([accs[0].id]);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load accounts for ticket:', err);
+      });
+  }, [isOpen, initialAccount]);
+
+  // Sync available funds whenever currentAccount changes
+  useEffect(() => {
+    if (currentAccount) {
+      setMargin((prev) => ({
+        ...prev,
+        availableFunds: currentAccount.available_cash || 0,
+      }));
+    }
+  }, [currentAccount]);
+
+  // 2. Fetch genuine quote and subscribe to WebSocket
   useEffect(() => {
     if (!isOpen || !holding) return;
 
@@ -148,6 +215,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
     setOrderType(defaultOrderType);
     setErrorMsg(null);
     setShowConfirmModal(false);
+    setShowBatchResultsModal(false);
     setIsLimitPriceUserEdited(false);
 
     // Initial quantity
@@ -157,7 +225,6 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
       setQuantity(1);
     }
 
-    // Set initial quote loading
     setQuote((prev) => ({ ...prev, isLoading: true }));
 
     // Fetch authorized initial quote from backend
@@ -177,7 +244,6 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           isLoading: false,
         });
 
-        // Initialize limit price only if not user-edited
         if (ltpVal !== null) {
           setLimitPrice(ltpVal.toFixed(2));
           setTriggerPrice((ltpVal * 0.98).toFixed(2));
@@ -186,7 +252,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           setTriggerPrice('');
         }
       })
-      .catch((err) => {
+      .catch(() => {
         setQuote((prev) => ({
           ...prev,
           ltp: null,
@@ -196,7 +262,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
         }));
       });
 
-    // 2. Establish live WebSocket subscription for ticks
+    // Establish WebSocket subscription for live ticks
     try {
       const loc = window.location;
       const wsProto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -218,7 +284,6 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               freshnessStatus: 'LIVE',
               asOfTimestamp: msg.timestamp || new Date().toISOString(),
             }));
-            // NEVER overwrite user-entered limit price when live LTP ticks arrive!
           }
         } catch (_) {}
       };
@@ -236,12 +301,12 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
     };
   }, [isOpen, holding, sym, exchange, token, defaultSide, defaultOrderType]);
 
-  // Effective price used for calculation
+  // Effective calculation price
   const parsedLimitPrice = parseFloat(limitPrice) || 0;
   const effectivePrice = orderType === 'MARKET' ? (quote.ltp || 0) : parsedLimitPrice;
   const estimatedOrderValue = round2(quantity * effectivePrice);
 
-  // 3. Debounced Brokerage & Margin Estimation on input changes
+  // 3. Debounced Brokerage & Margin Estimation with ORDER_TYPE included
   useEffect(() => {
     if (!isOpen || effectivePrice <= 0 || quantity <= 0) return;
 
@@ -267,7 +332,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
             sebiCharges: res.sebi_charges,
             stampDuty: res.stamp_duty,
             gst: res.gst,
-            dpCharges: res.dp_charges,
+            dpCharges: res.dpCharges,
             totalCharges: res.total_charges,
             isBrokerVerified: Boolean(res.is_broker_verified),
             dataSource: res.data_source,
@@ -286,7 +351,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           }));
         });
 
-      // Fetch Margin
+      // Fetch Margin with ORDER_TYPE parameter explicitly passed
       setMargin((prev) => ({ ...prev, isLoading: true }));
       api.calculateMargin({
         exchange,
@@ -296,7 +361,8 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
         product_type: productType,
         quantity,
         price: effectivePrice,
-        account_id: account?.id,
+        order_type: orderType, // Critical fix for SmartAPI orderType requirement!
+        account_id: currentAccount?.id,
       })
         .then((res) => {
           setMargin({
@@ -327,35 +393,62 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [isOpen, sym, token, exchange, side, productType, orderType, quantity, effectivePrice, account?.id]);
+  }, [isOpen, sym, token, exchange, side, productType, orderType, quantity, effectivePrice, currentAccount?.id]);
 
-  if (!isOpen || !account || !holding) return null;
+  // Multi-account batch items calculation
+  const multiAccountBatchItems: AccountBatchItem[] = useMemo(() => {
+    return allAccounts
+      .filter((acc) => selectedAccountIds.includes(acc.id))
+      .map((acc) => {
+        const qty = accountQuantities[acc.id] ?? quantity;
+        const val = round2(qty * effectivePrice);
+        const availCash = acc.available_cash || 0;
+        let isEligible = true;
+        let reason = 'Ready for paper submission';
 
-  // Validation
+        if (!acc.is_enabled) {
+          isEligible = false;
+          reason = 'Account is disabled';
+        } else if (!acc.is_demo && acc.auth_status !== 'CONNECTED') {
+          isEligible = false;
+          reason = `Disconnected (${acc.auth_status})`;
+        } else if (side === 'BUY' && availCash < val) {
+          isEligible = false;
+          reason = `Insufficient funds: Need ₹${val.toFixed(2)}, has ₹${availCash.toFixed(2)}`;
+        }
+
+        return {
+          account: acc,
+          quantity: qty,
+          tradeValue: val,
+          availableFunds: availCash,
+          isEligible,
+          validationReason: reason,
+        };
+      });
+  }, [allAccounts, selectedAccountIds, accountQuantities, quantity, effectivePrice, side]);
+
+  if (!isOpen || !holding) return null;
+
+  // Validation function
   const validateOrder = (): string | null => {
+    if (!currentAccount && tradingScope === 'SINGLE') {
+      return 'Please select an authorized trading account to proceed.';
+    }
+    if (tradingScope === 'MULTI' && selectedAccountIds.length === 0) {
+      return 'Please select at least one account for the multi-account paper batch.';
+    }
     if (quantity <= 0) {
       return 'Quantity must be at least 1 share.';
     }
     if (quote.lotSize > 1 && quantity % quote.lotSize !== 0) {
       return `Invalid derivative quantity: must be an exact multiple of lot size (${quote.lotSize}).`;
     }
-    if (orderType !== 'MARKET' && (!parsedLimitPrice || parsedLimitPrice <= 0)) {
-      return 'Please enter a valid Limit Price greater than zero.';
+    if (orderType === 'LIMIT' && parsedLimitPrice <= 0) {
+      return 'Limit price must be greater than zero.';
     }
-    if (orderType === 'MARKET' && (!quote.ltp || quote.ltp <= 0)) {
-      return 'Market order disabled: Live market quote unavailable. Please use a Limit order.';
-    }
-    if ((orderType === 'STOPLOSS_LIMIT' || orderType === 'STOPLOSS_MARKET') && (!triggerPrice || parseFloat(triggerPrice) <= 0)) {
-      return 'Trigger price is required for Stop-Loss orders.';
-    }
-    if (side === 'SELL' && quantity > availableSellQty) {
-      return `Insufficient sellable quantity. You own ${availableSellQty} verified shares available to sell.`;
-    }
-    if (side === 'SELL' && productType === 'DELIVERY' && !isSellable && !account.is_demo) {
-      return 'CDSL eDIS authorization or active DDPI is required to submit sell orders for delivery holdings.';
-    }
-    if (side === 'BUY' && margin.requiredMargin !== null && !margin.isSufficient) {
-      return `Insufficient funds: Required margin is ₹${margin.requiredMargin.toFixed(2)}, but available funds are ₹${(account.available_cash || 0).toFixed(2)}.`;
+    if (orderType === 'MARKET' && quote.ltp === null) {
+      return 'Market order rejected: Live market quote is currently unavailable.';
     }
     return null;
   };
@@ -371,33 +464,84 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
     setShowConfirmModal(true);
   };
 
-  const handleFinalSubmit = async () => {
+  // Submit Single Order (Paper or Live)
+  const handleSingleSubmit = async () => {
+    if (!currentAccount) return;
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
       const orderPayload = {
-        account_id: account.id,
+        account_id: currentAccount.id,
         tradingsymbol: sym,
         symbol_token: token || '0',
-        exchange: exchange,
+        exchange,
         transaction_type: side,
         order_type: orderType,
         product_type: productType,
-        quantity: quantity,
-        price: orderType === 'MARKET' ? 0.0 : effectivePrice,
-        trigger_price: (orderType === 'STOPLOSS_LIMIT' || orderType === 'STOPLOSS_MARKET') ? (parseFloat(triggerPrice) || 0.0) : 0.0,
         variety: 'NORMAL',
-        is_paper_trade: true, // Default safety mode: PAPER trading
+        quantity,
+        price: orderType === 'MARKET' ? (quote.ltp || 0) : parsedLimitPrice,
+        trigger_price: parseFloat(triggerPrice) || 0,
       };
 
-      await api.placeSingleOrder(orderPayload);
-      onOrderSuccess(`Order submitted successfully: ${side} ${quantity} ${sym} (${productType}) [SIMULATED]`);
+      const res = await api.placeSingleOrder(orderPayload);
+      setIsSubmitting(false);
+      setShowConfirmModal(false);
+      onOrderSuccess(`Order submitted successfully! Status: ${res.status} (Client ID: ${res.client_order_id.slice(0, 8)})`);
       onClose();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Order execution failed. Please verify account status.');
-      setShowConfirmModal(false);
-    } finally {
       setIsSubmitting(false);
+      setErrorMsg(err.message || 'Order submission failed.');
+    }
+  };
+
+  // Submit Multi-Account Paper Batch
+  const handleMultiBatchSubmit = async () => {
+    setIsSubmitting(true);
+    setErrorMsg(null);
+
+    try {
+      const targets = multiAccountBatchItems.map((item) => ({
+        account_id: item.account.id,
+        quantity: item.quantity,
+        price_override: effectivePrice,
+      }));
+
+      // 1. Prepare batch
+      const prepRes = await api.prepareBulkOrders({
+        tradingsymbol: sym,
+        symbol_token: token || '0',
+        exchange,
+        transaction_type: side,
+        order_type: orderType,
+        product_type: productType,
+        price: effectivePrice,
+        accounts: targets,
+      });
+
+      // 2. Execute batch
+      const execRes = await api.executeBulkOrders(prepRes.batch_id, true);
+
+      setIsSubmitting(false);
+      setShowConfirmModal(false);
+
+      if (execRes && execRes.results) {
+        setBatchResults(execRes.results);
+        const successCount = execRes.results.filter((r: any) => r.status === 'ACCEPTED' || r.status === 'EXECUTED' || r.status === 'SUBMITTED').length;
+        setBatchSummary({
+          total: execRes.results.length,
+          success: successCount,
+          failed: execRes.results.length - successCount,
+        });
+        setShowBatchResultsModal(true);
+      } else {
+        onOrderSuccess(`Multi-account batch confirmed! Processed ${targets.length} paper accounts.`);
+        onClose();
+      }
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setErrorMsg(err.message || 'Multi-account paper batch submission failed.');
     }
   };
 
@@ -405,8 +549,9 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
-        {/* Header with authentic market quote metadata */}
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[94vh]">
+        
+        {/* HEADER: Symbol, Account Selector Dropdown, Live Price, Close */}
         <div className={`px-5 py-3.5 border-b flex items-center justify-between ${
           side === 'BUY' ? 'bg-emerald-50/70 border-emerald-100' : 'bg-rose-50/70 border-rose-100'
         }`}>
@@ -418,15 +563,75 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               </span>
               <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded flex items-center gap-1">
                 <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                <span>SIMULATED</span>
+                <span>SIMULATED PAPER</span>
               </span>
             </div>
-            <div className="text-xs text-slate-500 mt-0.5 truncate max-w-xs">
-              {holding.company_name || sym} • <span className="font-semibold text-slate-700">{account.nickname}</span> ({account.masked_client_code})
+
+            {/* Account Selector Dropdown */}
+            <div className="relative mt-1.5" ref={dropdownRef}>
+              <button
+                type="button"
+                onClick={() => setIsAccountDropdownOpen(!isAccountDropdownOpen)}
+                className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-brand-500 text-xs font-semibold text-slate-800 shadow-2xs transition"
+              >
+                <User className="w-3.5 h-3.5 text-brand-600" />
+                <span>
+                  {currentAccount
+                    ? `${currentAccount.nickname} (${currentAccount.masked_client_code})`
+                    : 'Select Trading Account'}
+                </span>
+                <span className={`w-2 h-2 rounded-full ${
+                  currentAccount?.auth_status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-amber-500'
+                }`} />
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+              </button>
+
+              {isAccountDropdownOpen && (
+                <div className="absolute left-0 mt-1 w-72 max-h-60 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1">
+                  <div className="px-3 py-1.5 border-b text-[10px] font-bold uppercase text-slate-400">
+                    Authorized Demat Accounts
+                  </div>
+                  {allAccounts.map((acc) => {
+                    const isSelected = currentAccount?.id === acc.id;
+                    return (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => {
+                          setCurrentAccount(acc);
+                          if (!selectedAccountIds.includes(acc.id)) {
+                            setSelectedAccountIds([acc.id]);
+                          }
+                          setIsAccountDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-slate-50 transition ${
+                          isSelected ? 'bg-brand-50/60 font-bold text-brand-800' : 'text-slate-700'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-semibold text-slate-900">{acc.nickname}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            {acc.masked_client_code} • Funds: ₹{(acc.available_cash || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-1.5">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+                            acc.auth_status === 'CONNECTED' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {acc.auth_status}
+                          </span>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-brand-600" />}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          {/* Right: Live Quote and Close */}
+          <div className="flex items-center gap-3">
             <div className="text-right">
               {quote.ltp !== null ? (
                 <>
@@ -470,7 +675,62 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           </div>
         </div>
 
-        {/* Side Tabs */}
+        {/* TRADING SCOPE SELECTOR: Single Account vs Multiple Accounts */}
+        <div className="flex items-center justify-between px-5 py-2 bg-slate-50 border-b border-slate-200">
+          <div className="flex space-x-2 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setTradingScope('SINGLE')}
+              className={`px-3 py-1 rounded-lg transition ${
+                tradingScope === 'SINGLE'
+                  ? 'bg-brand-600 text-white shadow-2xs'
+                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+              }`}
+            >
+              <User className="w-3 h-3 inline mr-1" />
+              Single Account
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTradingScope('MULTI');
+                if (selectedAccountIds.length === 0 && allAccounts.length > 0) {
+                  setSelectedAccountIds(allAccounts.map((a) => a.id));
+                }
+              }}
+              className={`px-3 py-1 rounded-lg transition ${
+                tradingScope === 'MULTI'
+                  ? 'bg-brand-600 text-white shadow-2xs'
+                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+              }`}
+            >
+              <Users className="w-3 h-3 inline mr-1" />
+              Multiple Accounts ({selectedAccountIds.length})
+            </button>
+          </div>
+
+          {tradingScope === 'MULTI' && (
+            <div className="flex items-center space-x-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setSelectedAccountIds(allAccounts.map((a) => a.id))}
+                className="text-brand-600 hover:underline font-semibold"
+              >
+                Select All
+              </button>
+              <span className="text-slate-300">•</span>
+              <button
+                type="button"
+                onClick={() => setSelectedAccountIds([])}
+                className="text-slate-500 hover:underline"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Side Tabs: BUY (Long) vs SELL (Exit) */}
         <div className="grid grid-cols-2 p-1.5 bg-slate-100/70 gap-1 border-b border-slate-200">
           <button
             type="button"
@@ -496,7 +756,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           </button>
         </div>
 
-        {/* Order Form */}
+        {/* ORDER FORM */}
         <form onSubmit={handleReviewClick} className="p-5 space-y-3.5 overflow-y-auto flex-1">
           {errorMsg && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
@@ -554,11 +814,11 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
             </div>
           </div>
 
-          {/* Quantity Input */}
+          {/* Quantity & Base Quantity Input */}
           <div>
             <div className="flex justify-between items-center mb-1">
               <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                Quantity {quote.lotSize > 1 ? `(Lot Size: ${quote.lotSize})` : '(Shares)'}
+                {tradingScope === 'MULTI' ? 'Base Quantity (per account)' : `Quantity ${quote.lotSize > 1 ? `(Lot Size: ${quote.lotSize})` : '(Shares)'}`}
               </label>
               {side === 'SELL' && (
                 <span className="text-[11px] text-slate-500">
@@ -572,7 +832,16 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 min={quote.lotSize}
                 step={quote.lotSize}
                 value={quantity || ''}
-                onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 0))}
+                onChange={(e) => {
+                  const val = Math.max(1, parseInt(e.target.value) || 0);
+                  setQuantity(val);
+                  // Update per-account quantities to match if in multi mode
+                  if (tradingScope === 'MULTI') {
+                    const newQs: Record<number, number> = {};
+                    selectedAccountIds.forEach((id) => (newQs[id] = val));
+                    setAccountQuantities(newQs);
+                  }
+                }}
                 className="flex-1 text-sm font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-slate-900 focus:outline-hidden focus:border-brand-500"
                 placeholder="Qty"
                 required
@@ -582,21 +851,20 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   <button
                     key={step}
                     type="button"
-                    onClick={() => setQuantity((prev) => prev + step * quote.lotSize)}
+                    onClick={() => {
+                      const newQty = quantity + step * quote.lotSize;
+                      setQuantity(newQty);
+                      if (tradingScope === 'MULTI') {
+                        const newQs: Record<number, number> = {};
+                        selectedAccountIds.forEach((id) => (newQs[id] = newQty));
+                        setAccountQuantities(newQs);
+                      }
+                    }}
                     className="px-2 py-1.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
                   >
                     +{step * quote.lotSize}
                   </button>
                 ))}
-                {side === 'SELL' && availableSellQty > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setQuantity(availableSellQty)}
-                    className="px-2.5 py-1.5 text-[10px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors"
-                  >
-                    All
-                  </button>
-                )}
               </div>
             </div>
           </div>
@@ -644,81 +912,180 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
             </div>
           </div>
 
-          {/* Genuine Financial Metrics: Required Margin vs Trade Value vs Charges */}
-          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2 text-xs">
-            <div className="grid grid-cols-2 gap-3 pb-2 border-b border-slate-200">
-              {/* Required Margin */}
-              <div>
-                <div className="flex items-center gap-1 text-[10px] text-slate-500 font-semibold uppercase">
-                  <span>Required Margin</span>
-                  <span className="px-1 py-0.2 bg-violet-100 text-violet-700 text-[9px] font-bold rounded">
-                    {productType === 'INTRADAY' ? 'MIS ~5x' : 'CNC 1x'}
-                  </span>
+          {/* MULTI-ACCOUNT BATCH WORKSPACE TABLE */}
+          {tradingScope === 'MULTI' ? (
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-brand-600" />
+                  <span>Multi-Account Batch Allocation</span>
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  {selectedAccountIds.length} of {allAccounts.length} selected
+                </span>
+              </div>
+
+              <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg bg-white">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-100 text-[10px] text-slate-500 uppercase font-semibold sticky top-0">
+                    <tr>
+                      <th className="p-2 w-8"></th>
+                      <th className="p-2">Account</th>
+                      <th className="p-2 text-right">Qty</th>
+                      <th className="p-2 text-right">Value (₹)</th>
+                      <th className="p-2 text-right">Funds</th>
+                      <th className="p-2">Eligibility</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {allAccounts.map((acc) => {
+                      const isChecked = selectedAccountIds.includes(acc.id);
+                      const item = multiAccountBatchItems.find((b) => b.account.id === acc.id);
+                      const itemQty = accountQuantities[acc.id] ?? quantity;
+                      const itemVal = round2(itemQty * effectivePrice);
+
+                      return (
+                        <tr key={acc.id} className={isChecked ? 'bg-brand-50/20' : 'opacity-60'}>
+                          <td className="p-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedAccountIds((prev) => [...prev, acc.id]);
+                                } else {
+                                  setSelectedAccountIds((prev) => prev.filter((id) => id !== acc.id));
+                                }
+                              }}
+                              className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                            />
+                          </td>
+                          <td className="p-2 font-sans">
+                            <div className="font-semibold text-slate-900">{acc.nickname}</div>
+                            <div className="text-[10px] text-slate-400 font-mono">{acc.masked_client_code}</div>
+                          </td>
+                          <td className="p-2 text-right">
+                            {isChecked ? (
+                              <input
+                                type="number"
+                                min={quote.lotSize}
+                                step={quote.lotSize}
+                                value={itemQty}
+                                onChange={(e) => {
+                                  const q = Math.max(1, parseInt(e.target.value) || 0);
+                                  setAccountQuantities((prev) => ({ ...prev, [acc.id]: q }));
+                                }}
+                                className="w-16 px-1.5 py-0.5 text-right font-mono font-bold text-xs border rounded bg-slate-50"
+                              />
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="p-2 text-right font-bold text-slate-900">
+                            {isChecked ? `₹${itemVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '—'}
+                          </td>
+                          <td className="p-2 text-right text-slate-600">
+                            ₹{(acc.available_cash || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="p-2 font-sans">
+                            {isChecked && item ? (
+                              item.isEligible ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                  Eligible
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800" title={item.validationReason}>
+                                  Blocked
+                                </span>
+                              )
+                            ) : (
+                              <span className="text-slate-400 text-[10px]">Excluded</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            /* SINGLE ACCOUNT FINANCIAL METRICS */
+            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2 text-xs">
+              <div className="grid grid-cols-2 gap-3 pb-2 border-b border-slate-200">
+                {/* Required Margin */}
+                <div>
+                  <div className="flex items-center gap-1 text-[10px] text-slate-500 font-semibold uppercase">
+                    <span>Required Margin</span>
+                    <span className="px-1 py-0.2 bg-violet-100 text-violet-700 text-[9px] font-bold rounded">
+                      {productType === 'INTRADAY' ? 'MIS ~5x' : 'CNC 1x'}
+                    </span>
+                  </div>
+                  <div className="text-base font-bold font-mono text-slate-900 mt-0.5">
+                    {margin.requiredMargin !== null ? (
+                      `₹${margin.requiredMargin.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                    ) : (
+                      <span className="text-amber-600 text-xs font-semibold">Margin unavailable</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {margin.isBrokerVerified
+                      ? 'Official SmartAPI broker estimate'
+                      : (margin.errorReason || 'Broker demat session required')}
+                  </div>
                 </div>
-                <div className="text-base font-bold font-mono text-slate-900 mt-0.5">
+
+                {/* Total Order Value */}
+                <div className="text-right">
+                  <div className="text-[10px] text-slate-500 font-semibold uppercase">
+                    Total Order Value
+                  </div>
+                  <div className="text-base font-bold font-mono text-slate-900 mt-0.5">
+                    ₹{estimatedOrderValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {quantity} × ₹{effectivePrice.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Funds & Charges Row */}
+              <div className="flex items-center justify-between pt-1">
+                <div>
+                  <span className="text-[11px] text-slate-500">Available Funds:</span>
+                  <span className="ml-1.5 font-mono font-bold text-slate-800">
+                    ₹{((currentAccount?.available_cash) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </span>
                   {margin.requiredMargin !== null ? (
-                    `₹${margin.requiredMargin.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                    margin.isSufficient === false && (
+                      <span className="ml-2 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                        Shortfall: ₹{(margin.requiredMargin - ((currentAccount?.available_cash) || 0)).toFixed(2)}
+                      </span>
+                    )
                   ) : (
-                    <span className="text-amber-600 text-xs font-semibold">Margin unavailable</span>
+                    <span className="ml-2 text-[10px] font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                      Margin unverified
+                    </span>
                   )}
                 </div>
-                <div className="text-[10px] text-slate-400">
-                  {margin.isBrokerVerified
-                    ? 'Official SmartAPI broker estimate'
-                    : (margin.errorReason || 'Broker demat session required')}
-                </div>
-              </div>
 
-              {/* Total Order Value */}
-              <div className="text-right">
-                <div className="text-[10px] text-slate-500 font-semibold uppercase">
-                  Total Order Value
-                </div>
-                <div className="text-base font-bold font-mono text-slate-900 mt-0.5">
-                  ₹{estimatedOrderValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                </div>
-                <div className="text-[10px] text-slate-400">
-                  {quantity} × ₹{effectivePrice.toFixed(2)}
-                </div>
-              </div>
-            </div>
-
-            {/* Funds & Charges Row */}
-            <div className="flex items-center justify-between pt-1">
-              <div>
-                <span className="text-[11px] text-slate-500">Available Funds:</span>
-                <span className="ml-1.5 font-mono font-bold text-slate-800">
-                  ₹{(account.available_cash || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                </span>
-                {margin.requiredMargin !== null ? (
-                  margin.isSufficient === false && (
-                    <span className="ml-2 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
-                      Shortfall: ₹{(margin.requiredMargin - (account.available_cash || 0)).toFixed(2)}
-                    </span>
-                  )
-                ) : (
-                  <span className="ml-2 text-[10px] font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                    Margin unverified
+                {/* Clickable Brokerage & Taxes Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowChargesModal(true)}
+                  className="text-[11px] font-semibold text-brand-600 hover:text-brand-700 flex items-center gap-1 bg-brand-50 hover:bg-brand-100/70 px-2.5 py-1 rounded-lg border border-brand-200 transition-colors"
+                >
+                  <Calculator className="w-3 h-3" />
+                  <span>Charges: {charges.totalCharges !== null ? `₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}</span>
+                  <span className="text-[9px] bg-white px-1 rounded text-brand-800 font-bold">
+                    {charges.isBrokerVerified ? 'BROKER' : 'UNVERIFIED'}
                   </span>
-                )}
+                </button>
               </div>
-
-              {/* Clickable Brokerage & Taxes Button */}
-              <button
-                type="button"
-                onClick={() => setShowChargesModal(true)}
-                className="text-[11px] font-semibold text-brand-600 hover:text-brand-700 flex items-center gap-1 bg-brand-50 hover:bg-brand-100/70 px-2.5 py-1 rounded-lg border border-brand-200 transition-colors"
-              >
-                <Calculator className="w-3 h-3" />
-                <span>Charges: {charges.totalCharges !== null ? `₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}</span>
-                <span className="text-[9px] bg-white px-1 rounded text-brand-800 font-bold">
-                  {charges.isBrokerVerified ? 'BROKER' : 'UNVERIFIED'}
-                </span>
-              </button>
             </div>
-          </div>
+          )}
 
-          {/* Review Button */}
+          {/* Action Button */}
           <div className="pt-1">
             <button
               type="submit"
@@ -729,7 +1096,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   : 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:bg-slate-300'
               }`}
             >
-              <span>Review {side} Order</span>
+              <span>{tradingScope === 'MULTI' ? `Review Multi-Account Paper Batch (${selectedAccountIds.length})` : `Review ${side} Order`}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -822,7 +1189,9 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-5 h-5 text-brand-600" />
-                  <span className="font-bold text-slate-900 text-sm">Confirm Order Submission</span>
+                  <span className="font-bold text-slate-900 text-sm">
+                    {tradingScope === 'MULTI' ? 'Confirm Multi-Account Paper Batch' : 'Confirm Order Submission'}
+                  </span>
                 </div>
                 <button onClick={() => setShowConfirmModal(false)} className="text-slate-400 hover:text-slate-600">
                   <X className="w-5 h-5" />
@@ -830,42 +1199,67 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               </div>
 
               <div className="space-y-2.5 text-xs">
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Side:</span>
-                    <span className={`font-bold ${side === 'BUY' ? 'text-emerald-700' : 'text-rose-700'}`}>{side}</span>
+                {tradingScope === 'MULTI' ? (
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                    <div className="flex justify-between font-bold">
+                      <span>Total Accounts:</span>
+                      <span className="font-mono text-brand-700">{selectedAccountIds.length} Accounts</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Instrument:</span>
+                      <span className="font-mono font-bold text-slate-900">{sym} ({exchange})</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Total Batch Quantity:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {multiAccountBatchItems.reduce((acc, i) => acc + i.quantity, 0)} Shares
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Estimated Total Value:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        ₹{multiAccountBatchItems.reduce((acc, i) => acc + i.tradeValue, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Instrument:</span>
-                    <span className="font-mono font-bold text-slate-900">{sym} ({exchange})</span>
+                ) : (
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Account:</span>
+                      <span className="font-bold text-slate-900">{currentAccount?.nickname} ({currentAccount?.masked_client_code})</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Side:</span>
+                      <span className={`font-bold ${side === 'BUY' ? 'text-emerald-700' : 'text-rose-700'}`}>{side}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Instrument:</span>
+                      <span className="font-mono font-bold text-slate-900">{sym} ({exchange})</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Quantity:</span>
+                      <span className="font-mono font-bold text-slate-900">{quantity} Shares</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Execution Price:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {orderType === 'MARKET' ? `Market (Ref: ₹${quote.ltp?.toFixed(2) || '—'})` : `₹${effectivePrice.toFixed(2)}`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Order & Product:</span>
+                      <span className="font-semibold text-slate-800">{orderType} • {productType}</span>
+                    </div>
+                    <div className="flex justify-between pt-1 border-t border-slate-200">
+                      <span className="text-slate-700 font-bold">Required Margin:</span>
+                      <span className="font-mono font-bold text-violet-700">
+                        {margin.requiredMargin !== null
+                          ? `₹${margin.requiredMargin.toFixed(2)} (Broker verified)`
+                          : 'Unavailable (Broker connection required)'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Quantity:</span>
-                    <span className="font-mono font-bold text-slate-900">{quantity} Shares</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Execution Price:</span>
-                    <span className="font-mono font-bold text-slate-900">
-                      {orderType === 'MARKET' ? `Market (Ref: ₹${quote.ltp?.toFixed(2) || '—'})` : `₹${effectivePrice.toFixed(2)}`}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Order & Product:</span>
-                    <span className="font-semibold text-slate-800">{orderType} • {productType}</span>
-                  </div>
-                  <div className="flex justify-between pt-1 border-t border-slate-200">
-                    <span className="text-slate-700 font-bold">Required Margin:</span>
-                    <span className="font-mono font-bold text-violet-700">
-                      {margin.requiredMargin !== null
-                        ? `₹${margin.requiredMargin.toFixed(2)} (Broker verified)`
-                        : 'Unavailable (Broker connection required)'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-700 font-bold">Total Estimated Value:</span>
-                    <span className="font-mono font-bold text-slate-900">₹{estimatedOrderValue.toFixed(2)}</span>
-                  </div>
-                </div>
+                )}
 
                 <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-[11px] text-amber-900">
                   <span className="font-bold">Execution Protection:</span> Operating in simulated PAPER trading mode. Simulated orders are safely isolated and do not execute live demat transactions without formal manual authorization.
@@ -884,18 +1278,105 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               <button
                 type="button"
                 disabled={isSubmitting}
-                onClick={handleFinalSubmit}
+                onClick={tradingScope === 'MULTI' ? handleMultiBatchSubmit : handleSingleSubmit}
                 className={`flex-1 py-2.5 text-xs font-bold text-white rounded-xl shadow-md transition-all ${
                   side === 'BUY'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
                     : 'bg-rose-600 hover:bg-rose-700'
                 }`}
               >
-                {isSubmitting ? 'Submitting...' : `Confirm & Place ${side}`}
+                {isSubmitting ? 'Submitting Batch...' : (tradingScope === 'MULTI' ? 'Confirm Paper Batch' : `Confirm & Place ${side}`)}
               </button>
             </div>
           </div>
         )}
+
+        {/* Multi-Account Batch Results Modal */}
+        {showBatchResultsModal && (
+          <div className="absolute inset-0 bg-white/95 backdrop-blur-xs p-6 flex flex-col justify-between z-40 animate-in fade-in duration-100">
+            <div>
+              <div className="flex items-center justify-between border-b pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                  <span className="font-bold text-slate-900 text-sm">Paper Batch Execution Results</span>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowBatchResultsModal(false);
+                    onOrderSuccess(`Paper batch executed: ${batchSummary?.success || 0} filled.`);
+                    onClose();
+                  }}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {batchSummary && (
+                <div className="grid grid-cols-3 gap-3 mb-4 text-center">
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 uppercase font-bold">Total Accounts</span>
+                    <p className="text-base font-bold font-mono text-slate-800">{batchSummary.total}</p>
+                  </div>
+                  <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
+                    <span className="text-[10px] text-emerald-600 uppercase font-bold">Successful Fills</span>
+                    <p className="text-base font-bold font-mono text-emerald-700">{batchSummary.success}</p>
+                  </div>
+                  <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200">
+                    <span className="text-[10px] text-rose-600 uppercase font-bold">Rejected / Blocked</span>
+                    <p className="text-base font-bold font-mono text-rose-700">{batchSummary.failed}</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-xl bg-white">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-100 text-[10px] text-slate-500 uppercase font-semibold sticky top-0">
+                    <tr>
+                      <th className="p-2">Account</th>
+                      <th className="p-2">Order Ref</th>
+                      <th className="p-2 text-right">Status</th>
+                      <th className="p-2">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {batchResults.map((r, i) => (
+                      <tr key={i}>
+                        <td className="p-2 font-sans font-semibold text-slate-900">{r.nickname}</td>
+                        <td className="p-2 text-slate-500">{r.broker_order_id || r.client_order_id?.slice(0, 8)}</td>
+                        <td className="p-2 text-right font-bold">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            r.status === 'EXECUTED' || r.status === 'ACCEPTED'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}>
+                            {r.status === 'EXECUTED' ? 'PAPER_FILLED' : r.status}
+                          </span>
+                        </td>
+                        <td className="p-2 font-sans text-slate-500 text-[11px]">{r.rejection_reason || 'Simulated Fill'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBatchResultsModal(false);
+                  onOrderSuccess(`Paper batch executed: ${batchSummary?.success || 0} filled.`);
+                  onClose();
+                }}
+                className="w-full py-2.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );

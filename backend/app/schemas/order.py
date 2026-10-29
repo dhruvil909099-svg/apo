@@ -62,11 +62,13 @@ class BulkAccountTarget(BaseModel):
 
 
 class BulkOrderPrepareRequest(BaseModel):
-    ipo_id: int
+    ipo_id: Optional[int] = None
     tradingsymbol: str
-    symbol_token: str
+    symbol_token: str = "0"
     exchange: str = "NSE"
+    transaction_type: str = "BUY"  # BUY or SELL
     order_type: str = "LIMIT"
+    product_type: str = "DELIVERY"
     price: float = Field(..., ge=0.0)
     trigger_price: float = Field(default=0.0, ge=0.0)
     accounts: List[BulkAccountTarget]
@@ -78,8 +80,11 @@ class ProposedOrderItem(BaseModel):
     masked_client_code: str
     account_group: str
     holding_quantity: int
+    available_cash: Optional[float] = 0.0
     proposed_quantity: int
     price: float
+    transaction_type: Optional[str] = "BUY"
+    product_type: Optional[str] = "DELIVERY"
     order_type: str
     estimated_value: float
     ddpi_active: bool

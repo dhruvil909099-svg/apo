@@ -4,10 +4,11 @@ import {
   Activity, ArrowRight, ShieldCheck, Layers, RefreshCw,
   Clock, Database, Eye, ShoppingCart, Filter, Sparkles
 } from 'lucide-react';
-import { MarketInstrument, OptionChainResponse, CommodityContract, MarketSessionStatus, Account } from '../types';
+import { MarketInstrument, OptionChainResponse, CommodityContract, MarketSessionStatus, Account, IndexInfo } from '../types';
 import { api, getWebSocketUrl } from '../api';
 import { StockChart } from '../components/StockChart';
 import { OrderTicketModal } from '../components/OrderTicketModal';
+import { OptionChainModal } from '../components/OptionChainModal';
 
 interface StockExplorerViewProps {
   ipos?: import('../types').IPO[];
@@ -38,7 +39,10 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
   // Accounts for Order Ticket
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [orderTicketSide, setOrderTicketSide] = useState<'BUY' | 'SELL'>('BUY');
-  
+
+  // Benchmark Indices and Option Chain Modal State
+  const [indices, setIndices] = useState<IndexInfo[]>([]);
+  const [selectedOptionChainIndex, setSelectedOptionChainIndex] = useState<IndexInfo | null>(null);
   // Selected for TradingView Lightweight Chart Modal
   const [chartSelection, setChartSelection] = useState<{
     symbol: string;
@@ -148,18 +152,20 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
     return { ltp, change: chg, changePercent: chgPct };
   };
 
-  // Fetch catalog summary, session state, and accounts once on mount
+  // Fetch catalog summary, session state, accounts, and benchmark indices once on mount
   useEffect(() => {
     const fetchMetadata = async () => {
       try {
-        const [sum, sess, accs] = await Promise.all([
+        const [sum, sess, accs, idxs] = await Promise.all([
           api.getCatalogSummary().catch(() => null),
           api.getMarketSessionStatus().catch(() => null),
-          api.getAccounts().catch(() => [])
+          api.getAccounts().catch(() => []),
+          api.getMarketIndices().catch(() => [])
         ]);
         if (sum) setCatalogSummary(sum);
         if (sess) setSessionStatus(sess);
         if (accs && accs.length) setAccounts(accs);
+        if (idxs && idxs.length) setIndices(idxs);
       } catch (err) {
         console.error('Failed to load market metadata:', err);
       }
@@ -357,41 +363,66 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
           )}
         </div>
 
-        {/* Catalog Statistics Cards */}
-        {catalogSummary?.counts_by_exchange && (
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-slate-100">
-            <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold">NSE Cash</span>
-              <p className="text-sm font-bold text-slate-900">
-                {catalogSummary.counts_by_exchange.NSE?.toLocaleString() || '10,080'}
-              </p>
+        {/* Market Indices & Dynamic Option Chains Section */}
+        <div className="pt-2 border-t border-slate-100">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+              <Layers className="w-4 h-4 text-brand-600" />
+              <span>Market Indices & Option Chains</span>
+              <span className="text-[10px] font-semibold text-slate-400 font-mono">(Authorized SmartAPI Live Quotes)</span>
             </div>
-            <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold">BSE Cash</span>
-              <p className="text-sm font-bold text-slate-900">
-                {catalogSummary.counts_by_exchange.BSE?.toLocaleString() || '13,022'}
-              </p>
-            </div>
-            <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold">NFO Derivatives</span>
-              <p className="text-sm font-bold text-slate-900">
-                {catalogSummary.counts_by_exchange.NFO?.toLocaleString() || '32,512'}
-              </p>
-            </div>
-            <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold">BFO Derivatives</span>
-              <p className="text-sm font-bold text-slate-900">
-                {catalogSummary.counts_by_exchange.BFO?.toLocaleString() || '43,609'}
-              </p>
-            </div>
-            <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold">MCX Commodities</span>
-              <p className="text-sm font-bold text-slate-900">
-                {catalogSummary.counts_by_exchange.MCX?.toLocaleString() || '41,229'}
-              </p>
-            </div>
+            <span className="text-[11px] text-slate-500">Click any card to open real dynamic Option Chain</span>
           </div>
-        )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+            {indices.map((idx) => {
+              const isPos = (idx.net_change ?? 0) >= 0;
+              return (
+                <div
+                  key={idx.id}
+                  onClick={() => setSelectedOptionChainIndex(idx)}
+                  className="group bg-slate-50 hover:bg-white border border-slate-200 hover:border-brand-500 rounded-xl p-3 cursor-pointer shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col justify-between"
+                  title={`Open ${idx.name} Option Chain (${idx.derivatives_exchange})`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-900 group-hover:text-brand-600 transition-colors">
+                      {idx.name}
+                    </span>
+                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-white border border-slate-200 text-slate-600">
+                      {idx.exchange}
+                    </span>
+                  </div>
+
+                  <div className="my-1.5">
+                    <div className="text-sm font-bold font-mono text-slate-900">
+                      {idx.ltp !== null ? idx.ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : 'Price unavailable'}
+                    </div>
+                    {idx.net_change !== null ? (
+                      <div className={`text-[10px] font-semibold flex items-center gap-0.5 ${isPos ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {isPos ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                        <span>{isPos ? '+' : ''}{idx.net_change.toFixed(2)} ({isPos ? '+' : ''}{idx.percent_change?.toFixed(2)}%)</span>
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-400">Quote pending</div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px]">
+                    <span className={`px-1.5 py-0.2 rounded font-bold ${
+                      idx.freshness_status === 'LIVE' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      {idx.freshness_status}
+                    </span>
+                    <span className="font-semibold text-brand-600 group-hover:underline flex items-center gap-0.5">
+                      <span>Option Chain</span>
+                      <ArrowRight className="w-2.5 h-2.5" />
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
 
         {/* Category Tabs & Search Bar */}
         <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
@@ -833,6 +864,7 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
               symbolToken={chartSelection.symbolToken}
               companyName={chartSelection.companyName}
               initialLtp={chartSelection.currentLtp}
+              initialRange="MAX"
               height={520}
               onClose={() => setChartSelection(null)}
               onBuy={(price) => {
@@ -874,27 +906,37 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
         </div>
       )}
 
+      {/* Dynamic Real Option Chain Modal */}
+      {selectedOptionChainIndex && (
+        <OptionChainModal
+          isOpen={Boolean(selectedOptionChainIndex)}
+          index={selectedOptionChainIndex}
+          onClose={() => setSelectedOptionChainIndex(null)}
+          onOpenOrderTicket={(contract, side) => {
+            handleOpenOrderTicket(
+              {
+                tradingsymbol: contract.tradingsymbol,
+                name: `${contract.tradingsymbol} Option`,
+                exchange: contract.exchange,
+                symbol_token: contract.symbol_token,
+                current_ltp: contract.current_ltp,
+                lot_size: contract.lot_size,
+                tick_size: contract.tick_size,
+                segment: contract.exchange,
+                instrument_type: 'OPTION',
+                is_active: true,
+              } as any,
+              side
+            );
+          }}
+        />
+      )}
+
       {/* Reusable Order Ticket Modal */}
       {isOrderModalOpen && orderTicketInstrument && (
         <OrderTicketModal
           isOpen={isOrderModalOpen}
-          account={accounts[0] || ({
-            id: 1,
-            client_code: 'DEMO',
-            nickname: 'Default Trading Account',
-            broker_name: 'Angel One',
-            is_active: true,
-            is_demo: false,
-            ddpi_status: 'ACTIVE',
-            edis_authorized_today: true,
-            account_group: 'Primary',
-            total_portfolio_value: 0,
-            available_cash: 500000,
-            used_margin: 0,
-            total_realized_pnl: 0,
-            total_unrealized_pnl: 0,
-            synced_at: new Date().toISOString()
-          } as any)}
+          account={accounts[0] || null}
           holding={{
             symbol: orderTicketInstrument.tradingsymbol,
             trading_symbol: orderTicketInstrument.tradingsymbol,

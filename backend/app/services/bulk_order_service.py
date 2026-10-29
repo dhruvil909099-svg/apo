@@ -24,14 +24,17 @@ class BulkOrderService:
     def prepare_and_validate(db: Session, request_data: Dict[str, Any]) -> Dict[str, Any]:
         batch_id = str(uuid.uuid4())
         ipo_id = request_data.get("ipo_id")
-        ipo = db.query(IPO).filter(IPO.id == ipo_id).first()
+        ipo = db.query(IPO).filter(IPO.id == ipo_id).first() if ipo_id else None
         
         target_accounts = request_data.get("accounts", [])
         base_price = float(request_data.get("price", 0.0))
         order_type = request_data.get("order_type", "LIMIT")
+        transaction_type = request_data.get("transaction_type", "BUY").upper()
+        product_type = request_data.get("product_type", "DELIVERY").upper()
         exchange = request_data.get("exchange", "NSE")
         symbol_token = str(request_data.get("symbol_token", ""))
         tradingsymbol = request_data.get("tradingsymbol", "")
+        clean_symbol = tradingsymbol.replace("-EQ", "").strip().upper()
 
         proposed_orders: List[Dict[str, Any]] = []
         blocking_errors: List[str] = []
@@ -57,30 +60,28 @@ class BulkOrderService:
             account = db.query(Account).filter(Account.id == acc_id).first()
             if not account:
                 blocking_errors.append(f"Account ID {acc_id} does not exist in authorized account database.")
-                is_executable = False
                 continue
 
-            from app.services.holdings_service import get_holding_for_symbol
-            ipo_obj = db.query(IPO).filter(IPO.id == ipo_id).first()
-            h_info = get_holding_for_symbol(db, account.id, ipo_obj.symbol) if ipo_obj else None
-            if h_info:
-                holding_qty = h_info["quantity"]
-            else:
-                allotment = db.query(Allotment).filter(
-                    Allotment.account_id == account.id,
-                    Allotment.ipo_id == ipo_id
-                ).first()
-                holding_qty = allotment.allotted_quantity if allotment else 0
+            holding_qty = 0
+            if transaction_type == "SELL":
+                from app.services.holdings_service import get_holding_for_symbol
+                h_info = get_holding_for_symbol(db, account.id, clean_symbol)
+                if h_info:
+                    holding_qty = h_info["quantity"]
+                elif ipo_id:
+                    allotment = db.query(Allotment).filter(
+                        Allotment.account_id == account.id,
+                        Allotment.ipo_id == ipo_id
+                    ).first()
+                    holding_qty = allotment.allotted_quantity if allotment else 0
+
             is_valid = True
             msg = "Validation passed"
 
-            # Check holding availability and connection state
+            # Check account connection state and enabled status
             if not account.is_demo and account.auth_status != "CONNECTED":
                 is_valid = False
                 msg = f"BROKER_ACCOUNT_DISCONNECTED: Account '{account.nickname}' is {account.auth_status}. Reconnection required."
-            elif proposed_qty > holding_qty:
-                is_valid = False
-                msg = f"Insufficient shares: requested {proposed_qty}, only {holding_qty} available."
             elif not account.is_enabled:
                 is_valid = False
                 msg = "Account is disabled."
@@ -88,13 +89,27 @@ class BulkOrderService:
                 is_valid = False
                 msg = "Limit price must be greater than zero."
 
-            # Check depository status if live trading
-            if settings.TRADING_MODE == "LIVE":
+            # Calculate value check
+            est_val = proposed_qty * price
+
+            # Check balance / holdings
+            if is_valid:
+                if transaction_type == "BUY":
+                    avail_cash = account.available_cash or 0.0
+                    if avail_cash < est_val:
+                        is_valid = False
+                        msg = f"Insufficient funds: required ₹{est_val:,.2f}, available ₹{avail_cash:,.2f}."
+                elif transaction_type == "SELL":
+                    if proposed_qty > holding_qty:
+                        is_valid = False
+                        msg = f"Insufficient shares: requested {proposed_qty}, only {holding_qty} available."
+
+            # Check depository status if live trading SELL
+            if settings.TRADING_MODE == "LIVE" and transaction_type == "SELL":
                 if account.ddpi_status != "ACTIVE" and not account.edis_authorized_today:
                     warnings.append(f"Account {account.nickname} has no DDPI; CDSL eDIS TPIN authorization required before submission.")
 
-            # Value check
-            est_val = proposed_qty * (price if price > 0 else (ipo.current_ltp if ipo and ipo.current_ltp else 0))
+            # Value limit check
             if global_risk and est_val > global_risk.max_order_value:
                 is_valid = False
                 msg = f"Order value (₹{est_val:,.2f}) exceeds max allowed per account (₹{global_risk.max_order_value:,.2f})."
@@ -105,8 +120,11 @@ class BulkOrderService:
                 "masked_client_code": account.masked_client_code,
                 "account_group": account.account_group,
                 "holding_quantity": holding_qty,
+                "available_cash": account.available_cash or 0.0,
                 "proposed_quantity": proposed_qty,
                 "price": price,
+                "transaction_type": transaction_type,
+                "product_type": product_type,
                 "order_type": order_type,
                 "estimated_value": est_val,
                 "ddpi_active": account.ddpi_status == "ACTIVE",
@@ -138,14 +156,14 @@ class BulkOrderService:
                         tradingsymbol=tradingsymbol,
                         symbol_token=symbol_token,
                         exchange=exchange,
-                        transaction_type="SELL",
+                        transaction_type=transaction_type,
                         order_type=p["order_type"],
-                        product_type="DELIVERY",
+                        product_type=product_type,
                         variety="NORMAL",
                         quantity=p["proposed_quantity"],
                         price=p["price"],
                         status="PREPARED",
-                        is_paper_trade=(settings.TRADING_MODE == "PAPER")
+                        is_paper_trade=(settings.TRADING_MODE == "PAPER" or account.is_demo)
                     )
                     db.add(order_record)
             db.commit()

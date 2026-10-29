@@ -803,6 +803,35 @@ export interface OptionContractDetails {
   day_change_percentage?: number | null;
   open_interest?: number;
   volume?: number;
+  oi_change?: number | null;
+  oi_change_percentage?: number | null;
+}
+
+export interface IndexInfo {
+  id: string;
+  symbol: string;
+  name: string;
+  exchange: string;
+  derivatives_exchange: string;
+  symbol_token: string;
+  lot_size: number;
+  tick_size: number;
+  ltp: number | null;
+  previous_close: number | null;
+  net_change: number | null;
+  percent_change: number | null;
+  freshness_status: 'LIVE' | 'CACHED' | 'STALE' | 'UNAVAILABLE';
+  as_of_timestamp: string;
+  has_options: boolean;
+  strike_gap?: number;
+}
+
+export interface ExpiryInfo {
+  raw: string;
+  date: string;
+  display: string;
+  type: 'W' | 'M';
+  is_nearest: boolean;
 }
 
 export interface OptionChainStrike {
@@ -813,10 +842,18 @@ export interface OptionChainStrike {
 
 export interface OptionChainResponse {
   underlying: string;
+  name?: string;
+  exchange?: string;
+  derivatives_exchange?: string;
+  spot_ltp?: number | null;
+  spot_change?: number | null;
+  spot_change_percent?: number | null;
   selected_expiry: string | null;
-  available_expiries: string[];
-  strikes_count: number;
+  available_expiries: Array<any>;
+  atm_strike?: number | null;
+  strikes_count?: number;
   strikes: OptionChainStrike[];
+  message?: string;
 }
 
 export interface CommodityContract {

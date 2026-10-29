@@ -49,6 +49,7 @@ class MarginEstimateRequest(BaseModel):
     quantity: int = 1
     price: float = 0.0
     account_id: Optional[int] = None
+    order_type: str = "LIMIT"
 
 
 
@@ -132,17 +133,42 @@ def get_popular_market_instruments(db: Session = Depends(get_db)):
     return get_popular_instruments(db)
 
 
+@router.get("/indices")
+def get_benchmark_indices_endpoint(db: Session = Depends(get_db)):
+    """
+    Returns live market levels and day change for major benchmark indices:
+    NIFTY 50, BANK NIFTY, FIN NIFTY, MIDCAP NIFTY, NIFTY NEXT 50, SENSEX, BANKEX.
+    Used for Stock Explorer index cards and one-click Option Chain navigation.
+    """
+    from app.services.option_chain_service import OptionChainService
+    return OptionChainService.get_benchmark_indices(db)
+
+
+@router.get("/option-chain/expiries")
+def get_option_chain_expiries_endpoint(
+    underlying: str = Query("NIFTY", description="Index underlying (NIFTY, BANKNIFTY, FINNIFTY, SENSEX, BANKEX)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns authentic listed active expiries for the given index, sorted chronologically.
+    """
+    from app.services.option_chain_service import OptionChainService
+    return OptionChainService.get_available_expiries(db, underlying=underlying)
+
+
+@router.get("/option-chain")
 @router.get("/instruments/option-chain")
 def get_market_option_chain(
-    underlying: str = Query("NIFTY", description="Underlying asset (e.g., NIFTY, BANKNIFTY, HINDCOPPER)"),
+    underlying: str = Query("NIFTY", description="Underlying asset (e.g., NIFTY, BANKNIFTY, FINNIFTY, SENSEX, BANKEX)"),
     expiry_date: Optional[str] = Query(None, description="Contract expiry in DDMMMYYYY or YYYY-MM-DD format"),
     db: Session = Depends(get_db)
 ):
     """
     Returns structured options chain matrix pairing Call (CE) and Put (PE) contracts
-    across strike prices for the selected underlying.
+    across strike prices for the selected underlying, centered around verified ATM spot.
     """
-    return get_option_chain(db, underlying=underlying, expiry_date=expiry_date)
+    from app.services.option_chain_service import OptionChainService
+    return OptionChainService.get_option_chain(db, underlying=underlying, expiry_date=expiry_date)
 
 
 @router.get("/instruments/commodities")
@@ -424,7 +450,8 @@ def calculate_order_margin(
         product_type=req.product_type,
         quantity=req.quantity,
         price=req.price,
-        available_funds=available_funds
+        available_funds=available_funds,
+        order_type=req.order_type
     )
     return result
 

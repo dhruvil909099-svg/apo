@@ -687,10 +687,15 @@ export const api = {
 
   getPopularInstruments: () => fetchJson<import('./types').MarketInstrument[]>(`${getApiBase()}/market/instruments/popular`),
 
+  getMarketIndices: () => fetchJson<import('./types').IndexInfo[]>(`${getApiBase()}/market/indices`),
+
+  getOptionChainExpiries: (underlying: string = 'NIFTY') =>
+    fetchJson<import('./types').ExpiryInfo[]>(`${getApiBase()}/market/option-chain/expiries?underlying=${encodeURIComponent(underlying)}`),
+
   getOptionChain: (underlying: string = 'NIFTY', expiryDate?: string) => {
     const sp = new URLSearchParams({ underlying });
     if (expiryDate) sp.append('expiry_date', expiryDate);
-    return fetchJson<import('./types').OptionChainResponse>(`${getApiBase()}/market/instruments/option-chain?${sp.toString()}`);
+    return fetchJson<import('./types').OptionChainResponse>(`${getApiBase()}/market/option-chain?${sp.toString()}`);
   },
 
   getCommodities: () => fetchJson<import('./types').CommodityContract[]>(`${getApiBase()}/market/instruments/commodities`),
@@ -727,7 +732,7 @@ export const api = {
     sebi_charges: number | null;
     stamp_duty: number | null;
     gst: number | null;
-    dp_charges: number | null;
+    dpCharges: number | null;
     total_charges: number | null;
     is_broker_verified: boolean;
     verified: boolean;
@@ -749,6 +754,7 @@ export const api = {
     product_type: string;
     quantity: number;
     price: number;
+    order_type?: string;
     account_id?: number;
   }) => fetchJson<{
     full_trade_value: number;

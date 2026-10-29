@@ -97,14 +97,16 @@ const INTERVAL_ALIASES: Record<string, string> = {
   '15m': 'FIFTEEN_MINUTE', '30m': 'THIRTY_MINUTE', '1h': 'ONE_HOUR', '60m': 'ONE_HOUR', '1d': 'ONE_DAY',
 };
 
-const normalizeInterval = (v?: string) => {
-  if (!v) return 'FIVE_MINUTE';
-  if (INTERVALS.some((i) => i.value === v.toUpperCase())) return v.toUpperCase();
-  return INTERVAL_ALIASES[v.toLowerCase()] || 'FIVE_MINUTE';
+const normalizeInterval = (v?: string, r?: string) => {
+  if (v) {
+    if (INTERVALS.some((i) => i.value === v.toUpperCase())) return v.toUpperCase();
+    if (INTERVAL_ALIASES[v.toLowerCase()]) return INTERVAL_ALIASES[v.toLowerCase()];
+  }
+  return r === '1D' ? 'FIVE_MINUTE' : 'ONE_DAY';
 };
-const normalizeRange = (v?: string) => (RANGES.some((r) => r.value === v?.toUpperCase()) ? v!.toUpperCase() : '1D');
-const intervalMeta = (v: string) => INTERVALS.find((i) => i.value === v) || INTERVALS[2];
-const rangeMeta = (v: string) => RANGES.find((r) => r.value === v) || RANGES[0];
+const normalizeRange = (v?: string) => (RANGES.some((r) => r.value === v?.toUpperCase()) ? v!.toUpperCase() : 'MAX');
+const intervalMeta = (v: string) => INTERVALS.find((i) => i.value === v) || INTERVALS[7];
+const rangeMeta = (v: string) => RANGES.find((r) => r.value === v) || RANGES[7];
 
 function toChartTime(ts: string | number): number {
   if (typeof ts === 'number') return (ts > 1e12 ? Math.floor(ts / 1000) : ts) + IST_OFFSET_SEC;
@@ -179,8 +181,8 @@ export const StockChart: React.FC<StockChartProps> = ({
 }) => {
   const cleanSym = symbol.replace('-EQ', '').toUpperCase();
 
-  const [interval, setIntervalValue] = useState(() => normalizeInterval(initialInterval));
   const [range, setRange] = useState(() => normalizeRange(initialRange));
+  const [interval, setIntervalValue] = useState(() => normalizeInterval(initialInterval, initialRange));
   const [meta, setMeta] = useState<MarketCandleResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

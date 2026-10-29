@@ -29,9 +29,10 @@ class MarginEstimateService:
         transaction_type: str,
         product_type: str,
         quantity: int,
-        price: float
+        price: float,
+        order_type: str = "LIMIT"
     ) -> str:
-        return f"{exchange.upper()}_{symbol_token}_{transaction_type.upper()}_{product_type.upper()}_{quantity}_{round(price, 2)}"
+        return f"{exchange.upper()}_{symbol_token}_{transaction_type.upper()}_{product_type.upper()}_{quantity}_{round(price, 2)}_{order_type.upper()}"
 
     @classmethod
     def calculate_margin(
@@ -44,7 +45,8 @@ class MarginEstimateService:
         product_type: str,
         quantity: int,
         price: float,
-        available_funds: float = 0.0
+        available_funds: float = 0.0,
+        order_type: Optional[str] = "LIMIT"
     ) -> Dict[str, Any]:
         """
         Calculates required margin for an order.
@@ -53,6 +55,7 @@ class MarginEstimateService:
         exchange = (exchange or "NSE").upper().strip()
         transaction_type = (transaction_type or "BUY").upper().strip()
         product_type = (product_type or "DELIVERY").upper().strip()
+        order_type_val = (order_type or "LIMIT").upper().strip()
 
         # Normalize product type
         if product_type in ("CNC", "DELIVERY"):
@@ -83,7 +86,7 @@ class MarginEstimateService:
         )
 
         # In-memory cache check
-        cache_key = cls._make_cache_key(exchange, symbol_token, transaction_type, norm_product, quantity, price)
+        cache_key = cls._make_cache_key(exchange, symbol_token, transaction_type, norm_product, quantity, price, order_type_val)
         cached = cls._cache.get(cache_key)
         if cached:
             ts, val = cached
@@ -114,7 +117,8 @@ class MarginEstimateService:
                         "price": price,
                         "productType": norm_product,
                         "token": str(symbol_token),
-                        "tradeType": transaction_type
+                        "tradeType": transaction_type,
+                        "orderType": order_type_val
                     }]
                     margin_resp = adapter.get_margin_batch(positions)
                     if margin_resp and margin_resp.get("status") and margin_resp.get("data"):
