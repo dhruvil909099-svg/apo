@@ -113,7 +113,7 @@ export const StockChart: React.FC<StockChartProps> = ({
     }
     return null;
   });
-  const [chartType, setChartType] = useState<'candle' | 'line'>('candle');
+  const [chartType, setChartType] = useState<'candle' | 'line'>('line');
   const [interval, setInterval] = useState<string>(initialInterval);
   const [rangePeriod, setRangePeriod] = useState<string>(initialRange);
   const [isLoading, setIsLoading] = useState<boolean>(!initialLtp);
@@ -219,27 +219,27 @@ export const StockChart: React.FC<StockChartProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+    <div className="bg-[#131722] text-slate-100 rounded-xl border border-slate-800 shadow-sm overflow-hidden flex flex-col">
       {/* Top Header: Angel One-Style Market Snapshot */}
-      <div className="p-5 border-b border-slate-100 space-y-4">
+      <div className="p-5 border-b border-slate-800 space-y-4 bg-[#191e2b]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
-              <h2 className="text-xl font-bold text-slate-900 tracking-tight">{symbol}</h2>
-              <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+              <h2 className="text-xl font-bold text-white tracking-tight">{symbol}</h2>
+              <span className="text-xs font-semibold bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
                 {chartData?.exchange || 'NSE'}
               </span>
-              <span className="text-xs text-slate-500 font-medium truncate max-w-xs">
+              <span className="text-xs text-slate-400 font-medium truncate max-w-xs">
                 {chartData?.company_name}
               </span>
             </div>
             
             {/* Price & Change */}
             <div className="flex items-baseline gap-3 mt-1.5">
-              <span className="text-3xl font-extrabold text-slate-900 num-mono tracking-tight">
+              <span className="text-3xl font-extrabold text-white num-mono tracking-tight">
                 ₹{(chartData?.current_ltp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </span>
-              <span className={`flex items-center text-sm font-bold num-mono ${isPositive ? 'text-finGreen' : 'text-finRed'}`}>
+              <span className={`flex items-center text-sm font-bold num-mono ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {isPositive ? <TrendingUp className="w-4 h-4 mr-1" /> : <TrendingDown className="w-4 h-4 mr-1" />}
                 {isPositive ? '+' : ''}₹{(chartData?.change ?? 0).toFixed(2)} ({isPositive ? '+' : ''}{(chartData?.change_percent ?? 0).toFixed(2)}%)
               </span>
@@ -282,34 +282,34 @@ export const StockChart: React.FC<StockChartProps> = ({
         </div>
 
         {/* OHLCV Summary Ribbon */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-3 border-t border-slate-100 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-3 border-t border-slate-800 text-xs">
           <div>
             <span className="text-slate-400 text-[11px]">Open:</span>
-            <div className="font-bold text-slate-800 num-mono mt-0.5">
+            <div className="font-bold text-slate-200 num-mono mt-0.5">
               ₹{(chartData?.open ?? 0).toFixed(2)}
             </div>
           </div>
           <div>
             <span className="text-slate-400 text-[11px]">High:</span>
-            <div className="font-bold text-finGreen num-mono mt-0.5">
+            <div className="font-bold text-emerald-400 num-mono mt-0.5">
               ₹{(chartData?.high ?? 0).toFixed(2)}
             </div>
           </div>
           <div>
             <span className="text-slate-400 text-[11px]">Low:</span>
-            <div className="font-bold text-finRed num-mono mt-0.5">
+            <div className="font-bold text-rose-400 num-mono mt-0.5">
               ₹{(chartData?.low ?? 0).toFixed(2)}
             </div>
           </div>
           <div>
             <span className="text-slate-400 text-[11px]">Prev. Close:</span>
-            <div className="font-bold text-slate-700 num-mono mt-0.5">
+            <div className="font-bold text-slate-300 num-mono mt-0.5">
               ₹{(chartData?.previous_close ?? 0).toFixed(2)}
             </div>
           </div>
           <div>
             <span className="text-slate-400 text-[11px]">Period Volume:</span>
-            <div className="font-bold text-slate-800 num-mono mt-0.5">
+            <div className="font-bold text-slate-200 num-mono mt-0.5">
               {(chartData?.volume ?? 0).toLocaleString('en-IN')}
             </div>
           </div>
@@ -317,9 +317,9 @@ export const StockChart: React.FC<StockChartProps> = ({
       </div>
 
       {/* Chart Control Toolbar */}
-      <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div className="px-5 py-2.5 bg-[#191e2b] border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
         {/* Interval Selector */}
-        <div className="flex items-center gap-1 bg-white p-1 rounded-lg border border-slate-200">
+        <div className="flex items-center gap-1 bg-[#131722] p-1 rounded-lg border border-slate-700">
           <span className="text-[10px] uppercase font-bold text-slate-400 px-2">Timeframe:</span>
           {[
             { label: '1m', interval: 'ONE_MINUTE', range: '1D' },
@@ -341,7 +341,7 @@ export const StockChart: React.FC<StockChartProps> = ({
                 className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
                   isActive
                     ? 'bg-brand-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
                 }`}
               >
                 {item.label}
@@ -351,34 +351,34 @@ export const StockChart: React.FC<StockChartProps> = ({
         </div>
 
         {/* Chart View Type: Candlestick vs Line */}
-        <div className="flex items-center gap-1 bg-white p-1 rounded-lg border border-slate-200">
+        <div className="flex items-center gap-1 bg-[#131722] p-1 rounded-lg border border-slate-700">
+          <button
+            onClick={() => setChartType('line')}
+            className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+              chartType === 'line'
+                ? 'bg-brand-600 text-white'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Line (Live Area)</span>
+          </button>
           <button
             onClick={() => setChartType('candle')}
             className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors ${
               chartType === 'candle'
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-brand-600 text-white'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <BarChart2 className="w-3.5 h-3.5" />
             <span>Candles (OHLC)</span>
           </button>
-          <button
-            onClick={() => setChartType('line')}
-            className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-              chartType === 'line'
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            <span>Line (Area)</span>
-          </button>
         </div>
       </div>
 
       {/* Main Chart Canvas */}
-      <div className="p-4 flex-1 min-h-[380px] relative">
+      <div className="p-4 flex-1 min-h-[380px] relative bg-[#131722]">
         {isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-10">
             <div className="flex flex-col items-center gap-2">
@@ -465,15 +465,15 @@ export const StockChart: React.FC<StockChartProps> = ({
                   >
                     <defs>
                       <linearGradient id="chartAreaGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.25} />
-                        <stop offset="95%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0} />
+                        <stop offset="5%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.35} />
+                        <stop offset="95%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1f2937" />
                     <XAxis
                       dataKey="timestamp"
                       tickFormatter={formatXAxis}
-                      stroke="#94a3b8"
+                      stroke="#64748b"
                       fontSize={10}
                       tickLine={false}
                     />
