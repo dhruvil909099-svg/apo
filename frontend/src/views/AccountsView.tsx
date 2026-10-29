@@ -472,6 +472,26 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                 return prev;
               });
 
+              // 2b. Update Markets & Search search results in real time
+              setDrawerMarketsResults((prev) => {
+                if (!prev || prev.length === 0) return prev;
+                let mChanged = false;
+                const mUpdated = prev.map((item) => {
+                  const itemSym = item.tradingsymbol.replace('-EQ', '').toUpperCase();
+                  if (itemSym === sym || item.symbol_token === msg.symbol_token) {
+                    mChanged = true;
+                    return {
+                      ...item,
+                      current_ltp: tickLtp,
+                      day_change: msg.change ?? item.day_change,
+                      day_change_percentage: msg.change_percent ?? item.day_change_percentage,
+                    };
+                  }
+                  return item;
+                });
+                return mChanged ? mUpdated : prev;
+              });
+
               // 3. Update Consolidated Portfolio tab holdings & totals in real time
               setPortfolioHoldings((prev) => {
                 let pChanged = false;
@@ -2369,7 +2389,18 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
                                     {inst.lot_size}
                                   </td>
                                   <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
-                                    {inst.current_ltp ? `₹${inst.current_ltp.toFixed(2)}` : (
+                                    {inst.current_ltp ? (
+                                      <div>
+                                        <span className="text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                          ₹{inst.current_ltp.toFixed(2)}
+                                        </span>
+                                        {inst.day_change !== undefined && inst.day_change !== null && (
+                                          <div className={`text-[10px] ${inst.day_change >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                            {inst.day_change >= 0 ? '+' : ''}{inst.day_change.toFixed(2)} ({inst.day_change_percentage ? `${inst.day_change_percentage >= 0 ? '+' : ''}${inst.day_change_percentage.toFixed(2)}%` : ''})
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : (
                                       <span className="text-[10px] text-slate-400 font-normal">Live quote req</span>
                                     )}
                                   </td>

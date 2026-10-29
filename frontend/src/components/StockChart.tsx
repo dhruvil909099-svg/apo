@@ -8,12 +8,15 @@ import {
   Bar, XAxis, YAxis, Tooltip, CartesianGrid
 } from 'recharts';
 import { MarketCandleResponse, MarketCandle } from '../types';
-import { api } from '../api';
+import { api, getWebSocketUrl } from '../api';
 
 interface StockChartProps {
   symbol: string;
   initialInterval?: string;
   initialRange?: string;
+  initialLtp?: number;
+  initialPrevClose?: number;
+  companyName?: string;
   onClose?: () => void;
   accountsBreakdown?: Array<{
     account_id: number;
@@ -76,14 +79,44 @@ export const StockChart: React.FC<StockChartProps> = ({
   symbol,
   initialInterval = 'ONE_DAY',
   initialRange = '1M',
+  initialLtp,
+  initialPrevClose,
+  companyName,
   onClose,
   accountsBreakdown = []
 }) => {
-  const [chartData, setChartData] = useState<MarketCandleResponse | null>(null);
+  const [chartData, setChartData] = useState<MarketCandleResponse | null>(() => {
+    if (initialLtp) {
+      const pClose = initialPrevClose || initialLtp;
+      const chg = Math.round((initialLtp - pClose) * 100) / 100;
+      const chgPct = pClose > 0 ? Math.round((chg / pClose) * 10000) / 100 : 0.0;
+      return {
+        symbol,
+        company_name: companyName || symbol,
+        exchange: 'NSE',
+        symbol_token: '',
+        current_ltp: initialLtp,
+        previous_close: pClose,
+        change: chg,
+        change_percent: chgPct,
+        open: pClose,
+        high: Math.max(initialLtp, pClose),
+        low: Math.min(initialLtp, pClose),
+        volume: 0,
+        interval: initialInterval,
+        range_period: initialRange,
+        data_source: 'LIVE_STREAM',
+        is_stale: false,
+        last_updated: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST',
+        candles: []
+      };
+    }
+    return null;
+  });
   const [chartType, setChartType] = useState<'candle' | 'line'>('candle');
   const [interval, setInterval] = useState<string>(initialInterval);
   const [rangePeriod, setRangePeriod] = useState<string>(initialRange);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(!initialLtp);
   const [error, setError] = useState<string | null>(null);
 
   const fetchChart = async () => {
@@ -91,6 +124,13 @@ export const StockChart: React.FC<StockChartProps> = ({
     setError(null);
     try {
       const data = await api.getMarketCandles(symbol, interval, rangePeriod);
+      // If server returned 0 or null for current_ltp, fallback to verified initialLtp
+      if ((!data.current_ltp || data.current_ltp === 0) && initialLtp) {
+        data.current_ltp = initialLtp;
+        if (initialPrevClose) data.previous_close = initialPrevClose;
+        data.change = Math.round((initialLtp - (data.previous_close || initialLtp)) * 100) / 100;
+        data.change_percent = data.previous_close > 0 ? Math.round((data.change / data.previous_close) * 10000) / 100 : 0.0;
+      }
       setChartData(data);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch historical market data');
@@ -102,6 +142,66 @@ export const StockChart: React.FC<StockChartProps> = ({
   useEffect(() => {
     fetchChart();
   }, [symbol, interval, rangePeriod]);
+
+  // Real-time live tick subscription for sub-second chart updates
+  useEffect(() => {
+    const cleanSym = symbol.replace('-EQ', '').toUpperCase();
+    let ws: WebSocket | null = null;
+    let isMounted = true;
+
+    try {
+      ws = new WebSocket(getWebSocketUrl());
+      ws.onmessage = (event) => {
+        if (!isMounted) return;
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
+            const sym = msg.symbol.replace('-EQ', '').toUpperCase();
+            if (sym === cleanSym) {
+              const tickLtp = msg.ltp;
+              setChartData((prev) => {
+                if (!prev) return prev;
+                const prevClose = prev.previous_close || tickLtp;
+                const chg = Math.round((tickLtp - prevClose) * 100) / 100;
+                const chgPct = prevClose > 0 ? Math.round((chg / prevClose) * 10000) / 100 : 0.0;
+
+                // Update latest candle close and high/low in real time
+                let updatedCandles = prev.candles;
+                if (prev.candles && prev.candles.length > 0) {
+                  const lastIdx = prev.candles.length - 1;
+                  const lastCandle = { ...prev.candles[lastIdx] };
+                  lastCandle.close = tickLtp;
+                  lastCandle.high = Math.max(lastCandle.high, tickLtp);
+                  lastCandle.low = Math.min(lastCandle.low, tickLtp);
+                  updatedCandles = [...prev.candles.slice(0, lastIdx), lastCandle];
+                }
+
+                return {
+                  ...prev,
+                  current_ltp: tickLtp,
+                  change: chg,
+                  change_percent: chgPct,
+                  high: Math.max(prev.high || tickLtp, tickLtp),
+                  low: Math.min(prev.low || tickLtp, tickLtp),
+                  last_updated: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST',
+                  candles: updatedCandles,
+                };
+              });
+            }
+          }
+        } catch {
+          // ignore parsing error
+        }
+      };
+    } catch {
+      // ws error ignored
+    }
+
+    return () => {
+      isMounted = false;
+      if (ws) ws.close();
+    };
+  }, [symbol]);
 
   const isPositive = (chartData?.change ?? 0) >= 0;
 

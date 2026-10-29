@@ -306,6 +306,9 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
                   symbol={cleanSym}
                   initialInterval="5m"
                   initialRange="1D"
+                  initialLtp={ltp}
+                  initialPrevClose={closeP}
+                  companyName={holding.company_name || cleanSym}
                 />
               </div>
             </div>

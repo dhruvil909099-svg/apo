@@ -283,8 +283,17 @@ def search_instruments(
     total_count = q.count()
     instruments = q.order_by(Instrument.tradingsymbol.asc()).offset(offset).limit(limit).all()
 
+    from app.services.smartapi_websocket import smartapi_ws_service
+
     items = []
     for inst in instruments:
+        clean = inst.tradingsymbol.replace("-EQ", "").strip().upper()
+        live_tick = smartapi_ws_service.get_latest_quote(clean) or smartapi_ws_service.get_latest_quote(inst.tradingsymbol)
+        ltp = live_tick["ltp"] if live_tick else inst.current_ltp
+        p_close = live_tick["previous_close"] if live_tick else inst.previous_close
+        chg = live_tick["change"] if live_tick else inst.day_change
+        chg_pct = live_tick["change_percent"] if live_tick else inst.day_change_percentage
+
         items.append({
             "id": inst.id,
             "symbol_token": inst.symbol_token,
@@ -301,10 +310,10 @@ def search_instruments(
             "option_type": inst.option_type,
             "lot_size": inst.lot_size,
             "tick_size": inst.tick_size,
-            "current_ltp": inst.current_ltp,
-            "previous_close": inst.previous_close,
-            "day_change": inst.day_change,
-            "day_change_percentage": inst.day_change_percentage,
+            "current_ltp": ltp,
+            "previous_close": p_close,
+            "day_change": chg,
+            "day_change_percentage": chg_pct,
             "volume": inst.volume,
             "open_interest": inst.open_interest,
             "trading_status": inst.trading_status,
