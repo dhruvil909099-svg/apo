@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, ShieldCheck, TrendingUp, TrendingDown, X, AlertCircle } from 'lucide-react';
+import {
+  RefreshCw, ShieldCheck, TrendingUp, TrendingDown, X, AlertCircle,
+  Crosshair, Minus, Sliders, PenTool, Type, Shapes, Ruler, ZoomIn, Magnet, Lock, Trash2
+} from 'lucide-react';
 import {
   createChart,
   CandlestickSeries,
@@ -36,6 +39,8 @@ interface StockChartProps {
   hideHeader?: boolean;
   /** Chart canvas height in px */
   height?: number;
+  /** Show the TradingView left drawing toolbar strip */
+  showDrawingToolbar?: boolean;
   accountsBreakdown?: Array<{
     account_id: number;
     nickname: string;

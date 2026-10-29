@@ -26,7 +26,11 @@ OPENAPI_SCRIP_MASTER_URL = "https://margincalculator.angelone.in/OpenAPI_File/fi
 OPENAPI_SCRIP_MASTER_FALLBACK_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 
 
-def normalize_instrument_record(raw_item: Dict[str, Any], sync_time: datetime) -> Optional[Dict[str, Any]]:
+def normalize_instrument_record(
+    raw_item: Dict[str, Any],
+    sync_time: datetime,
+    company_names: Optional[Dict[str, str]] = None
+) -> Optional[Dict[str, Any]]:
     """
     Normalizes a raw Angel One OpenAPI Scrip Master JSON item:
     - Normalizes exchange segments (NSE, BSE, NFO, BFO, MCX).
@@ -34,11 +38,15 @@ def normalize_instrument_record(raw_item: Dict[str, Any], sync_time: datetime) -
     - Normalizes tick sizes from paise (division by 100.0).
     - Classifies Call (CE) and Put (PE) options.
     - Preserves lot sizes and underlying symbols.
+    - Enriches company names from official exchange provider when available.
     - Leaves market prices (current_ltp, day_change) as None for true market separation.
     """
     token = raw_item.get("token")
     symbol = (raw_item.get("symbol") or "").strip()
     name = (raw_item.get("name") or "").strip()
+    clean_sym = symbol.replace("-EQ", "").strip().upper()
+    if company_names and clean_sym in company_names:
+        name = company_names[clean_sym]
     exch_seg = (raw_item.get("exch_seg") or "").strip().upper()
     itype = (raw_item.get("instrumenttype") or "").strip().upper()
 
@@ -195,8 +203,28 @@ def fetch_and_sync_angel_scrip_master(
 
     target_items = data if max_records is None else data[:max_records]
 
+    # Fetch authoritative listed equity names directly from official exchange provider (NSE)
+    company_name_map = {}
+    try:
+        import csv
+        nse_req = urllib.request.Request(
+            "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        with urllib.request.urlopen(nse_req, timeout=10) as nse_resp:
+            lines = nse_resp.read().decode("utf-8").splitlines()
+            reader = csv.DictReader(lines)
+            for row in reader:
+                sym = (row.get("SYMBOL") or "").strip().upper()
+                cname = (row.get("NAME OF COMPANY") or "").strip()
+                if sym and cname:
+                    company_name_map[sym] = cname
+        logger.info(f"Loaded {len(company_name_map)} authoritative equity names from exchange provider.")
+    except Exception as e:
+        logger.warning(f"Could not fetch official NSE equity names (non-fatal): {e}")
+
     for item in target_items:
-        norm = normalize_instrument_record(item, sync_time)
+        norm = normalize_instrument_record(item, sync_time, company_name_map)
         if norm:
             records_to_insert.append(norm)
         else:
@@ -276,12 +304,43 @@ def search_instruments(
                 Instrument.tradingsymbol.ilike(f"{clean_q}%"),
                 Instrument.tradingsymbol.ilike(f"%{clean_q}%"),
                 Instrument.name.ilike(f"%{clean_q}%"),
+                Instrument.underlying_symbol.ilike(f"{clean_q}%"),
                 Instrument.symbol_token == clean_q
             )
         )
 
     total_count = q.count()
-    instruments = q.order_by(Instrument.tradingsymbol.asc()).offset(offset).limit(limit).all()
+
+    from sqlalchemy import case
+
+    segment_priority = case(
+        (Instrument.segment == 'EQUITY', 1),
+        (Instrument.segment == 'INDEX', 2),
+        (Instrument.segment == 'COMMODITY', 3),
+        (Instrument.segment == 'FUTURES', 4),
+        (Instrument.segment == 'OPTIONS', 5),
+        else_=6
+    )
+
+    if query:
+        clean_q = query.strip()
+        exact_match = case((Instrument.tradingsymbol.ilike(clean_q), 1), else_=2)
+        name_or_sym_prefix = case(
+            (Instrument.tradingsymbol.ilike(f"{clean_q}%"), 1),
+            (Instrument.name.ilike(f"{clean_q}%"), 1),
+            else_=2
+        )
+        instruments = q.order_by(
+            segment_priority.asc(),
+            exact_match.asc(),
+            name_or_sym_prefix.asc(),
+            Instrument.tradingsymbol.asc()
+        ).offset(offset).limit(limit).all()
+    else:
+        instruments = q.order_by(
+            segment_priority.asc(),
+            Instrument.tradingsymbol.asc()
+        ).offset(offset).limit(limit).all()
 
     from app.services.smartapi_websocket import smartapi_ws_service
 
