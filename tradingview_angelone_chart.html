@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IPOPro · Live Candlestick Chart (Angel One SmartAPI)</title>
+  <meta name="description" content="IPOPro live candlestick chart powered by TradingView Lightweight Charts and Angel One SmartAPI historical candles + SmartStream live ticks." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- TradingView Lightweight Charts (free, Apache-2.0) -->
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg: #0b0b0d;
+      --panel: #121214;
+      --border: #222327;
+      --text: #d1d4dc;
+      --muted: #8a8f98;
+      --up: #089981;
+      --down: #f23645;
+      --accent: #5b7cfa;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    button { font-family: inherit; cursor: pointer; border: none; }
+    .num { font-variant-numeric: tabular-nums; }
+
+    /* ---------- Header ---------- */
+    .header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 14px 20px; border-bottom: 1px solid var(--border); gap: 12px; flex-wrap: wrap;
+    }
+    .sym-row { display: flex; align-items: center; gap: 8px; }
+    .sym { font-size: 17px; font-weight: 700; color: #fff; letter-spacing: .3px; }
+    .badge { font-size: 10px; font-weight: 700; color: var(--muted); background: #1d1e22; padding: 2px 6px; border-radius: 4px; }
+    .company { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .hdr-right { display: flex; align-items: center; gap: 14px; }
+    .ltp-block { text-align: right; }
+    .ltp { font-size: 16px; font-weight: 700; color: var(--up); }
+    .chg { font-size: 12px; font-weight: 600; color: var(--up); margin-left: 6px; }
+    .feed { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 10px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; }
+    .dot.live { background: var(--up); box-shadow: 0 0 8px var(--up); animation: pulse 1.6s infinite; }
+    .dot.off { background: var(--down); }
+    @keyframes pulse { 50% { opacity: .45; } }
+    .btn { padding: 7px 18px; border-radius: 6px; font-size: 12px; font-weight: 700; color: #fff; transition: filter .15s, transform .08s; }
+    .btn:hover { filter: brightness(1.12); }
+    .btn:active { transform: scale(.96); }
+    .btn-buy { background: var(--up); }
+    .btn-sell { background: var(--down); }
+
+    /* ---------- Toolbar ---------- */
+    .toolbar {
+      display: flex; align-items: center; gap: 4px; padding: 6px 14px;
+      border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap;
+    }
+    .tb-label { font-size: 11px; color: var(--muted); margin-right: 6px; font-weight: 600; }
+    .seg-btn {
+      background: transparent; color: var(--muted); font-size: 12px; font-weight: 600;
+      padding: 5px 10px; border-radius: 5px; transition: background .15s, color .15s;
+    }
+    .seg-btn:hover { background: #1d1e22; color: #fff; }
+    .seg-btn.active { color: var(--accent); background: rgba(91,124,250,.12); }
+    .tb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 8px; }
+
+    /* ---------- Chart ---------- */
+    #chart-wrap { position: relative; flex: 1; min-height: 260px; }
+    #chart { position: absolute; inset: 0; }
+    .overlay { position: absolute; top: 8px; left: 12px; z-index: 5; display: flex; flex-direction: column; gap: 7px; pointer-events: none; }
+    .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; }
+    .legend .title { color: #fff; font-weight: 600; }
+    .legend .k { color: var(--muted); }
+    .legend .v { font-weight: 600; }
+    .order-row { display: flex; align-items: center; gap: 6px; pointer-events: auto; }
+    .order-row .btn { padding: 8px 12px; border-radius: 4px; font-size: 11.5px; }
+    .qty {
+      width: 46px; height: 30px; background: #1d1e22; border: 1px solid var(--border); border-radius: 4px;
+      color: #fff; text-align: center; font-size: 12px; font-weight: 600; outline: none;
+    }
+    .qty:focus { border-color: var(--accent); }
+    .vol-legend { font-size: 12px; color: var(--muted); }
+    .vol-legend span { color: var(--up); font-weight: 600; margin-left: 6px; }
+
+    .loader {
+      position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px; background: rgba(11,11,13,.85);
+      font-size: 12px; color: var(--muted); transition: opacity .25s;
+    }
+    .spinner { width: 30px; height: 30px; border: 3px solid #222; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---------- Footer ---------- */
+    .footer {
+      display: flex; justify-content: space-between; align-items: center; padding: 6px 14px;
+      border-top: 1px solid var(--border); background: var(--panel); font-size: 12px; gap: 8px; flex-wrap: wrap;
+    }
+    .footer .clock { color: var(--muted); }
+    .source-tag { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-left: 10px; background: #1d1e22; color: var(--muted); }
+    .source-tag.real { background: rgba(8,153,129,.15); color: var(--up); }
+    .source-tag.demo { background: rgba(245,158,11,.15); color: #f59e0b; }
+
+    .toast {
+      position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: #1d1e22; border: 1px solid var(--border); color: #fff; padding: 10px 16px;
+      border-radius: 8px; font-size: 12px; opacity: 0; transition: all .25s; z-index: 50; pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    @media (max-width: 640px) {
+      .header { padding: 10px 12px; }
+      .btn { padding: 6px 12px; }
+      .legend { font-size: 11px; gap: 6px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ============ HEADER ============ -->
+  <header class="header">
+    <div>
+      <div class="sym-row">
+        <h1 class="sym" id="hdr-symbol">HINDCOPPER</h1>
+        <span class="badge" id="hdr-exchange">NSE</span>
+      </div>
+      <div class="company" id="hdr-company">Hindustan Copper Ltd</div>
+    </div>
+    <div class="hdr-right">
+      <div class="ltp-block">
+        <div><span class="ltp num" id="hdr-ltp">--.--</span><span class="chg num" id="hdr-chg">--</span></div>
+        <div class="feed"><span class="dot" id="feed-dot"></span><span id="feed-text">Connecting…</span></div>
+      </div>
+      <button class="btn btn-buy" id="hdr-buy">BUY</button>
+      <button class="btn btn-sell" id="hdr-sell">SELL</button>
+    </div>
+  </header>
+
+  <!-- ============ TOOLBAR (intervals) ============ -->
+  <nav class="toolbar" id="interval-bar">
+    <span class="tb-label">Interval</span>
+    <button class="seg-btn" data-interval="ONE_MINUTE">1m</button>
+    <button class="seg-btn" data-interval="THREE_MINUTE">3m</button>
+    <button class="seg-btn active" data-interval="FIVE_MINUTE">5m</button>
+    <button class="seg-btn" data-interval="FIFTEEN_MINUTE">15m</button>
+    <button class="seg-btn" data-interval="THIRTY_MINUTE">30m</button>
+    <button class="seg-btn" data-interval="ONE_HOUR">1h</button>
+    <button class="seg-btn" data-interval="ONE_DAY">1D</button>
+  </nav>
+
+  <!-- ============ CHART ============ -->
+  <main id="chart-wrap">
+    <div class="overlay">
+      <div class="legend num" id="legend">
+        <span class="title" id="lg-title">HINDCOPPER · 5 · NSE</span>
+        <span><span class="k">O</span> <span class="v" id="lg-o">--</span></span>
+        <span><span class="k">H</span> <span class="v" id="lg-h">--</span></span>
+        <span><span class="k">L</span> <span class="v" id="lg-l">--</span></span>
+        <span><span class="k">C</span> <span class="v" id="lg-c">--</span></span>
+        <span class="v" id="lg-chg">--</span>
+      </div>
+      <!-- Requirement 7: BUY / SELL with live price -->
+      <div class="order-row">
+        <button class="btn btn-buy num" id="btn-buy">BUY @ <span id="buy-px">--.--</span></button>
+        <input class="qty num" id="qty" type="number" min="1" value="1" aria-label="Quantity" />
+        <button class="btn btn-sell num" id="btn-sell">SELL @ <span id="sell-px">--.--</span></button>
+      </div>
+      <div class="vol-legend num">Volume<span id="lg-vol">--</span></div>
+    </div>
+
+    <div class="loader" id="loader"><div class="spinner"></div><div id="loader-text">Fetching SmartAPI candles…</div></div>
+    <div id="chart"></div>
+  </main>
+
+  <!-- ============ FOOTER (ranges) ============ -->
+  <footer class="footer">
+    <div id="range-bar">
+      <button class="seg-btn active" data-range="1D">1D</button>
+      <button class="seg-btn" data-range="5D">5D</button>
+      <button class="seg-btn" data-range="1M">1M</button>
+      <button class="seg-btn" data-range="3M">3M</button>
+      <button class="seg-btn" data-range="6M">6M</button>
+      <button class="seg-btn" data-range="1Y">1Y</button>
+      <span class="source-tag" id="source-tag">—</span>
+    </div>
+    <div class="clock num" id="clock">--:--:-- (UTC+5:30)</div>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    /*************************************************************************
+     * 1. SMARTAPI CREDENTIALS — paste your values here
+     *************************************************************************/
+    const SMARTAPI_JWT_TOKEN   = "YOUR_SMARTAPI_JWT_TOKEN";   // data.jwtToken from loginByPassword
+    const SMARTAPI_API_KEY     = "YOUR_SMARTAPI_API_KEY";     // SmartAPI app "API Key"
+    const SMARTAPI_CLIENT_CODE = "YOUR_CLIENT_CODE";          // e.g. "A123456"
+    const SMARTAPI_FEED_TOKEN  = "YOUR_FEED_TOKEN";           // data.feedToken from loginByPassword (needed for WebSocket)
+
+    // Instrument to chart. Verify the token in Angel's instrument master:
+    // https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json
+    const INSTRUMENT = {
+      symbol: "HINDCOPPER",
+      company: "Hindustan Copper Ltd",
+      exchange: "NSE",          // NSE | BSE | NFO ...
+      token: "17939",
+      exchangeType: 1           // SmartStream: 1=NSE_CM, 2=NSE_FO, 3=BSE_CM, 4=BSE_FO, 5=MCX_FO
+    };
+
+    // Browsers usually get CORS-blocked calling apiconnect.angelone.in directly.
+    // If so, set this to your IPOPro backend (e.g. "https://apo-wubq.onrender.com/api/v1")
+    // and the page will use GET {base}/market/candles which calls getCandleData server-side.
+    const IPOPRO_BACKEND_BASE = "";
+    const IPOPRO_API_KEY = "";
+
+    /*************************************************************************
+     * 2. CONSTANTS & STATE
+     *************************************************************************/
+    const LWC = window.LightweightCharts;
+    const IST_OFFSET_SEC = 19800; // chart axis shows IST: shift UTC epoch by +5:30
+    const COLORS = { up: '#089981', down: '#f23645', upVol: 'rgba(8,153,129,0.5)', downVol: 'rgba(242,54,69,0.5)' };
+    const INTERVAL_SEC = { ONE_MINUTE: 60, THREE_MINUTE: 180, FIVE_MINUTE: 300, TEN_MINUTE: 600, FIFTEEN_MINUTE: 900, THIRTY_MINUTE: 1800, ONE_HOUR: 3600, ONE_DAY: 86400 };
+    const INTERVAL_LABEL = { ONE_MINUTE: '1', THREE_MINUTE: '3', FIVE_MINUTE: '5', TEN_MINUTE: '10', FIFTEEN_MINUTE: '15', THIRTY_MINUTE: '30', ONE_HOUR: '60', ONE_DAY: '1D' };
+    // Max days per getCandleData request (Angel One limits)
+    const MAX_DAYS = { ONE_MINUTE: 30, THREE_MINUTE: 60, FIVE_MINUTE: 100, TEN_MINUTE: 100, FIFTEEN_MINUTE: 200, THIRTY_MINUTE: 200, ONE_HOUR: 400, ONE_DAY: 2000 };
+    const RANGE_DAYS = { '1D': 4, '5D': 7, '1M': 31, '3M': 92, '6M': 183, '1Y': 366 };
+    const INTERVAL_ORDER = ['ONE_MINUTE', 'THREE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'THIRTY_MINUTE', 'ONE_HOUR', 'ONE_DAY'];
+
+    const state = {
+      interval: 'FIVE_MINUTE',
+      range: '1D',
+      bars: [],
+      lastBar: null,
+      ltp: 0,
+      prevClose: 0,
+      lastCumVolume: 0,
+      ws: null,
+      heartbeat: null,
+      reconnectDelay: 2000,
+      demoTimer: null,
+    };
+
+    let chart, candleSeries, volumeSeries, ltpLine;
+    const $ = (id) => document.getElementById(id);
+    const isPlaceholder = (v) => !v || v.startsWith('YOUR_');
+
+    /*************************************************************************
+     * 3. CHART SETUP (works with Lightweight Charts v5 and v4)
+     *************************************************************************/
+    function addSeries(kind, options) {
+      if (typeof chart.addSeries === 'function') return chart.addSeries(LWC[kind + 'Series'], options); // v5
+      return chart['add' + kind + 'Series'](options);                                                   // v4
+    }
+
+    function initChart() {
+      chart = LWC.createChart($('chart'), {
+        autoSize: true, // responsive: follows container size via ResizeObserver
+        layout: {
+          background: { type: 'solid', color: '#0b0b0d' },
+          textColor: '#8a8f98',
+          fontFamily: "'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif",
+          fontSize: 11,
+        },
+        grid: {
+          vertLines: { color: 'rgba(42,46,57,0.35)' },
+          horzLines: { color: 'rgba(42,46,57,0.35)' },
+        },
+        crosshair: {
+          mode: LWC.CrosshairMode.Normal,
+          vertLine: { color: '#5d606b', style: LWC.LineStyle.Dashed, labelBackgroundColor: '#2a2e39' },
+          horzLine: { color: '#5d606b', style: LWC.LineStyle.Dashed, labelBackgroundColor: '#2a2e39' },
+        },
+        rightPriceScale: { borderColor: '#222327', scaleMargins: { top: 0.18, bottom: 0.22 } },
+        timeScale: { borderColor: '#222327', timeVisible: true, secondsVisible: false, rightOffset: 8, barSpacing: 7 },
+        localization: { priceFormatter: (p) => p.toFixed(2) },
+      });
+
+      candleSeries = addSeries('Candlestick', {
+        upColor: COLORS.up, downColor: COLORS.down,
+        borderUpColor: COLORS.up, borderDownColor: COLORS.down,
+        wickUpColor: COLORS.up, wickDownColor: COLORS.down,
+        priceLineVisible: false,   // we draw our own dotted LTP line
+        lastValueVisible: false,
+      });
+
+      volumeSeries = addSeries('Histogram', {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+        lastValueVisible: true,
+        priceLineVisible: false,
+      });
+      chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+      chart.subscribeCrosshairMove((param) => {
+        const c = param && param.time && param.seriesData ? param.seriesData.get(candleSeries) : null;
+        const v = param && param.time && param.seriesData ? param.seriesData.get(volumeSeries) : null;
+        if (c) updateLegend({ ...c, volume: v ? v.value : 0 });
+        else if (state.lastBar) updateLegend(state.lastBar);
+      });
+    }
+
+    /*************************************************************************
+     * 4. HISTORICAL CANDLES (SmartAPI getCandleData)
+     *************************************************************************/
+    function istNow() { return new Date(Date.now() + IST_OFFSET_SEC * 1000); }
+    function fmtApiDate(d) { // d is an IST-shifted Date -> read with getUTC*
+      const p = (n) => String(n).padStart(2, '0');
+      return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+    }
+
+    function toChartTime(ts) {
+      if (typeof ts === 'number') return ts > 1e12 ? Math.floor(ts / 1000) + IST_OFFSET_SEC : ts + IST_OFFSET_SEC;
+      let s = String(ts).trim().replace(' ', 'T');
+      if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z'; // naive timestamps from IPOPro backend are UTC
+      return Math.floor(Date.parse(s) / 1000) + IST_OFFSET_SEC;
+    }
+
+    async function fetchCandles() {
+      showLoader(true, 'Fetching SmartAPI candles…');
+      const days = RANGE_DAYS[state.range] || 4;
+      const now = istNow();
+      const from = new Date(now.getTime() - days * 86400000);
+      from.setUTCHours(9, 15, 0, 0);
+
+      let rows = [];
+      let source = 'demo';
+      try {
+        if (IPOPRO_BACKEND_BASE) {
+          const url = `${IPOPRO_BACKEND_BASE}/market/candles?symbol=${encodeURIComponent(INSTRUMENT.symbol)}&interval=${state.interval}&range_period=${state.range}`;
+          const res = await fetch(url, { headers: IPOPRO_API_KEY ? { 'X-API-Key': IPOPRO_API_KEY } : {} });
+          const json = await res.json();
+          rows = json.candles || [];
+          if (rows.length) source = json.data_source === 'SMARTAPI_HISTORICAL_API' ? 'real' : 'backend';
+        } else if (!isPlaceholder(SMARTAPI_JWT_TOKEN)) {
+          const res = await fetch('https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'X-UserType': 'USER',
+              'X-SourceID': 'WEB',
+              'X-ClientLocalIP': '127.0.0.1',
+              'X-ClientPublicIP': '127.0.0.1',
+              'X-MACAddress': '00:00:00:00:00:00',
+              'X-PrivateKey': SMARTAPI_API_KEY,
+              'Authorization': SMARTAPI_JWT_TOKEN.startsWith('Bearer ') ? SMARTAPI_JWT_TOKEN : `Bearer ${SMARTAPI_JWT_TOKEN}`,
+            },
+            body: JSON.stringify({
+              exchange: INSTRUMENT.exchange,
+              symboltoken: INSTRUMENT.token,
+              interval: state.interval,
+              fromdate: fmtApiDate(from),
+              todate: fmtApiDate(now),
+            }),
+          });
+          const json = await res.json();
+          if (json.status && Array.isArray(json.data) && json.data.length) { rows = json.data; source = 'real'; }
+          else console.warn('getCandleData returned no data:', json);
+        }
+      } catch (err) {
+        console.warn('Candle fetch failed (likely CORS — set IPOPRO_BACKEND_BASE):', err);
+      }
+
+      if (!rows.length) rows = generateDemoCandles();
+      setSourceTag(source);
+      renderBars(rows);
+      showLoader(false);
+    }
+
+    function normalizeRow(r) {
+      // SmartAPI: [timestamp, open, high, low, close, volume]; IPOPro backend: {timestamp, open, ...}
+      const a = Array.isArray(r) ? r : [r.timestamp ?? r.time, r.open, r.high, r.low, r.close, r.volume];
+      const bar = { time: toChartTime(a[0]), open: +a[1], high: +a[2], low: +a[3], close: +a[4], volume: +a[5] || 0 };
+      return Number.isFinite(bar.time) && Number.isFinite(bar.close) ? bar : null;
+    }
+
+    function renderBars(rows) {
+      const map = new Map();
+      rows.map(normalizeRow).filter(Boolean).forEach((b) => map.set(b.time, b)); // dedupe
+      const bars = [...map.values()].sort((a, b) => a.time - b.time);
+      state.bars = bars;
+      if (!bars.length) return;
+
+      candleSeries.setData(bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
+      volumeSeries.setData(bars.map(volPoint));
+
+      state.lastBar = { ...bars[bars.length - 1] };
+      state.prevClose = computePrevClose(bars);
+      state.lastCumVolume = 0;
+      updateLtp(state.lastBar.close);
+      updateLegend(state.lastBar);
+      $('lg-title').textContent = `${INSTRUMENT.symbol} · ${INTERVAL_LABEL[state.interval]} · ${INSTRUMENT.exchange}`;
+
+      // 1D range on intraday: zoom to latest session only (we fetch a few days to cover weekends/holidays)
+      if (state.range === '1D' && state.interval !== 'ONE_DAY') {
+        const lastDay = dayKey(state.lastBar.time);
+        const sessionBars = bars.filter((b) => dayKey(b.time) === lastDay).length;
+        chart.timeScale().setVisibleLogicalRange({ from: bars.length - Math.max(sessionBars, 20), to: bars.length + 6 });
+      } else {
+        chart.timeScale().fitContent();
+      }
+    }
+
+    const volPoint = (b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? COLORS.upVol : COLORS.downVol });
+    const dayKey = (t) => Math.floor(t / 86400);
+
+    function computePrevClose(bars) {
+      if (state.interval === 'ONE_DAY') return bars.length > 1 ? bars[bars.length - 2].close : bars[0].open;
+      const today = dayKey(bars[bars.length - 1].time);
+      for (let i = bars.length - 1; i >= 0; i--) if (dayKey(bars[i].time) !== today) return bars[i].close;
+      return bars[0].open;
+    }
+
+    /*************************************************************************
+     * 5. LTP, DOTTED PRICE LINE, BUY/SELL LABELS
+     *************************************************************************/
+    function updateLtp(price) {
+      state.ltp = +price;
+      const up = state.ltp >= (state.prevClose || state.ltp);
+      const color = up ? COLORS.up : COLORS.down;
+      const px = state.ltp.toFixed(2);
+
+      $('hdr-ltp').textContent = px;
+      $('hdr-ltp').style.color = color;
+      $('buy-px').textContent = px;
+      $('sell-px').textContent = px;
+
+      if (state.prevClose) {
+        const d = state.ltp - state.prevClose;
+        const pct = (d / state.prevClose) * 100;
+        const s = d >= 0 ? '+' : '';
+        $('hdr-chg').textContent = `${d >= 0 ? '▲' : '▼'} ${s}${d.toFixed(2)} (${s}${pct.toFixed(2)}%)`;
+        $('hdr-chg').style.color = color;
+      }
+
+      const opts = { price: state.ltp, color, lineWidth: 1, lineStyle: LWC.LineStyle.Dotted, axisLabelVisible: true, title: '' };
+      if (!ltpLine) ltpLine = candleSeries.createPriceLine(opts);
+      else ltpLine.applyOptions(opts);
+    }
+
+    function updateLegend(b) {
+      if (!b) return;
+      const color = b.close >= b.open ? COLORS.up : COLORS.down;
+      ['o', 'h', 'l', 'c'].forEach((k, i) => {
+        const el = $('lg-' + k);
+        el.textContent = (+[b.open, b.high, b.low, b.close][i]).toFixed(2);
+        el.style.color = color;
+      });
+      const d = b.close - b.open;
+      const pct = b.open ? (d / b.open) * 100 : 0;
+      $('lg-chg').textContent = `${d >= 0 ? '+' : ''}${d.toFixed(2)} (${d >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+      $('lg-chg').style.color = color;
+      $('lg-vol').textContent = fmtVol(b.volume || 0);
+      $('lg-vol').style.color = color;
+    }
+
+    function fmtVol(v) {
+      if (v >= 1e7) return (v / 1e7).toFixed(2) + 'Cr';
+      if (v >= 1e5) return (v / 1e5).toFixed(2) + 'L';
+      if (v >= 1e3) return (v / 1e3).toFixed(3) + 'K';
+      return String(Math.round(v));
+    }
+
+    /*************************************************************************
+     * 6. LIVE TICK -> UPDATE / CREATE CANDLE
+     *************************************************************************/
+    function isMarketOpen(t) {
+      const d = new Date(t * 1000); // t already IST-shifted
+      const dow = d.getUTCDay();
+      const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+      return dow >= 1 && dow <= 5 && mins >= 555 && mins < 930; // 09:15–15:30
+    }
+
+    function handleTick({ ltp, cumVolume = 0, close = 0 }) {
+      if (!(ltp > 0)) return;
+      if (close > 0) state.prevClose = close;
+      updateLtp(ltp);
+      const last = state.lastBar;
+      if (!last) return;
+
+      const t = Math.floor(Date.now() / 1000) + IST_OFFSET_SEC;
+      const sec = INTERVAL_SEC[state.interval];
+      const bucket = state.interval === 'ONE_DAY'
+        ? Math.floor(t / 86400) * 86400
+        : last.time + Math.floor((t - last.time) / sec) * sec;
+
+      if (bucket > last.time && isMarketOpen(t)) {
+        state.lastBar = { time: bucket, open: ltp, high: ltp, low: ltp, close: ltp, volume: 0 };
+      } else {
+        last.close = ltp;
+        last.high = Math.max(last.high, ltp);
+        last.low = Math.min(last.low, ltp);
+      }
+
+      // SmartStream volume is cumulative for the day -> add the delta to the live candle
+      if (cumVolume > 0) {
+        if (state.lastCumVolume > 0 && cumVolume > state.lastCumVolume) state.lastBar.volume += cumVolume - state.lastCumVolume;
+        state.lastCumVolume = cumVolume;
+      }
+
+      const b = state.lastBar;
+      candleSeries.update({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
+      volumeSeries.update(volPoint(b));
+      updateLegend(b);
+    }
+
+    /*************************************************************************
+     * 7. ANGEL ONE SMARTSTREAM WEBSOCKET (v2)
+     *************************************************************************/
+    function connectSmartStream() {
+      if ([SMARTAPI_FEED_TOKEN, SMARTAPI_API_KEY, SMARTAPI_CLIENT_CODE].some(isPlaceholder)) {
+        setFeed('demo', 'Demo feed (add feed token)');
+        startDemoTicks();
+        return;
+      }
+      stopDemoTicks();
+      setFeed('', 'Connecting…');
+
+      // Browsers can't set custom WS headers, SmartStream accepts them as query params instead
+      const url = 'wss://smartapisocket.angelone.in/smart-stream'
+        + `?clientCode=${encodeURIComponent(SMARTAPI_CLIENT_CODE)}`
+        + `&feedToken=${encodeURIComponent(SMARTAPI_FEED_TOKEN)}`
+        + `&apiKey=${encodeURIComponent(SMARTAPI_API_KEY)}`;
+
+      const ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      state.ws = ws;
+
+      ws.onopen = () => {
+        state.reconnectDelay = 2000;
+        setFeed('live', 'SmartAPI live');
+        ws.send(JSON.stringify({
+          correlationID: 'ipopro_chart',
+          action: 1,                       // 1 = subscribe
+          params: {
+            mode: 2,                       // 2 = Quote (LTP + day volume + OHLC)
+            tokenList: [{ exchangeType: INSTRUMENT.exchangeType, tokens: [INSTRUMENT.token] }],
+          },
+        }));
+        clearInterval(state.heartbeat);
+        state.heartbeat = setInterval(() => ws.readyState === 1 && ws.send('ping'), 30000);
+      };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') { if (ev.data !== 'pong') console.log('SmartStream:', ev.data); return; }
+        const tick = parseSmartStreamPacket(ev.data);
+        if (tick && tick.token === INSTRUMENT.token) handleTick(tick);
+      };
+
+      ws.onerror = (e) => console.warn('SmartStream error', e);
+
+      ws.onclose = () => {
+        clearInterval(state.heartbeat);
+        setFeed('off', `Reconnecting in ${Math.round(state.reconnectDelay / 1000)}s`);
+        setTimeout(connectSmartStream, state.reconnectDelay);
+        state.reconnectDelay = Math.min(state.reconnectDelay * 2, 30000);
+      };
+    }
+
+    // SmartStream binary packet (little-endian)
+    //  0:mode 1:exchType 2-26:token 27:seq(i64) 35:exchTs(i64) 43:LTP(i64 paise)
+    //  Quote mode adds 67:volume(i64) ... 115:close(i64 paise)
+    function parseSmartStreamPacket(buf) {
+      if (!(buf instanceof ArrayBuffer) || buf.byteLength < 51) return null;
+      const v = new DataView(buf);
+      const mode = v.getInt8(0);
+      const token = new TextDecoder().decode(new Uint8Array(buf, 2, 25)).replace(/\0/g, '').trim();
+      const ltp = Number(v.getBigInt64(43, true)) / 100;
+      let cumVolume = 0, close = 0;
+      if (mode >= 2 && buf.byteLength >= 123) {
+        cumVolume = Number(v.getBigInt64(67, true));
+        close = Number(v.getBigInt64(115, true)) / 100;
+      }
+      return { token, ltp, cumVolume, close };
+    }
+
+    /*************************************************************************
+     * 8. DEMO FALLBACKS (only used when credentials missing / API blocked)
+     *************************************************************************/
+    function startDemoTicks() {
+      stopDemoTicks();
+      state.demoTimer = setInterval(() => {
+        if (!state.ltp) return;
+        handleTick({ ltp: +(state.ltp + (Math.random() - 0.5) * 0.3).toFixed(2) });
+      }, 1000);
+    }
+    function stopDemoTicks() { clearInterval(state.demoTimer); state.demoTimer = null; }
+
+    function generateDemoCandles() {
+      const out = [];
+      const sec = INTERVAL_SEC[state.interval];
+      let price = 412.3;
+      let t = Math.floor(Date.now() / 1000 / sec) * sec - 150 * sec;
+      for (let i = 0; i < 150; i++, t += sec) {
+        const o = price, c = +(o + (Math.random() - 0.5) * 1.4).toFixed(2);
+        out.push([t * 1000, o, +(Math.max(o, c) + Math.random() * 0.6).toFixed(2), +(Math.min(o, c) - Math.random() * 0.6).toFixed(2), c, Math.floor(20000 + Math.random() * 90000)]);
+        price = c;
+      }
+      return out;
+    }
+
+    /*************************************************************************
+     * 9. UI HELPERS & EVENTS
+     *************************************************************************/
+    function showLoader(on, text) {
+      const l = $('loader');
+      if (text) $('loader-text').textContent = text;
+      l.style.display = 'flex';
+      l.style.opacity = on ? '1' : '0';
+      if (!on) setTimeout(() => (l.style.display = 'none'), 250);
+    }
+    function setFeed(kind, text) {
+      $('feed-dot').className = 'dot' + (kind ? ' ' + kind : '');
+      $('feed-text').textContent = text;
+    }
+    function setSourceTag(kind) {
+      const el = $('source-tag');
+      el.className = 'source-tag ' + (kind === 'real' ? 'real' : kind === 'demo' ? 'demo' : '');
+      el.textContent = kind === 'real' ? 'SmartAPI historical' : kind === 'demo' ? 'Demo data' : 'IPOPro backend';
+    }
+    function toast(msg) {
+      const t = $('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      clearTimeout(t._h);
+      t._h = setTimeout(() => t.classList.remove('show'), 2200);
+    }
+    function onOrder(side) {
+      const qty = Math.max(1, parseInt($('qty').value, 10) || 1);
+      // Hook your SmartAPI placeOrder call (or IPOPro order ticket) here.
+      toast(`${side} ${qty} × ${INSTRUMENT.symbol} @ ₹${state.ltp.toFixed(2)}`);
+    }
+
+    function selectSeg(container, btn) {
+      container.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    }
+
+    function syncIntervalRange(changed) {
+      // keep the interval/range combination within Angel One's per-request limits
+      const days = RANGE_DAYS[state.range];
+      if (changed === 'range' && MAX_DAYS[state.interval] < days) {
+        state.interval = INTERVAL_ORDER.find((i) => INTERVAL_ORDER.indexOf(i) >= INTERVAL_ORDER.indexOf(state.interval) && MAX_DAYS[i] >= days) || 'ONE_DAY';
+      }
+      if (changed === 'interval' && MAX_DAYS[state.interval] < days) {
+        state.range = Object.keys(RANGE_DAYS).reverse().find((r) => RANGE_DAYS[r] <= MAX_DAYS[state.interval]) || '1D';
+      }
+      if (changed === 'interval' && state.interval === 'ONE_DAY' && days < 31) state.range = '6M';
+      selectSeg($('interval-bar'), document.querySelector(`[data-interval="${state.interval}"]`));
+      selectSeg($('range-bar'), document.querySelector(`[data-range="${state.range}"]`));
+    }
+
+    $('interval-bar').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-interval]');
+      if (!btn || btn.dataset.interval === state.interval) return;
+      state.interval = btn.dataset.interval;
+      syncIntervalRange('interval');
+      fetchCandles();
+    });
+    $('range-bar').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-range]');
+      if (!btn || btn.dataset.range === state.range) return;
+      state.range = btn.dataset.range;
+      syncIntervalRange('range');
+      fetchCandles();
+    });
+    ['btn-buy', 'hdr-buy'].forEach((id) => $(id).addEventListener('click', () => onOrder('BUY')));
+    ['btn-sell', 'hdr-sell'].forEach((id) => $(id).addEventListener('click', () => onOrder('SELL')));
+
+    setInterval(() => {
+      const d = istNow();
+      const p = (n) => String(n).padStart(2, '0');
+      $('clock').textContent = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} (UTC+5:30)`;
+    }, 1000);
+
+    /*************************************************************************
+     * 10. BOOT
+     *************************************************************************/
+    window.addEventListener('DOMContentLoaded', async () => {
+      $('hdr-symbol').textContent = INSTRUMENT.symbol;
+      $('hdr-exchange').textContent = INSTRUMENT.exchange;
+      $('hdr-company').textContent = INSTRUMENT.company;
+      document.title = `${INSTRUMENT.symbol} · IPOPro Live Chart`;
+      initChart();
+      await fetchCandles();
+      connectSmartStream();
+    });
+  </script>
+</body>
+</html>

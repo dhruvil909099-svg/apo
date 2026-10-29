@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  X, TrendingUp, TrendingDown, Activity, BarChart2, ShieldCheck,
-  Calendar, Layers, Info, Check, Copy, AlertCircle, Star, Maximize2
+  X, TrendingUp, TrendingDown, Calendar, Check, Copy, Star
 } from 'lucide-react';
-import { AccountHoldingItem, MarketCandleResponse } from '../types';
-import { api } from '../api';
+import { AccountHoldingItem } from '../types';
 import { StockChart } from './StockChart';
 
 interface StockDetailsModalProps {
@@ -23,14 +21,10 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
   onOpenOrderTicket
 }) => {
   const [tab, setTab] = useState<'chart' | 'depth' | 'details' | 'corporate'>('chart');
-  const [candleData, setCandleData] = useState<MarketCandleResponse | null>(null);
-  const [selectedInterval, setSelectedInterval] = useState<string>('5m');
-  const [selectedRange, setSelectedRange] = useState<string>('1D');
-  const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
   const [copiedSymbol, setCopiedSymbol] = useState<boolean>(false);
   const [isFavorite, setIsFavorite] = useState<boolean>(false);
-  const [tvLoaded, setTvLoaded] = useState<boolean>(false);
-  const tvContainerRef = useRef<HTMLDivElement | null>(null);
+  // Live LTP pushed up from the chart's tick stream
+  const [liveLtp, setLiveLtp] = useState<number | null>(null);
 
   useEffect(() => {
     if (initialView) {
@@ -38,79 +32,20 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
     }
   }, [initialView]);
 
-  // Load TradingView Widget
   useEffect(() => {
-    if (!isOpen || !holding || tab !== 'chart') return;
-
-    const cleanSym = (holding.trading_symbol || holding.symbol).replace('-EQ', '').toUpperCase();
-    const containerId = `tv_chart_container_${cleanSym}`;
-
-    const renderWidget = () => {
-      if ((window as any).TradingView && document.getElementById(containerId)) {
-        try {
-          new (window as any).TradingView.widget({
-            autosize: true,
-            symbol: `NSE:${cleanSym}`,
-            interval: "5",
-            timezone: "Asia/Kolkata",
-            theme: "dark",
-            style: "1",
-            locale: "en",
-            toolbar_bg: "#131722",
-            enable_publishing: false,
-            hide_top_toolbar: false,
-            hide_legend: false,
-            save_image: false,
-            container_id: containerId
-          });
-          setTvLoaded(true);
-        } catch (e) {
-          console.warn("TradingView widget init error:", e);
-        }
-      }
-    };
-
-    if (!(window as any).TradingView) {
-      const script = document.createElement('script');
-      script.id = 'tradingview-widget-script';
-      script.src = 'https://s3.tradingview.com/tv.js';
-      script.async = true;
-      script.onload = () => {
-        setTimeout(renderWidget, 150);
-      };
-      document.head.appendChild(script);
-    } else {
-      setTimeout(renderWidget, 100);
-    }
-  }, [isOpen, holding, tab]);
-
-  // Fetch OHLC candles for fallback or depth
-  useEffect(() => {
-    if (!isOpen || !holding) return;
-    if (tab === 'chart' || tab === 'depth') {
-      setIsLoadingCandles(true);
-      const intervalMap: Record<string, string> = {
-        '1m': 'ONE_MINUTE',
-        '5m': 'FIVE_MINUTE',
-        '15m': 'FIFTEEN_MINUTE',
-        '1D': 'ONE_DAY'
-      };
-      api.getMarketCandles(holding.symbol, intervalMap[selectedInterval] || 'FIVE_MINUTE', selectedRange)
-        .then((res) => setCandleData(res))
-        .catch(() => setCandleData(null))
-        .finally(() => setIsLoadingCandles(false));
-    }
-  }, [isOpen, holding, tab, selectedInterval, selectedRange]);
+    setLiveLtp(null);
+  }, [holding?.symbol]);
 
   if (!isOpen || !holding) return null;
 
   const cleanSym = (holding.trading_symbol || holding.symbol).replace('-EQ', '').toUpperCase();
   const sym = holding.trading_symbol || `${cleanSym}-EQ`;
-  const ltp = holding.current_ltp || holding.average_price;
-  const closeP = holding.close_price || ltp;
-  const dayPnl = holding.day_pnl ?? ((ltp - closeP) * holding.quantity);
-  const dayPnlPct = holding.day_pnl_percentage ?? (((ltp - closeP) / closeP) * 100);
-  const isGain = dayPnl >= 0;
+  const baseLtp = holding.current_ltp || holding.average_price;
+  const ltp = liveLtp ?? baseLtp;
+  const closeP = holding.close_price || baseLtp;
+  const dayChange = ltp - closeP;
+  const dayChangePct = closeP ? (dayChange / closeP) * 100 : 0;
+  const isGain = dayChange >= 0;
 
   const handleCopySymbol = () => {
     navigator.clipboard.writeText(sym);
@@ -175,7 +110,7 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
               </div>
               <div className={`text-xs font-mono font-semibold flex items-center justify-end gap-1 ${isGain ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {isGain ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                <span>{isGain ? '+' : ''}₹{dayPnl.toFixed(2)} ({isGain ? '+' : ''}{dayPnlPct.toFixed(2)}%)</span>
+                <span>{isGain ? '+' : ''}{dayChange.toFixed(2)} ({isGain ? '+' : ''}{dayChangePct.toFixed(2)}%)</span>
               </div>
             </div>
 
@@ -268,50 +203,28 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-[#131722]">
-          {/* TAB 1: CHARTS (TradingView Live Candlestick terminal matching Image 3) */}
+          {/* TAB 1: CHARTS — TradingView Lightweight Charts fed by SmartAPI candles + live ticks */}
           {tab === 'chart' && (
-            <div className="space-y-3">
-              {/* Floating Quick Order Toolbar on Chart */}
-              <div className="flex items-center justify-between bg-[#191e2b] p-2 rounded-xl border border-slate-800 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-slate-400 text-[11px] font-semibold">{cleanSym} • 5m • NSE</span>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[10px] text-emerald-400 font-bold uppercase">LIVE TICK STREAM</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onOpenOrderTicket(holding, 'BUY');
-                    }}
-                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs shadow-xs transition-colors flex items-center gap-1"
-                  >
-                    <span>BUY @ ₹{ltp.toFixed(2)}</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onOpenOrderTicket(holding, 'SELL');
-                    }}
-                    className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs shadow-xs transition-colors flex items-center gap-1"
-                  >
-                    <span>SELL @ ₹{ltp.toFixed(2)}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* High-Performance Real-Time Candlestick & Technical Chart */}
-              <div className="w-full rounded-xl overflow-hidden border border-slate-800 bg-[#131722]">
-                <StockChart
-                  symbol={cleanSym}
-                  initialInterval="5m"
-                  initialRange="1D"
-                  initialLtp={ltp}
-                  initialPrevClose={closeP}
-                  companyName={holding.company_name || cleanSym}
-                />
-              </div>
-            </div>
+            <StockChart
+              key={cleanSym}
+              symbol={cleanSym}
+              initialInterval="FIVE_MINUTE"
+              initialRange="1D"
+              initialLtp={baseLtp}
+              initialPrevClose={closeP}
+              companyName={holding.company_name || cleanSym}
+              hideHeader
+              height={480}
+              onLtpChange={(price) => setLiveLtp(price)}
+              onBuy={() => {
+                onClose();
+                onOpenOrderTicket({ ...holding, current_ltp: ltp }, 'BUY');
+              }}
+              onSell={() => {
+                onClose();
+                onOpenOrderTicket({ ...holding, current_ltp: ltp }, 'SELL');
+              }}
+            />
           )}
 
           {/* TAB 2: MARKET DEPTH */}

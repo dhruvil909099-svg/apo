@@ -1,13 +1,20 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { RefreshCw, ShieldCheck, TrendingUp, TrendingDown, X, AlertCircle } from 'lucide-react';
 import {
-  TrendingUp, TrendingDown, Clock, BarChart2,
-  Activity, RefreshCw, AlertCircle, ShieldCheck
-} from 'lucide-react';
-import {
-  ResponsiveContainer, ComposedChart, AreaChart, Area,
-  Bar, XAxis, YAxis, Tooltip, CartesianGrid
-} from 'recharts';
-import { MarketCandleResponse, MarketCandle } from '../types';
+  createChart,
+  CandlestickSeries,
+  HistogramSeries,
+  CrosshairMode,
+  LineStyle,
+  ColorType,
+  type IChartApi,
+  type ISeriesApi,
+  type IPriceLine,
+  type UTCTimestamp,
+  type MouseEventParams,
+  type Time,
+} from 'lightweight-charts';
+import { MarketCandleResponse } from '../types';
 import { api, getWebSocketUrl } from '../api';
 
 interface StockChartProps {
@@ -18,6 +25,15 @@ interface StockChartProps {
   initialPrevClose?: number;
   companyName?: string;
   onClose?: () => void;
+  /** Called from the BUY @ / SELL @ buttons with live LTP and chosen quantity */
+  onBuy?: (price: number, qty: number) => void;
+  onSell?: (price: number, qty: number) => void;
+  /** Notifies parent (e.g. modal header) of every live LTP change */
+  onLtpChange?: (ltp: number, change: number, changePercent: number) => void;
+  /** Hide the built-in symbol header when the parent already renders one */
+  hideHeader?: boolean;
+  /** Chart canvas height in px */
+  height?: number;
   accountsBreakdown?: Array<{
     account_id: number;
     nickname: string;
@@ -31,542 +47,601 @@ interface StockChartProps {
   }>;
 }
 
-// Custom SVG Candlestick Shape Renderer for Recharts
-const CandlestickBar = (props: any) => {
-  const { x, y, width, height, payload } = props;
-  if (!payload) return null;
+interface Bar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
-  const { open, high, low, close } = payload;
-  const isUp = close >= open;
-  const color = isUp ? '#10b981' : '#ef4444';
+// ---------------------------------------------------------------------------
+// Constants (Angel One look & SmartAPI limits)
+// ---------------------------------------------------------------------------
+const UP = '#089981';
+const DOWN = '#f23645';
+const UP_VOL = 'rgba(8,153,129,0.5)';
+const DOWN_VOL = 'rgba(242,54,69,0.5)';
+const IST_OFFSET_SEC = 19800; // shift UTC epoch so the time axis reads IST
 
-  // Calculate coordinates within the candle's bar column
-  const openY = y + (height * (high - open)) / (high - low || 1);
-  const closeY = y + (height * (high - close)) / (high - low || 1);
-  const topY = Math.min(openY, closeY);
-  const bodyHeight = Math.max(Math.abs(closeY - openY), 2);
-  const candleWidth = Math.max(width * 0.7, 4);
-  const candleX = x + (width - candleWidth) / 2;
-  const centerX = x + width / 2;
-
-  return (
-    <g>
-      {/* High-Low Wick */}
-      <line
-        x1={centerX}
-        y1={y}
-        x2={centerX}
-        y2={y + height}
-        stroke={color}
-        strokeWidth={1.5}
-      />
-      {/* Candle Body */}
-      <rect
-        x={candleX}
-        y={topY}
-        width={candleWidth}
-        height={bodyHeight}
-        fill={color}
-        stroke={color}
-        strokeWidth={1}
-        rx={1}
-      />
-    </g>
-  );
+const INTERVALS = [
+  { label: '1m', value: 'ONE_MINUTE', sec: 60, maxDays: 30, legend: '1' },
+  { label: '3m', value: 'THREE_MINUTE', sec: 180, maxDays: 60, legend: '3' },
+  { label: '5m', value: 'FIVE_MINUTE', sec: 300, maxDays: 100, legend: '5' },
+  { label: '15m', value: 'FIFTEEN_MINUTE', sec: 900, maxDays: 200, legend: '15' },
+  { label: '30m', value: 'THIRTY_MINUTE', sec: 1800, maxDays: 200, legend: '30' },
+  { label: '1h', value: 'ONE_HOUR', sec: 3600, maxDays: 400, legend: '60' },
+  { label: '1D', value: 'ONE_DAY', sec: 86400, maxDays: 2000, legend: '1D' },
+];
+const RANGES = [
+  { label: '1D', value: '1D', days: 1 },
+  { label: '5D', value: '5D', days: 7 },
+  { label: '1M', value: '1M', days: 31 },
+  { label: '3M', value: '3M', days: 92 },
+  { label: '6M', value: '6M', days: 183 },
+  { label: '1Y', value: '1Y', days: 366 },
+];
+const INTERVAL_ALIASES: Record<string, string> = {
+  '1m': 'ONE_MINUTE', '3m': 'THREE_MINUTE', '5m': 'FIVE_MINUTE', '10m': 'TEN_MINUTE',
+  '15m': 'FIFTEEN_MINUTE', '30m': 'THIRTY_MINUTE', '1h': 'ONE_HOUR', '60m': 'ONE_HOUR', '1d': 'ONE_DAY',
 };
 
+const normalizeInterval = (v?: string) => {
+  if (!v) return 'FIVE_MINUTE';
+  if (INTERVALS.some((i) => i.value === v.toUpperCase())) return v.toUpperCase();
+  return INTERVAL_ALIASES[v.toLowerCase()] || 'FIVE_MINUTE';
+};
+const normalizeRange = (v?: string) => (RANGES.some((r) => r.value === v?.toUpperCase()) ? v!.toUpperCase() : '1D');
+const intervalMeta = (v: string) => INTERVALS.find((i) => i.value === v) || INTERVALS[2];
+const rangeMeta = (v: string) => RANGES.find((r) => r.value === v) || RANGES[0];
+
+function toChartTime(ts: string | number): number {
+  if (typeof ts === 'number') return (ts > 1e12 ? Math.floor(ts / 1000) : ts) + IST_OFFSET_SEC;
+  let s = String(ts).trim().replace(' ', 'T');
+  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z'; // naive backend timestamps are UTC
+  return Math.floor(Date.parse(s) / 1000) + IST_OFFSET_SEC;
+}
+
+function normalizeBars(rows: MarketCandleResponse['candles']): Bar[] {
+  const map = new Map<number, Bar>();
+  for (const r of rows || []) {
+    const bar: Bar = {
+      time: toChartTime(r.timestamp),
+      open: +r.open, high: +r.high, low: +r.low, close: +r.close, volume: +r.volume || 0,
+    };
+    if (Number.isFinite(bar.time) && Number.isFinite(bar.close)) map.set(bar.time, bar);
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time);
+}
+
+const dayKey = (t: number) => Math.floor(t / 86400);
+const volPoint = (b: Bar) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? UP_VOL : DOWN_VOL });
+const candlePoint = (b: Bar) => ({ time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close });
+
+function computePrevClose(bars: Bar[], interval: string): number {
+  if (!bars.length) return 0;
+  if (interval === 'ONE_DAY') return bars.length > 1 ? bars[bars.length - 2].close : bars[0].open;
+  const today = dayKey(bars[bars.length - 1].time);
+  for (let i = bars.length - 1; i >= 0; i--) if (dayKey(bars[i].time) !== today) return bars[i].close;
+  return 0;
+}
+
+function isMarketOpen(t: number): boolean {
+  const d = new Date(t * 1000); // t is IST-shifted
+  const dow = d.getUTCDay();
+  const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+  return dow >= 1 && dow <= 5 && mins >= 555 && mins < 930; // 09:15–15:30 IST
+}
+
+function fmtVol(v: number): string {
+  if (v >= 1e7) return (v / 1e7).toFixed(2) + 'Cr';
+  if (v >= 1e5) return (v / 1e5).toFixed(2) + 'L';
+  if (v >= 1e3) return (v / 1e3).toFixed(3) + 'K';
+  return String(Math.round(v));
+}
+
+const istClock = () => {
+  const d = new Date(Date.now() + IST_OFFSET_SEC * 1000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+};
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 export const StockChart: React.FC<StockChartProps> = ({
   symbol,
-  initialInterval = 'ONE_DAY',
-  initialRange = '1M',
+  initialInterval = 'FIVE_MINUTE',
+  initialRange = '1D',
   initialLtp,
   initialPrevClose,
   companyName,
   onClose,
-  accountsBreakdown = []
+  onBuy,
+  onSell,
+  onLtpChange,
+  hideHeader = false,
+  height = 460,
+  accountsBreakdown = [],
 }) => {
-  const [chartData, setChartData] = useState<MarketCandleResponse | null>(() => {
-    if (initialLtp) {
-      const pClose = initialPrevClose || initialLtp;
-      const chg = Math.round((initialLtp - pClose) * 100) / 100;
-      const chgPct = pClose > 0 ? Math.round((chg / pClose) * 10000) / 100 : 0.0;
-      return {
-        symbol,
-        company_name: companyName || symbol,
-        exchange: 'NSE',
-        symbol_token: '',
-        current_ltp: initialLtp,
-        previous_close: pClose,
-        change: chg,
-        change_percent: chgPct,
-        open: pClose,
-        high: Math.max(initialLtp, pClose),
-        low: Math.min(initialLtp, pClose),
-        volume: 0,
-        interval: initialInterval,
-        range_period: initialRange,
-        data_source: 'LIVE_STREAM',
-        is_stale: false,
-        last_updated: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST',
-        candles: []
-      };
-    }
-    return null;
-  });
-  const [chartType, setChartType] = useState<'candle' | 'line'>('line');
-  const [interval, setInterval] = useState<string>(initialInterval);
-  const [rangePeriod, setRangePeriod] = useState<string>(initialRange);
-  const [isLoading, setIsLoading] = useState<boolean>(!initialLtp);
+  const cleanSym = symbol.replace('-EQ', '').toUpperCase();
+
+  const [interval, setIntervalValue] = useState(() => normalizeInterval(initialInterval));
+  const [range, setRange] = useState(() => normalizeRange(initialRange));
+  const [meta, setMeta] = useState<MarketCandleResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isEmpty, setIsEmpty] = useState(false);
+  const [ltp, setLtp] = useState(initialLtp || 0);
+  const [prevClose, setPrevClose] = useState(initialPrevClose || 0);
+  const [legend, setLegend] = useState<Bar | null>(null);
+  const [feedLive, setFeedLive] = useState(false);
+  const [qty, setQty] = useState(1);
+  const [clock, setClock] = useState(istClock());
+  const [reloadKey, setReloadKey] = useState(0);
 
-  const fetchChart = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await api.getMarketCandles(symbol, interval, rangePeriod);
-      // If server returned 0 or null for current_ltp, fallback to verified initialLtp
-      if ((!data.current_ltp || data.current_ltp === 0) && initialLtp) {
-        data.current_ltp = initialLtp;
-        if (initialPrevClose) data.previous_close = initialPrevClose;
-        data.change = Math.round((initialLtp - (data.previous_close || initialLtp)) * 100) / 100;
-        data.change_percent = data.previous_close > 0 ? Math.round((data.change / data.previous_close) * 10000) / 100 : 0.0;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const volRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const priceLineRef = useRef<IPriceLine | null>(null);
+  const lastBarRef = useRef<Bar | null>(null);
+  const prevCloseRef = useRef(initialPrevClose || 0);
+  const lastCumVolRef = useRef(0);
+  const intervalRef = useRef(interval);
+  const onLtpChangeRef = useRef(onLtpChange);
+  const initialLtpRef = useRef(initialLtp);
+  const initialPrevCloseRef = useRef(initialPrevClose);
+  intervalRef.current = interval;
+  onLtpChangeRef.current = onLtpChange;
+
+  // -- LTP + dotted price line ------------------------------------------------
+  const applyLtp = useCallback((price: number) => {
+    if (!(price > 0)) return;
+    const pc = prevCloseRef.current || price;
+    const color = price >= pc ? UP : DOWN;
+    setLtp(price);
+    setPrevClose(prevCloseRef.current);
+    const opts = {
+      price,
+      color,
+      lineWidth: 1 as const,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: '',
+    };
+    if (candleRef.current) {
+      if (!priceLineRef.current) priceLineRef.current = candleRef.current.createPriceLine(opts);
+      else priceLineRef.current.applyOptions(opts);
+    }
+    const chg = price - pc;
+    onLtpChangeRef.current?.(price, chg, pc ? (chg / pc) * 100 : 0);
+  }, []);
+
+  // -- Create chart once --------------------------------------------------------
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const chart = createChart(el, {
+      autoSize: true, // responsive via ResizeObserver
+      layout: {
+        background: { type: ColorType.Solid, color: '#0b0b0d' },
+        textColor: '#8a8f98',
+        fontSize: 11,
+        fontFamily: "Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
+      },
+      grid: {
+        vertLines: { color: 'rgba(42,46,57,0.35)' },
+        horzLines: { color: 'rgba(42,46,57,0.35)' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { color: '#5d606b', style: LineStyle.Dashed, labelBackgroundColor: '#2a2e39' },
+        horzLine: { color: '#5d606b', style: LineStyle.Dashed, labelBackgroundColor: '#2a2e39' },
+      },
+      rightPriceScale: { borderColor: '#222327', scaleMargins: { top: 0.2, bottom: 0.22 } },
+      timeScale: { borderColor: '#222327', timeVisible: true, secondsVisible: false, rightOffset: 8, barSpacing: 7 },
+      localization: { priceFormatter: (p: number) => p.toFixed(2) },
+    });
+
+    const candle = chart.addSeries(CandlestickSeries, {
+      upColor: UP, downColor: DOWN,
+      borderUpColor: UP, borderDownColor: DOWN,
+      wickUpColor: UP, wickDownColor: DOWN,
+      priceLineVisible: false, // custom dotted LTP line instead
+      lastValueVisible: false,
+    });
+    const vol = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'vol',
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+    chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
+      const c = param.time ? (param.seriesData.get(candle) as any) : undefined;
+      const v = param.time ? (param.seriesData.get(vol) as any) : undefined;
+      if (c && c.open !== undefined) {
+        setLegend({ time: Number(param.time), open: c.open, high: c.high, low: c.low, close: c.close, volume: v?.value ?? 0 });
+      } else if (lastBarRef.current) {
+        setLegend({ ...lastBarRef.current });
       }
-      setChartData(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to fetch historical market data');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    });
 
-  useEffect(() => {
-    fetchChart();
-  }, [symbol, interval, rangePeriod]);
-
-  // Real-time live tick subscription for sub-second chart updates
-  useEffect(() => {
-    const cleanSym = symbol.replace('-EQ', '').toUpperCase();
-    let ws: WebSocket | null = null;
-    let isMounted = true;
-
-    try {
-      ws = new WebSocket(getWebSocketUrl());
-      ws.onmessage = (event) => {
-        if (!isMounted) return;
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
-            const sym = msg.symbol.replace('-EQ', '').toUpperCase();
-            if (sym === cleanSym) {
-              const tickLtp = msg.ltp;
-              setChartData((prev) => {
-                if (!prev) return prev;
-                const prevClose = prev.previous_close || tickLtp;
-                const chg = Math.round((tickLtp - prevClose) * 100) / 100;
-                const chgPct = prevClose > 0 ? Math.round((chg / prevClose) * 10000) / 100 : 0.0;
-
-                // Update latest candle close and high/low in real time
-                let updatedCandles = prev.candles;
-                if (prev.candles && prev.candles.length > 0) {
-                  const lastIdx = prev.candles.length - 1;
-                  const lastCandle = { ...prev.candles[lastIdx] };
-                  lastCandle.close = tickLtp;
-                  lastCandle.high = Math.max(lastCandle.high, tickLtp);
-                  lastCandle.low = Math.min(lastCandle.low, tickLtp);
-                  updatedCandles = [...prev.candles.slice(0, lastIdx), lastCandle];
-                }
-
-                return {
-                  ...prev,
-                  current_ltp: tickLtp,
-                  change: chg,
-                  change_percent: chgPct,
-                  high: Math.max(prev.high || tickLtp, tickLtp),
-                  low: Math.min(prev.low || tickLtp, tickLtp),
-                  last_updated: new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST',
-                  candles: updatedCandles,
-                };
-              });
-            }
-          }
-        } catch {
-          // ignore parsing error
-        }
-      };
-    } catch {
-      // ws error ignored
-    }
+    chartRef.current = chart;
+    candleRef.current = candle;
+    volRef.current = vol;
 
     return () => {
-      isMounted = false;
-      if (ws) ws.close();
+      chart.remove();
+      chartRef.current = null;
+      candleRef.current = null;
+      volRef.current = null;
+      priceLineRef.current = null;
     };
-  }, [symbol]);
+  }, []);
 
-  const isPositive = (chartData?.change ?? 0) >= 0;
+  // -- Load historical candles (backend -> SmartAPI getCandleData) -------------
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    setError(null);
 
-  // Format timestamp for X-Axis based on interval
-  const formatXAxis = (tickStr: string) => {
-    try {
-      const date = new Date(tickStr);
-      if (interval.includes('MINUTE') || interval === 'ONE_HOUR') {
-        return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    api.getMarketCandles(cleanSym, interval, range)
+      .then((data) => {
+        if (cancelled) return;
+        setMeta(data);
+        const bars = normalizeBars(data.candles);
+        const candle = candleRef.current;
+        const vol = volRef.current;
+        const chart = chartRef.current;
+        if (!candle || !vol || !chart) return;
+
+        candle.setData(bars.map(candlePoint));
+        vol.setData(bars.map(volPoint));
+        setIsEmpty(bars.length === 0);
+        lastCumVolRef.current = 0;
+
+        if (!bars.length) {
+          lastBarRef.current = null;
+          applyLtp(data.current_ltp || initialLtpRef.current || 0);
+          return;
+        }
+
+        const last = { ...bars[bars.length - 1] };
+        lastBarRef.current = last;
+        prevCloseRef.current = initialPrevCloseRef.current || computePrevClose(bars, interval) || data.previous_close || bars[0].open;
+        setLegend({ ...last });
+        applyLtp(last.close);
+
+        if (range === '1D' && interval !== 'ONE_DAY') {
+          // backend fetches a few days for weekends/holidays; zoom to the latest session
+          const sessionBars = bars.filter((b) => dayKey(b.time) === dayKey(last.time)).length;
+          chart.timeScale().setVisibleLogicalRange({ from: bars.length - Math.max(sessionBars, 20), to: bars.length + 6 });
+        } else {
+          chart.timeScale().fitContent();
+        }
+      })
+      .catch((err: any) => {
+        if (!cancelled) setError(err?.message || 'Failed to load SmartAPI candles');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [cleanSym, interval, range, reloadKey, applyLtp]);
+
+  // -- Live ticks from IPOPro WebSocket (SmartStream relay) --------------------
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let alive = true;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+
+    const handleTick = (msg: any) => {
+      const price = Number(msg.ltp);
+      if (!(price > 0)) return;
+      const pc = Number(msg.previous_close);
+      if (pc > 0 && pc !== price) prevCloseRef.current = pc;
+      applyLtp(price);
+
+      const last = lastBarRef.current;
+      const candle = candleRef.current;
+      const vol = volRef.current;
+      if (!last || !candle || !vol) return;
+
+      const t = Math.floor(Date.now() / 1000) + IST_OFFSET_SEC;
+      const iv = intervalRef.current;
+      const sec = intervalMeta(iv).sec;
+      const bucket = iv === 'ONE_DAY'
+        ? Math.floor(t / 86400) * 86400
+        : last.time + Math.floor((t - last.time) / sec) * sec;
+
+      let bar = last;
+      if (bucket > last.time && isMarketOpen(t)) {
+        bar = { time: bucket, open: price, high: price, low: price, close: price, volume: 0 };
+        lastBarRef.current = bar;
+      } else {
+        bar.close = price;
+        bar.high = Math.max(bar.high, price);
+        bar.low = Math.min(bar.low, price);
       }
-      return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    } catch {
-      return tickStr;
+
+      // tick volume is cumulative for the day -> add delta to the live candle
+      const cum = Number(msg.volume) || 0;
+      if (cum > 0) {
+        if (lastCumVolRef.current > 0 && cum > lastCumVolRef.current) bar.volume += cum - lastCumVolRef.current;
+        lastCumVolRef.current = cum;
+      }
+
+      candle.update(candlePoint(bar));
+      vol.update(volPoint(bar));
+      setLegend({ ...bar });
+    };
+
+    const connect = () => {
+      try {
+        ws = new WebSocket(getWebSocketUrl());
+      } catch {
+        return;
+      }
+      ws.onopen = () => alive && setFeedLive(true);
+      ws.onmessage = (event) => {
+        if (!alive) return;
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'TICK' && msg.symbol && String(msg.symbol).replace('-EQ', '').toUpperCase() === cleanSym) {
+            handleTick(msg);
+          }
+        } catch {
+          /* ignore non-JSON frames */
+        }
+      };
+      ws.onclose = () => {
+        if (!alive) return;
+        setFeedLive(false);
+        retry = setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
+    return () => {
+      alive = false;
+      if (retry) clearTimeout(retry);
+      ws?.close();
+    };
+  }, [cleanSym, applyLtp]);
+
+  // -- IST clock --------------------------------------------------------------
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(istClock()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // -- Interval / range selection within SmartAPI per-request limits ----------
+  const selectInterval = (value: string) => {
+    const iv = intervalMeta(value);
+    setIntervalValue(value);
+    if (rangeMeta(range).days > iv.maxDays) {
+      const fit = [...RANGES].reverse().find((r) => r.days <= iv.maxDays);
+      setRange(fit ? fit.value : '1D');
+    } else if (value === 'ONE_DAY' && rangeMeta(range).days < 31) {
+      setRange('6M');
+    }
+  };
+  const selectRange = (value: string) => {
+    const days = rangeMeta(value).days;
+    setRange(value);
+    if (intervalMeta(interval).maxDays < days) {
+      const idx = INTERVALS.findIndex((i) => i.value === interval);
+      const fit = INTERVALS.find((i, j) => j >= idx && i.maxDays >= days);
+      setIntervalValue(fit ? fit.value : 'ONE_DAY');
     }
   };
 
-  return (
-    <div className="bg-[#131722] text-slate-100 rounded-xl border border-slate-800 shadow-sm overflow-hidden flex flex-col">
-      {/* Top Header: Angel One-Style Market Snapshot */}
-      <div className="p-5 border-b border-slate-800 space-y-4 bg-[#191e2b]">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-xl font-bold text-white tracking-tight">{symbol}</h2>
-              <span className="text-xs font-semibold bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
-                {chartData?.exchange || 'NSE'}
-              </span>
-              <span className="text-xs text-slate-400 font-medium truncate max-w-xs">
-                {chartData?.company_name}
-              </span>
-            </div>
-            
-            {/* Price & Change */}
-            <div className="flex items-baseline gap-3 mt-1.5">
-              <span className="text-3xl font-extrabold text-white num-mono tracking-tight">
-                ₹{(chartData?.current_ltp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-              </span>
-              <span className={`flex items-center text-sm font-bold num-mono ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {isPositive ? <TrendingUp className="w-4 h-4 mr-1" /> : <TrendingDown className="w-4 h-4 mr-1" />}
-                {isPositive ? '+' : ''}₹{(chartData?.change ?? 0).toFixed(2)} ({isPositive ? '+' : ''}{(chartData?.change_percent ?? 0).toFixed(2)}%)
-              </span>
-            </div>
-          </div>
+  const change = prevClose ? ltp - prevClose : 0;
+  const changePct = prevClose ? (change / prevClose) * 100 : 0;
+  const isUp = change >= 0;
+  const legendUp = legend ? legend.close >= legend.open : true;
+  const legendChg = legend ? legend.close - legend.open : 0;
+  const legendPct = legend && legend.open ? (legendChg / legend.open) * 100 : 0;
+  const legendColor = legendUp ? 'text-[#089981]' : 'text-[#f23645]';
+  const source = meta?.data_source;
+  const sourceBadge =
+    source === 'SMARTAPI_HISTORICAL_API'
+      ? { text: 'SmartAPI historical', cls: 'bg-[#089981]/15 text-[#22c3a6]' }
+      : source === 'LIVE_TICK_STREAM_CANDLES'
+        ? { text: 'Synthetic · SmartAPI offline', cls: 'bg-amber-500/15 text-amber-400' }
+        : { text: source ? 'Feed unavailable' : '—', cls: 'bg-slate-800 text-slate-400' };
 
-          {/* Quick Actions & Status */}
-          <div className="flex flex-col items-end gap-2">
+  return (
+    <div className="bg-[#0b0b0d] text-slate-200 rounded-xl border border-[#222327] overflow-hidden flex flex-col">
+      {/* ---------- Header ---------- */}
+      {!hideHeader && (
+        <div className="px-5 py-3.5 border-b border-[#222327] flex flex-wrap items-center justify-between gap-3">
+          <div>
             <div className="flex items-center gap-2">
-              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1.5 ${
-                chartData?.data_source === 'SMARTAPI_LIVE'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : 'bg-slate-50 text-slate-600 border-slate-200'
-              }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${chartData?.data_source === 'SMARTAPI_LIVE' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                {chartData?.data_source === 'SMARTAPI_LIVE' ? 'SMARTAPI LIVE' : 'SIMULATED FEED'}
+              <h2 className="text-[17px] font-bold text-white tracking-wide">{cleanSym}</h2>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#1d1e22] text-slate-400">
+                {meta?.exchange || 'NSE'}
               </span>
-              <button
-                onClick={fetchChart}
-                disabled={isLoading}
-                title="Refresh Market Data"
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-              >
-                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </div>
+            <div className="text-xs text-slate-400 mt-0.5">{companyName || meta?.company_name || cleanSym}</div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <div className="flex items-baseline gap-2 justify-end num-mono">
+                <span className={`text-base font-bold ${isUp ? 'text-[#089981]' : 'text-[#f23645]'}`}>{ltp.toFixed(2)}</span>
+                <span className={`text-xs font-semibold flex items-center gap-0.5 ${isUp ? 'text-[#089981]' : 'text-[#f23645]'}`}>
+                  {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                  {isUp ? '+' : ''}{change.toFixed(2)} ({isUp ? '+' : ''}{changePct.toFixed(2)}%)
+                </span>
+              </div>
+            </div>
+            {onBuy && (
+              <button onClick={() => onBuy(ltp, qty)} className="px-4 py-1.5 rounded-md bg-[#089981] hover:brightness-110 text-white text-xs font-bold transition active:scale-95">
+                BUY
               </button>
-              {onClose && (
+            )}
+            {onSell && (
+              <button onClick={() => onSell(ltp, qty)} className="px-4 py-1.5 rounded-md bg-[#f23645] hover:brightness-110 text-white text-xs font-bold transition active:scale-95">
+                SELL
+              </button>
+            )}
+            {onClose && (
+              <button onClick={onClose} className="p-1.5 rounded-full border border-[#2a2b30] text-slate-400 hover:text-white hover:bg-[#1d1e22] transition" title="Close chart">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Interval toolbar ---------- */}
+      <div className="px-3 py-1.5 border-b border-[#222327] bg-[#121214] flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-0.5">
+          {INTERVALS.map((iv) => (
+            <button
+              key={iv.value}
+              onClick={() => selectInterval(iv.value)}
+              className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
+                interval === iv.value ? 'text-[#5b7cfa] bg-[#5b7cfa]/10' : 'text-slate-400 hover:text-white hover:bg-[#1d1e22]'
+              }`}
+            >
+              {iv.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide">
+          <span className="flex items-center gap-1.5 text-slate-400">
+            <span className={`w-1.5 h-1.5 rounded-full ${feedLive ? 'bg-[#089981] animate-pulse' : 'bg-slate-500'}`} />
+            {feedLive ? 'Live ticks' : 'Feed offline'}
+          </span>
+          <span className={`px-2 py-0.5 rounded-full normal-case ${sourceBadge.cls}`}>{sourceBadge.text}</span>
+          <button
+            onClick={() => setReloadKey((k) => k + 1)}
+            disabled={isLoading}
+            title="Reload candles"
+            className="p-1 text-slate-400 hover:text-white rounded transition-colors"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* ---------- Chart ---------- */}
+      <div className="relative w-full" style={{ height }}>
+        <div ref={containerRef} className="absolute inset-0" />
+
+        {/* Legend + BUY/SELL overlay (Angel One style) */}
+        <div className="absolute top-2 left-3 z-10 flex flex-col gap-1.5 pointer-events-none">
+          <div className="flex flex-wrap items-center gap-2.5 text-xs num-mono">
+            <span className="text-white font-semibold">
+              {cleanSym} · {intervalMeta(interval).legend} · {meta?.exchange || 'NSE'}
+            </span>
+            {legend && (
+              <>
+                <span><span className="text-slate-500">O</span> <span className={legendColor}>{legend.open.toFixed(2)}</span></span>
+                <span><span className="text-slate-500">H</span> <span className={legendColor}>{legend.high.toFixed(2)}</span></span>
+                <span><span className="text-slate-500">L</span> <span className={legendColor}>{legend.low.toFixed(2)}</span></span>
+                <span><span className="text-slate-500">C</span> <span className={legendColor}>{legend.close.toFixed(2)}</span></span>
+                <span className={legendColor}>
+                  {legendChg >= 0 ? '+' : ''}{legendChg.toFixed(2)} ({legendChg >= 0 ? '+' : ''}{legendPct.toFixed(2)}%)
+                </span>
+              </>
+            )}
+          </div>
+          {(onBuy || onSell) && (
+            <div className="flex items-center gap-1.5 pointer-events-auto">
+              {onBuy && (
                 <button
-                  onClick={onClose}
-                  className="px-2.5 py-1 text-xs font-semibold text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                  onClick={() => onBuy(ltp, qty)}
+                  className="px-3 py-2 rounded bg-[#089981] hover:brightness-110 text-white text-[11.5px] font-bold num-mono transition active:scale-95"
                 >
-                  Close
+                  BUY @ {ltp.toFixed(2)}
+                </button>
+              )}
+              <input
+                type="number"
+                min={1}
+                value={qty}
+                onChange={(e) => setQty(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                className="w-12 h-[30px] rounded bg-[#1d1e22] border border-[#2a2b30] text-center text-xs font-semibold text-white focus:outline-none focus:border-[#5b7cfa]"
+                aria-label="Order quantity"
+              />
+              {onSell && (
+                <button
+                  onClick={() => onSell(ltp, qty)}
+                  className="px-3 py-2 rounded bg-[#f23645] hover:brightness-110 text-white text-[11.5px] font-bold num-mono transition active:scale-95"
+                >
+                  SELL @ {ltp.toFixed(2)}
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
-              <Clock className="w-3.5 h-3.5" />
-              <span>Last update: {chartData?.last_updated || '—'}</span>
+          )}
+          {legend && (
+            <div className="text-xs text-slate-400 num-mono">
+              Volume <span className={`ml-1 font-semibold ${legendColor}`}>{fmtVol(legend.volume)}</span>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* OHLCV Summary Ribbon */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-3 border-t border-slate-800 text-xs">
-          <div>
-            <span className="text-slate-400 text-[11px]">Open:</span>
-            <div className="font-bold text-slate-200 num-mono mt-0.5">
-              ₹{(chartData?.open ?? 0).toFixed(2)}
-            </div>
+        {isLoading && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-[#0b0b0d]/80">
+            <RefreshCw className="w-6 h-6 text-[#5b7cfa] animate-spin" />
+            <span className="text-xs text-slate-400">Loading SmartAPI candles…</span>
           </div>
-          <div>
-            <span className="text-slate-400 text-[11px]">High:</span>
-            <div className="font-bold text-emerald-400 num-mono mt-0.5">
-              ₹{(chartData?.high ?? 0).toFixed(2)}
+        )}
+        {!isLoading && (error || isEmpty) && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center text-center gap-2 bg-[#0b0b0d]/90 p-6">
+            <AlertCircle className="w-7 h-7 text-[#f23645]" />
+            <div className="text-sm font-semibold text-white">Chart data unavailable</div>
+            <div className="text-xs text-slate-400 max-w-sm">
+              {error || 'SmartAPI returned no candles for this timeframe. Make sure an Angel One account session is active.'}
             </div>
-          </div>
-          <div>
-            <span className="text-slate-400 text-[11px]">Low:</span>
-            <div className="font-bold text-rose-400 num-mono mt-0.5">
-              ₹{(chartData?.low ?? 0).toFixed(2)}
-            </div>
-          </div>
-          <div>
-            <span className="text-slate-400 text-[11px]">Prev. Close:</span>
-            <div className="font-bold text-slate-300 num-mono mt-0.5">
-              ₹{(chartData?.previous_close ?? 0).toFixed(2)}
-            </div>
-          </div>
-          <div>
-            <span className="text-slate-400 text-[11px]">Period Volume:</span>
-            <div className="font-bold text-slate-200 num-mono mt-0.5">
-              {(chartData?.volume ?? 0).toLocaleString('en-IN')}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Chart Control Toolbar */}
-      <div className="px-5 py-2.5 bg-[#191e2b] border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-        {/* Interval Selector */}
-        <div className="flex items-center gap-1 bg-[#131722] p-1 rounded-lg border border-slate-700">
-          <span className="text-[10px] uppercase font-bold text-slate-400 px-2">Timeframe:</span>
-          {[
-            { label: '1m', interval: 'ONE_MINUTE', range: '1D' },
-            { label: '5m', interval: 'FIVE_MINUTE', range: '1D' },
-            { label: '15m', interval: 'FIFTEEN_MINUTE', range: '1D' },
-            { label: '1h', interval: 'ONE_HOUR', range: '1W' },
-            { label: '1D', interval: 'ONE_DAY', range: '1M' },
-            { label: '3M', interval: 'ONE_DAY', range: '3M' },
-            { label: '1Y', interval: 'ONE_DAY', range: '1Y' }
-          ].map((item) => {
-            const isActive = interval === item.interval && rangePeriod === item.range;
-            return (
-              <button
-                key={`${item.interval}_${item.range}`}
-                onClick={() => {
-                  setInterval(item.interval);
-                  setRangePeriod(item.range);
-                }}
-                className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
-                  isActive
-                    ? 'bg-brand-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Chart View Type: Candlestick vs Line */}
-        <div className="flex items-center gap-1 bg-[#131722] p-1 rounded-lg border border-slate-700">
-          <button
-            onClick={() => setChartType('line')}
-            className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-              chartType === 'line'
-                ? 'bg-brand-600 text-white'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            <span>Line (Live Area)</span>
-          </button>
-          <button
-            onClick={() => setChartType('candle')}
-            className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-              chartType === 'candle'
-                ? 'bg-brand-600 text-white'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <BarChart2 className="w-3.5 h-3.5" />
-            <span>Candles (OHLC)</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Main Chart Canvas */}
-      <div className="p-4 flex-1 min-h-[380px] relative bg-[#131722]">
-        {isLoading ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-10">
-            <div className="flex flex-col items-center gap-2">
-              <RefreshCw className="w-6 h-6 text-brand-600 animate-spin" />
-              <span className="text-xs font-semibold text-slate-500">Loading historical candles...</span>
-            </div>
-          </div>
-        ) : error ? (
-          <div className="h-80 flex flex-col items-center justify-center text-center p-6">
-            <AlertCircle className="w-8 h-8 text-rose-500 mb-2" />
-            <h4 className="text-sm font-bold text-slate-800">Chart Data Unavailable</h4>
-            <p className="text-xs text-slate-500 mt-1 max-w-sm">{error}</p>
-            <button
-              onClick={fetchChart}
-              className="mt-3 px-4 py-1.5 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800"
-            >
+            <button onClick={() => setReloadKey((k) => k + 1)} className="mt-1 px-4 py-1.5 rounded-lg bg-[#1d1e22] hover:bg-[#2a2b30] text-xs font-semibold text-white">
               Retry
             </button>
-          </div>
-        ) : !chartData || chartData.candles.length === 0 ? (
-          <div className="h-80 flex items-center justify-center text-slate-400 text-xs font-medium">
-            No historical candles available for this timeframe.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {/* Price Chart */}
-            <div className="h-[280px]">
-              <ResponsiveContainer width="100%" height="100%">
-                {chartType === 'candle' ? (
-                  <ComposedChart
-                    data={chartData.candles}
-                    margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={formatXAxis}
-                      stroke="#94a3b8"
-                      fontSize={10}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      domain={['auto', 'auto']}
-                      stroke="#94a3b8"
-                      fontSize={10}
-                      orientation="right"
-                      tickLine={false}
-                      tickFormatter={(val) => `₹${val.toFixed(0)}`}
-                    />
-                    <Tooltip
-                      content={({ active, payload }) => {
-                        if (!active || !payload || !payload.length) return null;
-                        const data: MarketCandle = payload[0].payload;
-                        const isUp = data.close >= data.open;
-                        return (
-                          <div className="bg-slate-900 text-white p-3 rounded-lg shadow-xl text-xs space-y-1.5 border border-slate-700">
-                            <div className="text-[10px] text-slate-400 font-mono">
-                              {new Date(data.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST
-                            </div>
-                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 num-mono text-[11px]">
-                              <div><span className="text-slate-400">Open:</span> ₹{data.open.toFixed(2)}</div>
-                              <div><span className="text-slate-400">Close:</span> ₹{data.close.toFixed(2)}</div>
-                              <div><span className="text-slate-400">High:</span> <span className="text-emerald-400">₹{data.high.toFixed(2)}</span></div>
-                              <div><span className="text-slate-400">Low:</span> <span className="text-rose-400">₹{data.low.toFixed(2)}</span></div>
-                            </div>
-                            <div className="pt-1 border-t border-slate-800 text-[10px] text-slate-300 flex justify-between">
-                              <span>Volume:</span>
-                              <span className="font-bold">{data.volume.toLocaleString('en-IN')}</span>
-                            </div>
-                          </div>
-                        );
-                      }}
-                    />
-                    <Bar
-                      dataKey="high"
-                      shape={<CandlestickBar />}
-                      isAnimationActive={false}
-                    />
-                  </ComposedChart>
-                ) : (
-                  <AreaChart
-                    data={chartData.candles}
-                    margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
-                  >
-                    <defs>
-                      <linearGradient id="chartAreaGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.35} />
-                        <stop offset="95%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1f2937" />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={formatXAxis}
-                      stroke="#64748b"
-                      fontSize={10}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      domain={['auto', 'auto']}
-                      stroke="#94a3b8"
-                      fontSize={10}
-                      orientation="right"
-                      tickLine={false}
-                      tickFormatter={(val) => `₹${val.toFixed(0)}`}
-                    />
-                    <Tooltip
-                      content={({ active, payload }) => {
-                        if (!active || !payload || !payload.length) return null;
-                        const data: MarketCandle = payload[0].payload;
-                        return (
-                          <div className="bg-slate-900 text-white p-2.5 rounded-lg shadow-xl text-xs space-y-1 border border-slate-700">
-                            <div className="text-[10px] text-slate-400 font-mono">
-                              {new Date(data.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST
-                            </div>
-                            <div className="text-sm font-bold num-mono text-emerald-400">
-                              ₹{data.close.toFixed(2)}
-                            </div>
-                            <div className="text-[10px] text-slate-400">
-                              Volume: {data.volume.toLocaleString('en-IN')}
-                            </div>
-                          </div>
-                        );
-                      }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="close"
-                      stroke={isPositive ? '#10b981' : '#ef4444'}
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#chartAreaGradient)"
-                      isAnimationActive={false}
-                    />
-                  </AreaChart>
-                )}
-              </ResponsiveContainer>
-            </div>
-
-            {/* Volume Histogram Sub-chart */}
-            <div className="h-16 pt-2 border-t border-slate-100">
-              <div className="flex items-center justify-between text-[10px] text-slate-400 uppercase font-semibold mb-1">
-                <span>Trading Volume Sub-chart</span>
-                <span>Max: {Math.max(...chartData.candles.map(c => c.volume)).toLocaleString('en-IN')}</span>
-              </div>
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData.candles} margin={{ top: 0, right: 20, left: 0, bottom: 0 }}>
-                  <Bar
-                    dataKey="volume"
-                    fill="#94a3b8"
-                    isAnimationActive={false}
-                    shape={(props: any) => {
-                      const { x, y, width, height, payload } = props;
-                      const isUp = payload.close >= payload.open;
-                      return (
-                        <rect
-                          x={x}
-                          y={y}
-                          width={Math.max(width * 0.7, 2)}
-                          height={height}
-                          fill={isUp ? '#a7f3d0' : '#fecaca'}
-                        />
-                      );
-                    }}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
           </div>
         )}
       </div>
 
-      {/* Account-by-Account Holdings Breakdown for this Stock */}
+      {/* ---------- Range footer ---------- */}
+      <div className="px-3 py-1.5 border-t border-[#222327] bg-[#121214] flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-0.5">
+          {RANGES.map((r) => (
+            <button
+              key={r.value}
+              onClick={() => selectRange(r.value)}
+              className={`px-2.5 py-1 rounded font-semibold transition-colors ${
+                range === r.value ? 'text-[#5b7cfa] bg-[#5b7cfa]/10' : 'text-slate-400 hover:text-white hover:bg-[#1d1e22]'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <span className="text-slate-500 num-mono">{clock} (UTC+5:30)</span>
+      </div>
+
+      {/* ---------- Account breakdown ---------- */}
       {accountsBreakdown && accountsBreakdown.length > 0 && (
-        <div className="p-5 bg-slate-50/70 border-t border-slate-100 space-y-3">
+        <div className="p-5 border-t border-[#222327] bg-[#0f0f11] space-y-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              Family Account Holdings for {symbol} ({accountsBreakdown.length} Accounts)
+            <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-[#089981]" />
+              Family Account Holdings for {cleanSym} ({accountsBreakdown.length} Accounts)
             </h4>
-            <span className="text-[11px] text-slate-500 font-medium">
-              Total Shares: <strong className="num-mono text-slate-900">{accountsBreakdown.reduce((sum, a) => sum + a.quantity, 0)}</strong>
+            <span className="text-[11px] text-slate-400 font-medium">
+              Total Shares: <strong className="num-mono text-white">{accountsBreakdown.reduce((s, a) => s + a.quantity, 0)}</strong>
             </span>
           </div>
-
-          <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto shadow-2xs">
+          <div className="rounded-lg border border-[#222327] overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-[10px] uppercase text-slate-500 border-b border-slate-100 font-semibold">
+              <thead className="bg-[#121214] text-[10px] uppercase text-slate-500 border-b border-[#222327] font-semibold">
                 <tr>
                   <th className="py-2.5 px-3">Account Nickname</th>
                   <th className="py-2.5 px-3">Client Code</th>
@@ -574,27 +649,27 @@ export const StockChart: React.FC<StockChartProps> = ({
                   <th className="py-2.5 px-3">Quantity</th>
                   <th className="py-2.5 px-3">Avg Buy Price</th>
                   <th className="py-2.5 px-3">Market Value</th>
-                  <th className="py-2.5 px-3">Unrealized P&L</th>
+                  <th className="py-2.5 px-3">Unrealized P&amp;L</th>
                   <th className="py-2.5 px-3">DDPI Status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-[#1b1c20]">
                 {accountsBreakdown.map((acc) => (
-                  <tr key={acc.account_id} className="hover:bg-slate-50/60">
-                    <td className="py-2 px-3 font-semibold text-slate-800">{acc.nickname}</td>
-                    <td className="py-2 px-3 font-mono text-slate-500">{acc.masked_client_code}</td>
-                    <td className="py-2 px-3 text-slate-600">{acc.account_group}</td>
-                    <td className="py-2 px-3 num-mono font-bold text-slate-900">{acc.quantity}</td>
-                    <td className="py-2 px-3 num-mono text-slate-700">₹{acc.acquisition_cost.toFixed(2)}</td>
-                    <td className="py-2 px-3 num-mono font-bold text-slate-900">
+                  <tr key={acc.account_id} className="hover:bg-[#151518]">
+                    <td className="py-2 px-3 font-semibold text-slate-100">{acc.nickname}</td>
+                    <td className="py-2 px-3 font-mono text-slate-400">{acc.masked_client_code}</td>
+                    <td className="py-2 px-3 text-slate-400">{acc.account_group}</td>
+                    <td className="py-2 px-3 num-mono font-bold text-white">{acc.quantity}</td>
+                    <td className="py-2 px-3 num-mono text-slate-300">₹{acc.acquisition_cost.toFixed(2)}</td>
+                    <td className="py-2 px-3 num-mono font-bold text-white">
                       ₹{acc.market_value.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </td>
-                    <td className={`py-2 px-3 num-mono font-bold ${acc.unrealized_pnl >= 0 ? 'text-finGreen' : 'text-finRed'}`}>
+                    <td className={`py-2 px-3 num-mono font-bold ${acc.unrealized_pnl >= 0 ? 'text-[#089981]' : 'text-[#f23645]'}`}>
                       {acc.unrealized_pnl >= 0 ? '+' : ''}₹{acc.unrealized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </td>
                     <td className="py-2 px-3">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        acc.ddpi_status === 'ACTIVE' ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        acc.ddpi_status === 'ACTIVE' ? 'bg-blue-500/10 text-blue-300' : 'bg-amber-500/10 text-amber-300'
                       }`}>
                         DDPI: {acc.ddpi_status}
                       </span>

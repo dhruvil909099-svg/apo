@@ -4,7 +4,7 @@ import {
   Activity, ArrowRight, ShieldCheck, Layers, RefreshCw,
   Clock, Database, Eye, ShoppingCart, Filter, Sparkles
 } from 'lucide-react';
-import { MarketInstrument, OptionChainResponse, CommodityContract, MarketSessionStatus } from '../types';
+import { MarketInstrument, OptionChainResponse, CommodityContract, MarketSessionStatus, Account } from '../types';
 import { api } from '../api';
 import { StockChart } from '../components/StockChart';
 import { OrderTicketModal } from '../components/OrderTicketModal';
@@ -35,6 +35,10 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
   const [catalogSummary, setCatalogSummary] = useState<any>(null);
   const [sessionStatus, setSessionStatus] = useState<MarketSessionStatus | null>(null);
 
+  // Accounts for Order Ticket
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [orderTicketSide, setOrderTicketSide] = useState<'BUY' | 'SELL'>('BUY');
+  
   // Selected for Chart view
   const [chartSymbol, setChartSymbol] = useState<string | null>('HINDCOPPER-EQ');
   
@@ -52,16 +56,18 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
   const [commodities, setCommodities] = useState<CommodityContract[]>([]);
   const [isLoadingCommodities, setIsLoadingCommodities] = useState<boolean>(false);
 
-  // Fetch catalog summary and session state once on mount
+  // Fetch catalog summary, session state, and accounts once on mount
   useEffect(() => {
     const fetchMetadata = async () => {
       try {
-        const [sum, sess] = await Promise.all([
+        const [sum, sess, accs] = await Promise.all([
           api.getCatalogSummary().catch(() => null),
-          api.getMarketSessionStatus().catch(() => null)
+          api.getMarketSessionStatus().catch(() => null),
+          api.getAccounts().catch(() => [])
         ]);
         if (sum) setCatalogSummary(sum);
         if (sess) setSessionStatus(sess);
+        if (accs && accs.length) setAccounts(accs);
       } catch (err) {
         console.error('Failed to load market metadata:', err);
       }
@@ -177,7 +183,8 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
     return () => { isSubscribed = false; };
   }, [activeCategory]);
 
-  const handleOpenOrderTicket = (inst: MarketInstrument) => {
+  const handleOpenOrderTicket = (inst: MarketInstrument, side: 'BUY' | 'SELL' = 'BUY') => {
+    setOrderTicketSide(side);
     setOrderTicketInstrument(inst);
     setIsOrderModalOpen(true);
   };
@@ -649,6 +656,44 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
           <StockChart
             symbol={chartSymbol}
             onClose={() => setChartSymbol(null)}
+            onBuy={(price) => {
+              const sym = chartSymbol.replace('-EQ', '');
+              const found = instruments.find((i) => i.tradingsymbol === chartSymbol || i.tradingsymbol === sym);
+              handleOpenOrderTicket(
+                found || ({
+                  tradingsymbol: chartSymbol,
+                  name: chartSymbol,
+                  exchange: 'NSE',
+                  symbol_token: '',
+                  current_ltp: price,
+                  lot_size: 1,
+                  tick_size: 0.05,
+                  segment: 'NSE_EQ',
+                  instrument_type: 'EQUITY',
+                  is_active: true,
+                } as any),
+                'BUY'
+              );
+            }}
+            onSell={(price) => {
+              const sym = chartSymbol.replace('-EQ', '');
+              const found = instruments.find((i) => i.tradingsymbol === chartSymbol || i.tradingsymbol === sym);
+              handleOpenOrderTicket(
+                found || ({
+                  tradingsymbol: chartSymbol,
+                  name: chartSymbol,
+                  exchange: 'NSE',
+                  symbol_token: '',
+                  current_ltp: price,
+                  lot_size: 1,
+                  tick_size: 0.05,
+                  segment: 'NSE_EQ',
+                  instrument_type: 'EQUITY',
+                  is_active: true,
+                } as any),
+                'SELL'
+              );
+            }}
           />
         </div>
       )}
@@ -657,7 +702,23 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
       {isOrderModalOpen && orderTicketInstrument && (
         <OrderTicketModal
           isOpen={isOrderModalOpen}
-          account={null}
+          account={accounts[0] || ({
+            id: 1,
+            client_code: 'DEMO',
+            nickname: 'Default Trading Account',
+            broker_name: 'Angel One',
+            is_active: true,
+            is_demo: false,
+            ddpi_status: 'ACTIVE',
+            edis_authorized_today: true,
+            account_group: 'Primary',
+            total_portfolio_value: 0,
+            available_cash: 500000,
+            used_margin: 0,
+            total_realized_pnl: 0,
+            total_unrealized_pnl: 0,
+            synced_at: new Date().toISOString()
+          } as any)}
           holding={{
             symbol: orderTicketInstrument.tradingsymbol,
             trading_symbol: orderTicketInstrument.tradingsymbol,
@@ -668,7 +729,7 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
             current_ltp: orderTicketInstrument.current_ltp || 100,
             source_type: 'SNAPSHOT'
           }}
-          defaultSide="BUY"
+          defaultSide={orderTicketSide}
           onClose={() => {
             setIsOrderModalOpen(false);
             setOrderTicketInstrument(null);

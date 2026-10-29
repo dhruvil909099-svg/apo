@@ -1002,6 +1002,9 @@ export const PortfolioView: React.FC = () => {
             <div className="p-4">
               <StockChart
                 symbol={selectedInstrumentForChart.symbol}
+                initialLtp={selectedInstrumentForChart.current_ltp}
+                initialPrevClose={selectedInstrumentForChart.previous_close}
+                companyName={selectedInstrumentForChart.company_name}
                 accountsBreakdown={selectedInstrumentForChart.accounts_breakdown}
                 onClose={() => setSelectedInstrumentForChart(null)}
               />

@@ -252,6 +252,28 @@ def get_market_quotes(db: Session = Depends(get_db)):
     return quotes
 
 
+# SmartAPI getCandleData accepts only these interval names; map common short aliases.
+CANDLE_INTERVAL_ALIASES = {
+    "1M": "ONE_MINUTE", "1MIN": "ONE_MINUTE", "3M": "THREE_MINUTE", "5M": "FIVE_MINUTE",
+    "10M": "TEN_MINUTE", "15M": "FIFTEEN_MINUTE", "30M": "THIRTY_MINUTE",
+    "1H": "ONE_HOUR", "60M": "ONE_HOUR", "1D": "ONE_DAY", "D": "ONE_DAY", "DAY": "ONE_DAY",
+}
+# Max calendar days per getCandleData request (Angel One limits)
+CANDLE_MAX_DAYS = {
+    "ONE_MINUTE": 30, "THREE_MINUTE": 60, "FIVE_MINUTE": 100, "TEN_MINUTE": 100,
+    "FIFTEEN_MINUTE": 200, "THIRTY_MINUTE": 200, "ONE_HOUR": 400, "ONE_DAY": 2000,
+}
+# 1D fetches a few days back so weekends/holidays still return the latest session
+CANDLE_RANGE_DAYS = {"1D": 4, "5D": 7, "1W": 7, "1M": 31, "3M": 92, "6M": 183, "1Y": 366, "ALL": 2000}
+
+
+def _normalize_candle_interval(interval: str) -> str:
+    upper = (interval or "ONE_DAY").strip().upper()
+    if upper in CANDLE_MAX_DAYS:
+        return upper
+    return CANDLE_INTERVAL_ALIASES.get(upper, "ONE_DAY")
+
+
 @router.get("/candles")
 def get_market_candles(
     symbol: str,
@@ -276,19 +298,17 @@ def get_market_candles(
     exchange = inst.exchange if inst else "NSE"
     symbol_token = inst.symbol_token if inst else sym
 
-    now = datetime.utcnow()
-    delta = timedelta(days=30)
-    if range_period == "1W":
-        delta = timedelta(days=7)
-    elif range_period == "1M":
-        delta = timedelta(days=30)
-    elif range_period == "3M":
-        delta = timedelta(days=90)
-    elif range_period in ["1Y", "ALL"]:
-        delta = timedelta(days=365)
+    interval = _normalize_candle_interval(interval)
+    range_period = (range_period or "1M").upper()
 
-    from_date = (now - delta).strftime("%Y-%m-%d 09:15")
-    to_date = now.strftime("%Y-%m-%d 15:30")
+    now = datetime.utcnow()
+    now_ist = now + timedelta(hours=5, minutes=30)
+    days = min(CANDLE_RANGE_DAYS.get(range_period, 31), CANDLE_MAX_DAYS.get(interval, 2000))
+    delta = timedelta(days=days)
+
+    # SmartAPI expects exchange-local (IST) "yyyy-MM-dd HH:mm"
+    from_date = (now_ist - delta).strftime("%Y-%m-%d 09:15")
+    to_date = now_ist.strftime("%Y-%m-%d %H:%M")
 
     candles = []
     data_source = "HISTORICAL_FEED_UNAVAILABLE"
@@ -361,7 +381,7 @@ def get_market_candles(
         "is_stale": is_stale,
         "status": "SUCCESS" if candles else "HISTORICAL_CANDLES_UNAVAILABLE",
         "message": "Live candles loaded from SmartAPI" if data_source == "SMARTAPI_HISTORICAL_API" else "Real-time candles active",
-        "last_updated": now.strftime("%Y-%m-%d %H:%M:%S IST")
+        "last_updated": now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
     }
 
 
