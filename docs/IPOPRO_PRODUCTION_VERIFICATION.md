@@ -32,7 +32,7 @@ This audit verifies data reliability, endpoint behavior, and architectural isola
 | Broker Rate Limits | `smartapi_adapter.py` | Per-category rate buckets (orders 10/s, profile 1/s) | Verified Pass |
 | False Badge Elimination | `AccountsView.tsx` | No `LIVE STREAM` badge if disconnected/demo | Verified Pass |
 | Frontend Production Build | `frontend/dist` | TypeScript check & bundle (`tsc && vite build`) | Verified Pass (7.42s) |
-| Backend Automated Tests | `backend/tests/` | 166 pytest cases | In Progress / Passed |
+| Backend Automated Tests | `backend/tests/` | 166 pytest cases | Verified Pass (166/166 Passed in 136.88s) |
 
 ---
 
