@@ -205,8 +205,46 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
         });
 
         if (isSubscribed) {
-          setInstruments(res.instruments || []);
+          const list = res.instruments || [];
+          setInstruments(list);
           setTotalCount(res.total_count || 0);
+
+          // Auto-fetch live market quotes for visible instruments
+          if (list.length > 0) {
+            const tokens = list
+              .filter((i) => i.symbol_token && i.exchange)
+              .map((i) => ({ exchange: i.exchange, symbol_token: i.symbol_token }));
+            if (tokens.length > 0) {
+              api.getBatchMarketQuotes(tokens.slice(0, 50), 'FULL').then((qRes) => {
+                if (!isSubscribed || !qRes?.fetched || qRes.fetched.length === 0) return;
+                const qMap = new Map<string, any>();
+                for (const q of qRes.fetched) {
+                  if (q.symbol_token) qMap.set(String(q.symbol_token), q);
+                  if (q.trading_symbol) qMap.set(q.trading_symbol.replace('-EQ', '').toUpperCase(), q);
+                }
+                setInstruments((prev) =>
+                  prev.map((item) => {
+                    const q = (item.symbol_token ? qMap.get(String(item.symbol_token)) : undefined) ||
+                              qMap.get(item.tradingsymbol.replace('-EQ', '').toUpperCase());
+                    if (q && q.ltp) {
+                      const netChg = q.net_change ?? q.change ?? (q.previous_close ? q.ltp - q.previous_close : undefined);
+                      const pctChg = q.percent_change ?? q.change_percent ?? (q.previous_close && netChg ? (netChg / q.previous_close) * 100 : undefined);
+                      return {
+                        ...item,
+                        current_ltp: q.ltp,
+                        previous_close: q.previous_close,
+                        day_change: netChg,
+                        day_change_percentage: pctChg,
+                      };
+                    }
+                    return item;
+                  })
+                );
+              }).catch(() => {
+                // Ignore transient batch quote errors
+              });
+            }
+          }
         }
       } catch (err) {
         console.error('Failed to search instruments:', err);

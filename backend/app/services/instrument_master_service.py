@@ -278,7 +278,10 @@ def search_instruments(
     Fast server-side indexed search against the genuine Angel One instruments catalog.
     Supports A-Z browsing, prefix matching, exchange filters, and segment isolation.
     """
-    q = db.query(Instrument).filter(Instrument.is_active == True)
+    q = db.query(Instrument).filter(
+        Instrument.is_active == True,
+        ~Instrument.tradingsymbol.ilike("%TEST%")
+    )
 
     if exchange:
         q = q.filter(Instrument.exchange == exchange.upper().strip())
@@ -337,14 +340,38 @@ def search_instruments(
             Instrument.tradingsymbol.asc()
         ).offset(offset).limit(limit).all()
     else:
+        # Prioritize traded equity scrips starting with A-Z over numerical debentures
+        alpha_first = case((Instrument.tradingsymbol >= 'A', 1), else_=2)
         instruments = q.order_by(
             segment_priority.asc(),
+            alpha_first.asc(),
             Instrument.tradingsymbol.asc()
         ).offset(offset).limit(limit).all()
 
     from app.services.smartapi_websocket import smartapi_ws_service
+    from app.services.smartapi_adapter import get_any_active_market_adapter
+
+    # Auto-enrich returned instruments with live quotes from SmartAPI
+    quote_cache_map: Dict[str, Dict[str, Any]] = {}
+    adapter = get_any_active_market_adapter(db)
+    if adapter and instruments:
+        exchange_tokens: Dict[str, List[str]] = {}
+        for inst in instruments:
+            if inst.symbol_token and inst.exchange:
+                exchange_tokens.setdefault(inst.exchange, []).append(str(inst.symbol_token).strip())
+        if exchange_tokens:
+            try:
+                batch_res = adapter.get_market_quotes_batch(exchange_tokens, mode="FULL")
+                if batch_res and batch_res.get("fetched"):
+                    for q_item in batch_res["fetched"]:
+                        tok = str(q_item.get("symbol_token") or "").strip()
+                        if tok:
+                            quote_cache_map[tok] = q_item
+            except Exception as e:
+                logger.debug(f"Auto quote enrichment error: {e}")
 
     items = []
+    has_db_updates = False
     for inst in instruments:
         clean = inst.tradingsymbol.replace("-EQ", "").strip().upper()
         live_tick = (
@@ -352,13 +379,42 @@ def search_instruments(
             smartapi_ws_service.get_latest_quote(inst.tradingsymbol) or
             (smartapi_ws_service.get_latest_quote(inst.symbol_token) if inst.symbol_token else None)
         )
-        ltp = live_tick["ltp"] if live_tick else inst.current_ltp
-        p_close = live_tick["previous_close"] if live_tick else inst.previous_close
-        chg = live_tick.get("change") if live_tick else inst.day_change
-        chg_pct = live_tick.get("change_percent") if live_tick else inst.day_change_percentage
+        q_batch = quote_cache_map.get(str(inst.symbol_token)) if inst.symbol_token else None
+
+        ltp = (
+            (live_tick["ltp"] if live_tick and live_tick.get("ltp") else None) or
+            (q_batch["ltp"] if q_batch and q_batch.get("ltp") else None) or
+            inst.current_ltp
+        )
+        p_close = (
+            (live_tick["previous_close"] if live_tick and live_tick.get("previous_close") else None) or
+            (q_batch["close"] if q_batch and q_batch.get("close") else None) or
+            inst.previous_close
+        )
+        chg = (
+            (live_tick.get("change") if live_tick else None) or
+            (q_batch.get("net_change") if q_batch else None) or
+            inst.day_change
+        )
+        chg_pct = (
+            (live_tick.get("change_percent") if live_tick else None) or
+            (q_batch.get("percent_change") if q_batch else None) or
+            inst.day_change_percentage
+        )
+
         if ltp and p_close and (chg is None or chg == 0):
             chg = round(ltp - p_close, 2)
             chg_pct = round((chg / p_close) * 100, 2) if p_close > 0 else 0.0
+
+        if ltp and inst.current_ltp != ltp:
+            inst.current_ltp = ltp
+            if p_close:
+                inst.previous_close = p_close
+            if chg is not None:
+                inst.day_change = chg
+            if chg_pct is not None:
+                inst.day_change_percentage = chg_pct
+            has_db_updates = True
 
         items.append({
             "id": inst.id,
@@ -385,6 +441,12 @@ def search_instruments(
             "trading_status": inst.trading_status,
             "last_sync_at": inst.last_sync_at.strftime("%Y-%m-%d %H:%M:%S IST") if inst.last_sync_at else None
         })
+
+    if has_db_updates:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
 
     return {
         "total_count": total_count,
