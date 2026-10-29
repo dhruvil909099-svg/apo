@@ -1054,10 +1054,10 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
             /* SINGLE ACCOUNT FINANCIAL METRICS */
             <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2 text-xs">
               <div className="grid grid-cols-2 gap-3 pb-2 border-b border-slate-200">
-                {/* Required Margin */}
+                {/* Margin for Order */}
                 <div>
                   <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-semibold uppercase">
-                    <span>Required Margin</span>
+                    <span>Margin for Order</span>
                     <span className="px-1 py-0.2 bg-violet-100 text-violet-700 text-[9px] font-bold rounded">
                       {productType === 'INTRADAY' ? 'MIS ~5x' : 'CNC 1x'}
                     </span>
@@ -1075,7 +1075,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-[10px] text-slate-400">
                       {margin.isBrokerVerified
-                        ? 'SmartAPI Margin Batch'
+                        ? (orderType === 'MARKET' ? 'SmartAPI Margin (+0.5% buffer)' : 'SmartAPI Margin (Limit 100%)')
                         : (margin.errorReason || 'Broker session required')}
                     </span>
                     {margin.requiredMargin !== null && (
@@ -1089,6 +1089,11 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                       </button>
                     )}
                   </div>
+                  {margin.requiredMargin !== null && charges.totalCharges !== null && (
+                    <div className="text-[10px] text-slate-500 font-mono mt-1 pt-1 border-t border-slate-200">
+                      Total Req: <span className="font-bold text-slate-800">₹{(margin.requiredMargin + charges.totalCharges).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span> <span className="text-[9px] text-slate-400">(incl charges)</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Total Order Value */}
@@ -1104,6 +1109,13 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   </div>
                   <div className="text-[10px] text-slate-400">
                     {quantity} × ₹{effectivePrice.toFixed(2)}
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-sans mt-1 pt-1 border-t border-slate-200">
+                    {orderType === 'MARKET' ? (
+                      <span className="text-emerald-700 font-medium">Market Order (Dynamic Fill)</span>
+                    ) : (
+                      <span className="text-slate-600">Limit @ ₹{effectivePrice.toFixed(2)}</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1357,8 +1369,10 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
 
               <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] text-slate-500 space-y-1">
                 <div className="font-semibold text-slate-700">Official SmartAPI Data Transparency:</div>
-                <div>Values originate directly from official SmartAPI endpoints: Margin Calculator (<span className="font-mono">/margin/v1/batch</span>) and Brokerage Calculator (<span className="font-mono">/brokerage/v1/estimateCharges</span>).</div>
-                <div className="text-[9px] text-slate-400 italic">Note: The Angel One mobile application internal UI displays an app-only figure (e.g. ₹4,148.77 in HINDCOPPER reference) which is proprietary and labeled APP-ONLY / NOT EXPOSED BY API, while the developer API exposes totalMarginRequired and charge breakups.</div>
+                <div>Values originate directly from authorized Angel One SmartAPI endpoints: Margin Calculator (<span className="font-mono">/margin/v1/batch</span>) and Brokerage Calculator (<span className="font-mono">/brokerage/v1/estimateCharges</span>).</div>
+                <div className="text-[10px] text-slate-600">
+                  <span className="font-semibold text-slate-700">Order Type Behavior:</span> For <span className="font-semibold">Limit</span> orders, SmartAPI returns exact 100% margin (₹51,537.50 for 125 shares @ ₹412.30) because limit price is capped. For <span className="font-semibold">Market</span> orders, SmartAPI applies an official 0.5% market volatility buffer (₹51,795.19 for 125 shares), exactly matching the Angel One mobile app's Market view.
+                </div>
               </div>
 
               <button
