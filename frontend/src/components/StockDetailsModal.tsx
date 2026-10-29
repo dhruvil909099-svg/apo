@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { AccountHoldingItem, MarketCandleResponse } from '../types';
 import { api } from '../api';
+import { StockChart } from './StockChart';
 
 interface StockDetailsModalProps {
   holding: AccountHoldingItem | null;
@@ -299,39 +300,13 @@ export const StockDetailsModal: React.FC<StockDetailsModalProps> = ({
                 </div>
               </div>
 
-              {/* TradingView Widget Container */}
-              <div className="w-full h-[500px] rounded-xl overflow-hidden border border-slate-800 bg-[#131722] relative">
-                <div
-                  id={`tv_chart_container_${cleanSym}`}
-                  className="w-full h-full"
+              {/* High-Performance Real-Time Candlestick & Technical Chart */}
+              <div className="w-full rounded-xl overflow-hidden border border-slate-800 bg-[#131722]">
+                <StockChart
+                  symbol={cleanSym}
+                  initialInterval="5m"
+                  initialRange="1D"
                 />
-
-                {/* Fallback to SVG / Historical Candlestick Chart if TradingView is loading */}
-                {!tvLoaded && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#131722] text-slate-400 text-xs z-10 p-4">
-                    <Activity className="w-8 h-8 animate-spin text-brand-500 mb-2" />
-                    <span>Loading real-time TradingView candlestick engine for {cleanSym}...</span>
-                    {candleData && candleData.candles && candleData.candles.length > 0 && (
-                      <div className="w-full h-64 mt-4 flex items-end gap-1 bg-[#191e2b] p-3 rounded-xl border border-slate-800 overflow-x-auto">
-                        {candleData.candles.slice(-40).map((c, i) => {
-                          const maxPrice = Math.max(...candleData.candles.map((x) => x.high));
-                          const minPrice = Math.min(...candleData.candles.map((x) => x.low));
-                          const range = maxPrice - minPrice || 1;
-                          const heightPct = Math.max(8, ((c.close - minPrice) / range) * 100);
-                          const isUp = c.close >= c.open;
-                          return (
-                            <div key={i} className="flex-1 flex flex-col items-center min-w-[6px]" style={{ height: '100%' }}>
-                              <div
-                                className={`w-full rounded-t-xs ${isUp ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                                style={{ height: `${heightPct}%`, marginTop: 'auto' }}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             </div>
           )}
