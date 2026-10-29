@@ -394,6 +394,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
     let ws: WebSocket | null = null;
     let isSubscribed = true;
     let reconnectTimer: any = null;
+    let reconnectDelay = 2000;
 
     const connectWs = () => {
       try {
@@ -403,6 +404,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
         ws.onopen = () => {
           if (isSubscribed) {
             setDrawerDataFreshness('LIVE');
+            reconnectDelay = 2000;
           }
         };
 
@@ -530,8 +532,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh 
         ws.onclose = () => {
           if (isSubscribed) {
             setDrawerDataFreshness('DISCONNECTED');
-            // Auto-reconnect after 2 seconds
-            reconnectTimer = setTimeout(connectWs, 2000);
+            // Reconnect with gentle backoff (2s, 4s, 8s, max 15s)
+            reconnectTimer = setTimeout(connectWs, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
           }
         };
       } catch {

@@ -31,13 +31,17 @@ export function setApiBase(url: string): void {
 
 export function getWebSocketUrl(): string {
   const base = getApiBase();
+  const stored = typeof window !== 'undefined' ? localStorage.getItem('ipopro_api_key') : null;
+  const key = stored || DEFAULT_KEY;
+  const query = `?api_key=${encodeURIComponent(key)}`;
+
   if (base.startsWith('http://') || base.startsWith('https://')) {
     const wsBase = base.replace(/^http/, 'ws');
-    return `${wsBase}/market/ws`;
+    return `${wsBase}/market/ws${query}`;
   }
   const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = typeof window !== 'undefined' ? window.location.host : 'localhost';
-  return `${protocol}//${host}${base}/market/ws`;
+  return `${protocol}//${host}${base}/market/ws${query}`;
 }
 
 export function getAuthHeaders(): Record<string, string> {

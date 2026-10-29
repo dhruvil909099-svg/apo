@@ -10,12 +10,14 @@ bearer_security = HTTPBearer(auto_error=False)
 
 def verify_api_key(
     key_header: Optional[str] = Security(api_key_header),
-    auth_credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_security)
+    auth_credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_security),
+    api_key: Optional[str] = None
 ) -> bool:
     """
     Validates that incoming requests supply a valid master API key via:
     1. 'X-API-Key: <key>' header, OR
-    2. 'Authorization: Bearer <key>' header.
+    2. 'Authorization: Bearer <key>' header, OR
+    3. '?api_key=<key>' query parameter (essential for standard browser WebSockets).
     
     Uses constant-time comparison (secrets.compare_digest) to prevent timing analysis.
     """
@@ -28,11 +30,13 @@ def verify_api_key(
         provided_key = key_header.strip()
     elif auth_credentials and auth_credentials.credentials:
         provided_key = auth_credentials.credentials.strip()
+    elif api_key:
+        provided_key = api_key.strip()
 
     if not provided_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="UNAUTHORIZED: Missing required authentication. Provide 'X-API-Key' or 'Authorization: Bearer <token>' header.",
+            detail="UNAUTHORIZED: Missing required authentication. Provide 'X-API-Key', 'Authorization: Bearer <token>' header, or '?api_key=<token>' query parameter.",
             headers={"WWW-Authenticate": "Bearer, ApiKey"}
         )
 
