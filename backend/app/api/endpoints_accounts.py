@@ -23,6 +23,7 @@ from app.services.smartapi_adapter import (
 )
 from app.services.account_persistence import persist_accounts_backup
 from app.services.portfolio_sync_service import reconcile_broker_holdings
+from app.services.smartapi_websocket import smartapi_ws_service
 import json
 import time
 import logging

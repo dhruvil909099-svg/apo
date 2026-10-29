@@ -268,3 +268,50 @@ def test_multi_account_isolation_in_order_retrieval(client: TestClient, db_sessi
     assert resp_b.status_code == 200
     orders_b = resp_b.json()
     assert isinstance(orders_b, list)
+
+
+def test_account_holdings_snapshot_with_smartapi_ws_service(client: TestClient, db_session):
+    """Verify that get_account_holdings resolves smartapi_ws_service quote without NameError."""
+    from app.models.holding import AccountHoldingSnapshot
+    from app.services.smartapi_websocket import smartapi_ws_service
+
+    acc = Account(
+        nickname="Snapshot Demat",
+        client_code="SNAP999",
+        account_group="Family",
+        encrypted_api_key="dummy_enc_key",
+        encrypted_pin="dummy_enc_pin",
+        encrypted_totp_secret="dummy_enc_totp",
+        is_demo=False,
+        auth_status="CONNECTED"
+    )
+    db_session.add(acc)
+    db_session.commit()
+    db_session.refresh(acc)
+
+    snapshot = AccountHoldingSnapshot(
+        account_id=acc.id,
+        symbol="INFY",
+        tradingsymbol="INFY-EQ",
+        exchange="NSE",
+        isin="INE009A01021",
+        quantity=50,
+        average_price=1400.0,
+        invested_value=70000.0,
+        ltp=1450.0,
+        close_price=1420.0,
+        is_broker_reported=True,
+        data_source="ANGEL_ONE_SMARTAPI"
+    )
+    db_session.add(snapshot)
+    db_session.commit()
+
+    smartapi_ws_service._last_ticks["INFY"] = {"ltp": 1465.0}
+
+    resp = client.get(f"/api/v1/accounts/{acc.id}/holdings?cached_only=true")
+    assert resp.status_code == 200
+    holdings = resp.json()
+    assert len(holdings) == 1
+    assert holdings[0]["symbol"] == "INFY"
+    assert holdings[0]["current_ltp"] == 1465.0
+
