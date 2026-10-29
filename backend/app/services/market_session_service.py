@@ -12,11 +12,18 @@ Accurately models Indian market schedules for NSE, BSE, NFO, and MCX:
 - Weekends and Exchange Holidays (NSE/BSE/MCX official calendar)
 """
 
-from datetime import datetime, time, date
+from datetime import datetime, time, date, timezone, timedelta
 from typing import Dict, Any, List
-import pytz
 
-IST = pytz.timezone("Asia/Kolkata")
+try:
+    import pytz
+    IST = pytz.timezone("Asia/Kolkata")
+except Exception:
+    try:
+        from zoneinfo import ZoneInfo
+        IST = ZoneInfo("Asia/Kolkata")
+    except Exception:
+        IST = timezone(timedelta(hours=5, minutes=30))
 
 # Official Exchange Holidays (Sample calendar for 2024-2026 recognized by NSE/BSE)
 EXCHANGE_HOLIDAYS_2026 = {
