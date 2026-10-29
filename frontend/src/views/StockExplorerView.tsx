@@ -395,12 +395,19 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
 
                   <div className="my-1.5">
                     <div className="text-sm font-bold font-mono text-slate-900">
-                      {idx.ltp !== null ? idx.ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : 'Price unavailable'}
+                      {typeof idx.ltp === 'number' && Number.isFinite(idx.ltp)
+                        ? idx.ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 })
+                        : 'Price unavailable'}
                     </div>
-                    {idx.net_change !== null ? (
+                    {typeof idx.net_change === 'number' && Number.isFinite(idx.net_change) ? (
                       <div className={`text-[10px] font-semibold flex items-center gap-0.5 ${isPos ? 'text-emerald-600' : 'text-rose-600'}`}>
                         {isPos ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                        <span>{isPos ? '+' : ''}{idx.net_change.toFixed(2)} ({isPos ? '+' : ''}{idx.percent_change?.toFixed(2)}%)</span>
+                        <span>
+                          {isPos ? '+' : ''}{idx.net_change.toFixed(2)}
+                          {typeof idx.percent_change === 'number' && Number.isFinite(idx.percent_change)
+                            ? ` (${isPos ? '+' : ''}${idx.percent_change.toFixed(2)}%)`
+                            : ''}
+                        </span>
                       </div>
                     ) : (
                       <div className="text-[10px] text-slate-400">Quote pending</div>

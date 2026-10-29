@@ -1,5 +1,6 @@
 import re
 import logging
+import concurrent.futures
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone, timedelta
 import requests
@@ -96,17 +97,17 @@ class NSEExchangeProvider(BaseIPOProvider):
     def _ensure_session(self):
         """Initializes cookies from NSE homepage if expired or missing."""
         try:
-            self.session.get(f"{self.BASE_URL}/", timeout=8)
+            self.session.get(f"{self.BASE_URL}/", timeout=4)
         except Exception as e:
             logger.warning(f"Could not refresh NSE session cookies: {e}")
 
     def fetch_current_issues(self) -> List[Dict[str, Any]]:
         """Fetches active, live issues currently open on the exchange."""
         try:
-            resp = self.session.get(self.API_CURRENT, timeout=10)
+            resp = self.session.get(self.API_CURRENT, timeout=5)
             if resp.status_code == 403 or resp.status_code == 401:
                 self._ensure_session()
-                resp = self.session.get(self.API_CURRENT, timeout=10)
+                resp = self.session.get(self.API_CURRENT, timeout=5)
 
             if resp.status_code == 200:
                 data = resp.json()
@@ -119,10 +120,10 @@ class NSEExchangeProvider(BaseIPOProvider):
     def fetch_upcoming_issues(self) -> List[Dict[str, Any]]:
         """Fetches upcoming / forthcoming issues announced on the exchange."""
         try:
-            resp = self.session.get(self.API_UPCOMING, timeout=10)
+            resp = self.session.get(self.API_UPCOMING, timeout=5)
             if resp.status_code == 403 or resp.status_code == 401:
                 self._ensure_session()
-                resp = self.session.get(self.API_UPCOMING, timeout=10)
+                resp = self.session.get(self.API_UPCOMING, timeout=5)
 
             if resp.status_code == 200:
                 data = resp.json()
@@ -138,7 +139,7 @@ class NSEExchangeProvider(BaseIPOProvider):
             return None
         try:
             url = f"{self.API_DETAIL}?symbol={symbol.strip()}"
-            resp = self.session.get(url, timeout=10)
+            resp = self.session.get(url, timeout=3)
             if resp.status_code == 200:
                 return resp.json()
         except Exception as e:
@@ -169,10 +170,25 @@ class NSEExchangeProvider(BaseIPOProvider):
 
         normalized_records: List[Dict[str, Any]] = []
 
+        # Concurrent details fetching for performance (max 5 parallel workers)
+        details_map: Dict[str, Dict[str, Any]] = {}
+        if all_raw_issues:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_sym = {
+                    executor.submit(self.fetch_issue_details, sym): sym
+                    for sym in all_raw_issues.keys()
+                }
+                for future in concurrent.futures.as_completed(future_to_sym):
+                    sym = future_to_sym[future]
+                    try:
+                        details_map[sym] = future.result() or {}
+                    except Exception:
+                        details_map[sym] = {}
+
         for symbol, raw in all_raw_issues.items():
             try:
-                # Fetch detailed metadata (RHP links, Lot size, Registrar)
-                details = self.fetch_issue_details(symbol) or {}
+                # Use pre-fetched details from concurrent pool
+                details = details_map.get(symbol, {})
                 issue_info_list = details.get("issueInfo", {}).get("dataList", [])
                 info_map: Dict[str, str] = {}
                 for entry in issue_info_list:

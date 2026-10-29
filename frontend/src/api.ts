@@ -336,7 +336,7 @@ export const api = {
   getAccountPositions: (id: number) => fetchJson<AccountPositionItem[]>(`${getApiBase()}/accounts/${id}/positions`),
   getAccountOrders: (id: number) => fetchJson<AccountOrderItem[]>(`${getApiBase()}/accounts/${id}/orders`),
   getAccountTrades: (id: number) => fetchJson<AccountTradeItem[]>(`${getApiBase()}/accounts/${id}/trades`),
-  syncAccount: (id: number) => fetchJson<AccountSyncResponse>(`${getApiBase()}/accounts/${id}/sync`, { method: 'POST' }),
+  syncAccount: (id: number) => fetchJson<AccountSyncResponse>(`${getApiBase()}/accounts/${id}/sync`, { method: 'POST', timeoutMs: 45000 }),
 
   // IPOs
   getIPOs: (status?: string) => {
@@ -405,7 +405,7 @@ export const api = {
     total_catalog_size: number;
     source: string;
     last_sync_at: string;
-  }>(`${getApiBase()}/ipos/sync-feed`, { method: 'POST' }),
+  }>(`${getApiBase()}/ipos/sync-feed`, { method: 'POST', timeoutMs: 60000 }),
   getIPOFeedStatus: () => fetchJson<{
     is_running: boolean;
     interval_seconds: number;
@@ -706,7 +706,7 @@ export const api = {
 
   syncInstrumentsCatalog: () => fetchJson<{ status: string; total_persisted: number; counts_by_exchange: Record<string, number> }>(
     `${getApiBase()}/market/instruments/sync`,
-    { method: 'POST' }
+    { method: 'POST', timeoutMs: 90000 }
   ),
 
   getSingleMarketQuote: (symbol: string, exchange: string = 'NSE', symbol_token?: string) => {

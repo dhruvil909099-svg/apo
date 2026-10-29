@@ -133,7 +133,7 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
 
   // Format numbers cleanly
   const formatVol = (val?: number | null) => {
-    if (val === null || val === undefined) return '—';
+    if (val === null || val === undefined || typeof val !== 'number' || !Number.isFinite(val)) return '—';
     if (val >= 10000000) return `${(val / 10000000).toFixed(2)}Cr`;
     if (val >= 100000) return `${(val / 100000).toFixed(2)}L`;
     if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
@@ -141,7 +141,7 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
   };
 
   const formatOI = (val?: number | null) => {
-    if (val === null || val === undefined) return '—';
+    if (val === null || val === undefined || typeof val !== 'number' || !Number.isFinite(val)) return '—';
     if (val >= 10000000) return `${(val / 10000000).toFixed(2)} Cr`;
     if (val >= 100000) return `${(val / 100000).toFixed(2)} L`;
     if (val >= 1000) return `${(val / 1000).toFixed(1)} K`;
@@ -149,7 +149,7 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
   };
 
   const formatLtp = (val?: number | null) => {
-    if (val === null || val === undefined) return '—';
+    if (val === null || val === undefined || typeof val !== 'number' || !Number.isFinite(val)) return '—';
     return `₹${val.toFixed(2)}`;
   };
 
@@ -174,11 +174,12 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
           <div className="flex items-center space-x-4">
             <div className="text-right">
               <span className={`text-lg font-bold font-mono ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {spotLtp !== null ? spotLtp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : 'Price unavailable'}
+                {typeof spotLtp === 'number' && Number.isFinite(spotLtp) ? spotLtp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : 'Price unavailable'}
               </span>
-              {spotChange !== null && (
+              {typeof spotChange === 'number' && Number.isFinite(spotChange) && (
                 <span className={`ml-2 text-xs font-semibold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {isPositive ? '+' : ''}{spotChange.toFixed(2)} ({isPositive ? '+' : ''}{spotChangePct?.toFixed(2)}%)
+                  {isPositive ? '+' : ''}{spotChange.toFixed(2)}
+                  {typeof spotChangePct === 'number' && Number.isFinite(spotChangePct) ? ` (${isPositive ? '+' : ''}${spotChangePct.toFixed(2)}%)` : ''}
                 </span>
               )}
             </div>
@@ -324,7 +325,8 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
                   {spotLtp ? `₹${spotLtp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : 'Unavailable'}
                 </p>
                 <p className={`text-xs font-semibold mt-1 ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {isPositive ? '+' : ''}{spotChange?.toFixed(2)} ({isPositive ? '+' : ''}{spotChangePct?.toFixed(2)}%)
+                  {typeof spotChange === 'number' && Number.isFinite(spotChange) ? `${isPositive ? '+' : ''}${spotChange.toFixed(2)}` : ''}
+                  {typeof spotChangePct === 'number' && Number.isFinite(spotChangePct) ? ` (${isPositive ? '+' : ''}${spotChangePct.toFixed(2)}%)` : ''}
                 </p>
               </div>
 
@@ -379,11 +381,12 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
                     {exch}
                   </span>
                   <span className={`text-xs font-mono font-bold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {spotLtp ? spotLtp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '—'}
+                    {typeof spotLtp === 'number' && Number.isFinite(spotLtp) ? spotLtp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '—'}
                   </span>
-                  {spotChange !== null && (
+                  {typeof spotChange === 'number' && Number.isFinite(spotChange) && (
                     <span className={`text-[11px] font-semibold flex items-center ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {isPositive ? '▲ +' : '▼ '}{spotChange.toFixed(2)} ({isPositive ? '+' : ''}{spotChangePct?.toFixed(2)}%)
+                      {isPositive ? '▲ +' : '▼ '}{spotChange.toFixed(2)}
+                      {typeof spotChangePct === 'number' && Number.isFinite(spotChangePct) ? ` (${isPositive ? '+' : ''}${spotChangePct.toFixed(2)}%)` : ''}
                     </span>
                   )}
                 </div>
@@ -562,7 +565,7 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
                               <span className="font-bold text-emerald-400">
                                 {formatLtp(callLtp)}
                               </span>
-                              {callChgPct !== null && (
+                              {typeof callChgPct === 'number' && Number.isFinite(callChgPct) && (
                                 <span className={`ml-1.5 text-[10px] font-semibold ${callIsPos ? 'text-emerald-400' : 'text-rose-400'}`}>
                                   ({callIsPos ? '+' : ''}{callChgPct.toFixed(1)}%)
                                 </span>
@@ -601,7 +604,7 @@ export const OptionChainModal: React.FC<OptionChainModalProps> = ({
                               <span className="font-bold text-rose-400">
                                 {formatLtp(putLtp)}
                               </span>
-                              {putChgPct !== null && (
+                              {typeof putChgPct === 'number' && Number.isFinite(putChgPct) && (
                                 <span className={`ml-1.5 text-[10px] font-semibold ${putIsPos ? 'text-emerald-400' : 'text-rose-400'}`}>
                                   ({putIsPos ? '+' : ''}{putChgPct.toFixed(1)}%)
                                 </span>

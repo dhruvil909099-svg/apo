@@ -633,7 +633,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           {/* Right: Live Quote and Close */}
           <div className="flex items-center gap-3">
             <div className="text-right">
-              {quote.ltp !== null ? (
+              {typeof quote.ltp === 'number' && Number.isFinite(quote.ltp) ? (
                 <>
                   <div className="text-base font-mono font-bold text-slate-900">
                     ₹{quote.ltp.toFixed(2)}
@@ -641,7 +641,8 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   <div className="text-[11px] font-semibold flex items-center justify-end gap-1">
                     <span className={`flex items-center ${isUp ? 'text-emerald-600' : 'text-rose-600'}`}>
                       {isUp ? <TrendingUp className="w-3 h-3 inline mr-0.5" /> : <TrendingDown className="w-3 h-3 inline mr-0.5" />}
-                      {isUp ? '+' : ''}{quote.dayChange?.toFixed(2)} ({isUp ? '+' : ''}{quote.dayChangePercent?.toFixed(2)}%)
+                      {typeof quote.dayChange === 'number' && Number.isFinite(quote.dayChange) ? `${isUp ? '+' : ''}${quote.dayChange.toFixed(2)}` : ''}
+                      {typeof quote.dayChangePercent === 'number' && Number.isFinite(quote.dayChangePercent) ? ` (${isUp ? '+' : ''}${quote.dayChangePercent.toFixed(2)}%)` : ''}
                     </span>
                   </div>
                 </>
@@ -1076,7 +1077,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   className="text-[11px] font-semibold text-brand-600 hover:text-brand-700 flex items-center gap-1 bg-brand-50 hover:bg-brand-100/70 px-2.5 py-1 rounded-lg border border-brand-200 transition-colors"
                 >
                   <Calculator className="w-3 h-3" />
-                  <span>Charges: {charges.totalCharges !== null ? `₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}</span>
+                  <span>Charges: {typeof charges.totalCharges === 'number' && Number.isFinite(charges.totalCharges) ? `₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}</span>
                   <span className="text-[9px] bg-white px-1 rounded text-brand-800 font-bold">
                     {charges.isBrokerVerified ? 'BROKER' : 'UNVERIFIED'}
                   </span>
@@ -1120,49 +1121,49 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 <div className="flex justify-between text-slate-600">
                   <span>Angel One Brokerage</span>
                   <span className="font-bold text-slate-900">
-                    {charges.brokerage !== null ? `₹${charges.brokerage.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.brokerage === 'number' && Number.isFinite(charges.brokerage) ? `₹${charges.brokerage.toFixed(2)}` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Securities Transaction Tax (STT)</span>
                   <span className="font-bold text-slate-900">
-                    {charges.stt !== null ? `₹${charges.stt.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.stt === 'number' && Number.isFinite(charges.stt) ? `₹${charges.stt.toFixed(2)}` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Exchange Transaction Charges</span>
                   <span className="font-bold text-slate-900">
-                    {charges.exchangeCharges !== null ? `₹${charges.exchangeCharges.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.exchangeCharges === 'number' && Number.isFinite(charges.exchangeCharges) ? `₹${charges.exchangeCharges.toFixed(2)}` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Stamp Duty (State Stamp Act)</span>
                   <span className="font-bold text-slate-900">
-                    {charges.stampDuty !== null ? `₹${charges.stampDuty.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.stampDuty === 'number' && Number.isFinite(charges.stampDuty) ? `₹${charges.stampDuty.toFixed(2)}` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>SEBI Turnover Fees</span>
                   <span className="font-bold text-slate-900">
-                    {charges.sebiCharges !== null ? `₹${charges.sebiCharges.toFixed(4)}` : 'Unavailable'}
+                    {typeof charges.sebiCharges === 'number' && Number.isFinite(charges.sebiCharges) ? `₹${charges.sebiCharges.toFixed(4)}` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>GST (18% on Services)</span>
                   <span className="font-bold text-slate-900">
-                    {charges.gst !== null ? `₹${charges.gst.toFixed(2)}` : 'Unavailable'}
+                    {typeof charges.gst === 'number' && Number.isFinite(charges.gst) ? `₹${charges.gst.toFixed(2)}` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>DP Charges (CDSL Settlement)</span>
                   <span className="font-bold text-slate-500 text-[11px]">
-                    {charges.dpCharges !== null ? `₹${charges.dpCharges.toFixed(2)}` : 'Not included in broker estimate'}
+                    {typeof charges.dpCharges === 'number' && Number.isFinite(charges.dpCharges) ? `₹${charges.dpCharges.toFixed(2)}` : 'Not included in broker estimate'}
                   </span>
                 </div>
                 <div className="flex justify-between pt-2 border-t font-sans font-bold text-slate-900 text-sm">
                   <span>Total Estimated Charges</span>
                   <span className="font-mono text-brand-700">
-                    {charges.totalCharges !== null ? `₹${charges.totalCharges.toFixed(2)}` : 'Charges Unavailable'}
+                    {typeof charges.totalCharges === 'number' && Number.isFinite(charges.totalCharges) ? `₹${charges.totalCharges.toFixed(2)}` : 'Charges Unavailable'}
                   </span>
                 </div>
               </div>
