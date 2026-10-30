@@ -11,6 +11,7 @@ from app.models.account import Account
 from app.models.risk import RiskLimit
 from app.core.rate_limit import rate_limit_orders
 from app.models.ipo import IPO, Allotment
+from app.models.instrument import Instrument
 from app.schemas.order import (
     OrderSingleCreate, BulkOrderPrepareRequest, BulkOrderPreviewResponse,
     BulkOrderExecuteRequest, OrderResponse, OrderPreviewRequest, OrderPreviewResponse,
@@ -111,9 +112,9 @@ def preview_single_order(
     if req.transaction_type == "BUY":
         available_balance = account.available_cash or 0.0
         balance_label = "Available Cash"
-        if available_balance < (est_value + total_charges):
+        if available_balance < (est_value + safe_charges):
             blocking_reasons.append(
-                f"Insufficient funds: Required ₹{(est_value + total_charges):,.2f}, Available ₹{available_balance:,.2f}"
+                f"Insufficient funds: Required ₹{(est_value + safe_charges):,.2f}, Available ₹{available_balance:,.2f}"
             )
     else:  # SELL
         balance_label = "Sellable Shares"
@@ -165,7 +166,7 @@ def preview_single_order(
         quantity=req.quantity,
         price=effective_price,
         estimated_value=est_value,
-        estimated_charges=total_charges,
+        estimated_charges=safe_charges,
         net_total=net_total,
         available_balance=available_balance,
         balance_label=balance_label,
@@ -332,27 +333,68 @@ def place_single_order(
 
 
 @router.post("/bulk-prepare", response_model=BulkOrderPreviewResponse)
-def prepare_bulk_orders(req: BulkOrderPrepareRequest, db: Session = Depends(get_db)):
+def prepare_bulk_orders(
+    req: BulkOrderPrepareRequest,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
+    if not current_user.is_admin:
+        # Non-admin users may only prepare orders for their own Demat accounts
+        owned_account_ids = {
+            acc.id for acc in db.query(Account).filter(Account.user_id == current_user.id).all()
+        }
+        filtered_ids = [aid for aid in req.account_ids if aid in owned_account_ids]
+        if not filtered_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="FORBIDDEN: You do not own any of the specified target accounts."
+            )
+        req.account_ids = filtered_ids
+
     result = BulkOrderService.prepare_and_validate(db, req.model_dump())
     return BulkOrderPreviewResponse(**result)
-
 
 
 @router.post("/bulk-execute")
 def execute_bulk_orders(
     req: BulkOrderExecuteRequest,
     db: Session = Depends(get_db),
-    _rate_ok: bool = Depends(rate_limit_orders)
+    _rate_ok: bool = Depends(rate_limit_orders),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
+    # Verify authorization for all orders in batch
+    batch_orders = db.query(Order).filter(Order.batch_id == req.batch_id).all()
+    if batch_orders:
+        for bo in batch_orders:
+            if bo.account:
+                authorize_account_access(bo.account, current_user)
+
+    if current_user.auth_method == "master_key":
+        from app.core.auth import log_audit_event
+        log_audit_event(
+            db,
+            event_type="AUTOMATION_BULK_EXECUTE",
+            operator="system_automation",
+            account_id=None,
+            details={"batch_id": req.batch_id, "orders_count": len(batch_orders)}
+        )
+
     result = BulkOrderService.execute_batch(db, req.batch_id, req.operator_confirmed)
     return result
 
 
 @router.post("/{order_id}/cancel")
-def cancel_order(order_id: int, db: Session = Depends(get_db)):
+def cancel_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.account:
+        authorize_account_access(order.account, current_user)
 
     if order.account and not order.account.is_demo and order.account.auth_status != "CONNECTED":
         raise HTTPException(
@@ -369,6 +411,17 @@ def cancel_order(order_id: int, db: Session = Depends(get_db)):
 
     order.status = "CANCELLED"
     db.commit()
+
+    if current_user.auth_method == "master_key":
+        from app.core.auth import log_audit_event
+        log_audit_event(
+            db,
+            event_type="AUTOMATION_ORDER_CANCELLED",
+            operator="system_automation",
+            account_id=order.account_id,
+            details={"order_id": order.id, "tradingsymbol": order.tradingsymbol}
+        )
+
     return {"success": True, "message": "Order successfully cancelled.", "order_id": order.id, "status": "CANCELLED"}
 
 
@@ -378,7 +431,8 @@ def modify_order(
     mod_in: Optional[OrderModifyRequest] = None,
     price: Optional[float] = Query(None),
     quantity: Optional[int] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Modifies an open or prepared order.
@@ -387,6 +441,9 @@ def modify_order(
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.account:
+        authorize_account_access(order.account, current_user)
 
     if order.account and not order.account.is_demo and order.account.auth_status != "CONNECTED":
         raise HTTPException(
@@ -413,12 +470,18 @@ def modify_order(
 @router.post("/reconcile")
 def reconcile_orders(
     account_id: int = Query(..., description="Account ID to reconcile with Angel One order book"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Reconciles open/pending orders for an account directly against Angel One's genuine order book.
     Safely resolves SUBMITTING and UNKNOWN_SUBMISSION statuses.
     """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
+
     from app.services.broker_reconciliation_service import BrokerReconciliationService
     result = BrokerReconciliationService.reconcile_account_orders(db, account_id)
     return result

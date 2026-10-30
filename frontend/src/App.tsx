@@ -78,10 +78,21 @@ export const App: React.FC = () => {
 
   // Verify and sync authenticated user session
   useEffect(() => {
+    api.getBootstrapStatus()
+      .then((st) => {
+        if (st.initial_setup_required) {
+          setIsLoginModalOpen(true);
+        }
+      })
+      .catch(() => {});
+
     api.getMe()
       .then((res: any) => {
         if (res && res.authenticated) {
           setCurrentUser(res.user || { username: res.username || 'Operator', role: res.role || 'USER' });
+          if (res.must_change_password) {
+            setIsLoginModalOpen(true);
+          }
         }
       })
       .catch((err: any) => {

@@ -18,6 +18,10 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     # Incremented on logout / password change to revoke all previously issued session tokens
     token_version = Column(Integer, default=0, nullable=False)
+    # Forced password change flag (for bootstrap accounts or security rotation)
+    must_change_password = Column(Boolean, default=False, nullable=False)
+    password_changed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

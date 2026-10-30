@@ -40,7 +40,7 @@ app_db.SessionLocal = TestingSessionLocal
 
 def seed_test_fixtures(db):
     """Injects dedicated test fixtures into the in-memory test database."""
-    pwd_hash, salt = hash_password("Admin@IPOPro2026!")
+    pwd_hash, salt = hash_password("TestOperator#SafeKey2026!")
     admin_user = User(
         username="admin",
         email="admin@ipopro.internal",

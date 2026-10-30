@@ -184,6 +184,7 @@ def run_safe_migrations(target_engine=None):
         ("user_id", "INTEGER"),
         ("account_group", "VARCHAR(50) DEFAULT 'Family'"),
         ("is_demo", "BOOLEAN DEFAULT FALSE"),
+        ("is_automation_enabled", "BOOLEAN DEFAULT FALSE"),
         ("auth_status", "VARCHAR(30) DEFAULT 'DISCONNECTED'"),
         ("ddpi_status", "VARCHAR(30) DEFAULT 'UNKNOWN'"),
         ("edis_authorized_today", "BOOLEAN DEFAULT FALSE"),
@@ -244,10 +245,17 @@ def run_safe_migrations(target_engine=None):
 
     if "users" in existing_tables:
         existing_cols = {col["name"] for col in inspector.get_columns("users")}
+        user_cols_to_add = [
+            ("token_version", "INTEGER DEFAULT 0 NOT NULL"),
+            ("must_change_password", "BOOLEAN DEFAULT FALSE NOT NULL"),
+            ("password_changed_at", "TIMESTAMP"),
+            ("last_login_at", "TIMESTAMP"),
+        ]
         with active_engine.connect() as conn:
-            if "token_version" not in existing_cols:
-                logger.info("Adding missing column users.token_version (INTEGER)")
-                conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0 NOT NULL;"))
+            for col_name, col_type in user_cols_to_add:
+                if col_name not in existing_cols:
+                    logger.info(f"Adding missing column users.{col_name} ({col_type})")
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};"))
             conn.commit()
 
     logger.info("Schema verification and safe migrations completed.")

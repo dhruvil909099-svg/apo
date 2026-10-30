@@ -61,7 +61,7 @@ def test_valid_credentials_accepted_200(unauthenticated_client: TestClient):
     """Verifies that valid authenticated session JWT is accepted with HTTP 200."""
     login_res = unauthenticated_client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "Admin@IPOPro2026!"}
+        json={"username": "admin", "password": "TestOperator#SafeKey2026!"}
     )
     assert login_res.status_code == 200
     valid_jwt = login_res.json()["access_token"]
@@ -97,7 +97,7 @@ def test_public_endpoints_accessible_without_auth(unauthenticated_client: TestCl
     # Auth Login with valid credentials
     res = unauthenticated_client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "Admin@IPOPro2026!"}
+        json={"username": "admin", "password": "TestOperator#SafeKey2026!"}
     )
     assert res.status_code == 200
     assert res.json()["authenticated"] is True

@@ -45,8 +45,16 @@ class AccountEligibilityService:
         # 3. Static IP and commercial permission gate for Live trading
         if is_live_requested and not account.is_demo and settings.TRADING_MODE == "LIVE":
             if settings.STATIC_IP_CHECK:
-                # In environments requiring strict broker static IP compliance
-                warnings.append("Static IP routing gate active: Live order will route via authorized static broker egress.")
+                from app.services.smartapi_adapter import verify_production_egress_ip
+                egress_res = verify_production_egress_ip()
+                if not egress_res.get("is_valid"):
+                    blocking_reasons.append(
+                        f"STATIC IP GATE: {egress_res.get('message')}"
+                    )
+                else:
+                    warnings.append(
+                        f"Static IP verified: Outbound egress {egress_res.get('actual_egress_ip')} matches Angel One whitelist."
+                    )
 
         # 4. Emergency Kill Switch check
         global_risk = db.query(RiskLimit).filter(RiskLimit.account_id == None).first()

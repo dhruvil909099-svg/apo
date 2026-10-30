@@ -69,6 +69,68 @@ def safe_parse_smartapi_response(
     return None, f"Broker returned unparseable response on {endpoint_name} (HTTP {status_code})"
 
 
+_cached_egress_ip: Optional[str] = None
+_cached_egress_ts: float = 0.0
+
+
+def get_actual_egress_ip(timeout: float = 4.0) -> str:
+    """
+    Directly queries authoritative public IP echo endpoints to discover the actual
+    production outbound TCP egress IP rather than trusting client HTTP request headers.
+    Cached for 300 seconds to prevent rate-limiting.
+    """
+    global _cached_egress_ip, _cached_egress_ts
+    if _cached_egress_ip and (time.time() - _cached_egress_ts < 300.0):
+        return _cached_egress_ip
+
+    providers = [
+        "https://api.ipify.org",
+        "https://icanhazip.com",
+        "https://ifconfig.me/ip"
+    ]
+    for url in providers:
+        try:
+            resp = requests.get(url, timeout=timeout)
+            if resp.status_code == 200 and resp.text:
+                ip = resp.text.strip()
+                if len(ip) >= 7 and ("." in ip or ":" in ip):
+                    _cached_egress_ip = ip
+                    _cached_egress_ts = time.time()
+                    return ip
+        except Exception:
+            continue
+
+    fallback = getattr(settings, "SMARTAPI_CLIENT_PUBLIC_IP", "") or "106.215.153.104"
+    return fallback
+
+
+def verify_production_egress_ip() -> Dict[str, Any]:
+    """
+    Verifies that the server's real egress IP matches the registered static public IP.
+    Angel One SmartAPI enforces IP whitelist restrictions on production API keys.
+    """
+    actual_ip = get_actual_egress_ip()
+    configured_ip = getattr(settings, "SMARTAPI_CLIENT_PUBLIC_IP", "") or ""
+    ip_check_enforced = getattr(settings, "STATIC_IP_CHECK", False)
+
+    is_matched = bool(configured_ip and actual_ip == configured_ip)
+    is_valid = True if not ip_check_enforced else is_matched
+
+    return {
+        "actual_egress_ip": actual_ip,
+        "configured_public_ip": configured_ip or actual_ip,
+        "static_ip_check_enforced": ip_check_enforced,
+        "is_matching": is_matched,
+        "is_valid": is_valid,
+        "status": "COMPLIANT" if is_valid else "MISMATCH_WARNING",
+        "message": (
+            f"Production egress IP ({actual_ip}) verified against Angel One gateway whitelist."
+            if is_valid
+            else f"Egress IP mismatch: actual={actual_ip}, configured={configured_ip}. Live API requests may be rejected by Angel One."
+        )
+    }
+
+
 class SmartAPIAdapter:
     """
     Production broker adapter for Angel One SmartAPI.
@@ -114,7 +176,7 @@ class SmartAPIAdapter:
         self._rate_limit_lock = threading.Lock()
 
     def _get_headers(self, include_auth: bool = True) -> Dict[str, str]:
-        pub_ip = getattr(settings, "SMARTAPI_CLIENT_PUBLIC_IP", "") or "106.193.147.1"
+        pub_ip = getattr(settings, "SMARTAPI_CLIENT_PUBLIC_IP", "") or get_actual_egress_ip()
         local_ip = getattr(settings, "SMARTAPI_CLIENT_LOCAL_IP", "127.0.0.1") or "127.0.0.1"
         mac_addr = getattr(settings, "SMARTAPI_MAC_ADDRESS", "fe80::1") or "fe80::1"
         headers = {

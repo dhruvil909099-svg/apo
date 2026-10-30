@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -34,6 +34,13 @@ class Settings(BaseSettings):
         default=False,
         description="If False, only administrators can create users (recommended for trading systems)"
     )
+    # Session Cookie & CSRF Configuration
+    SESSION_COOKIE_NAME: str = Field(default="ipopro_session", description="Name of HttpOnly session cookie")
+    CSRF_COOKIE_NAME: str = Field(default="ipopro_csrf", description="Name of CSRF token cookie")
+    COOKIE_SECURE: bool = Field(default=False, description="Set True in HTTPS production environments")
+    COOKIE_SAMESITE: str = Field(default="lax", description="SameSite cookie policy: lax, strict, or none")
+    COOKIE_DOMAIN: Optional[str] = Field(default=None, description="Optional domain scope for session cookies")
+
     # Optional first-run bootstrap of an administrator (only used when no active admin exists)
     BOOTSTRAP_ADMIN_USERNAME: str = Field(default="", description="Initial admin username (first run only)")
     BOOTSTRAP_ADMIN_EMAIL: str = Field(default="", description="Initial admin email (first run only)")

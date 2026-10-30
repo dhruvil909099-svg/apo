@@ -22,6 +22,8 @@ class Account(Base):
     # Flags & Connection State
     is_enabled = Column(Boolean, default=True)
     is_demo = Column(Boolean, default=False)
+    # Server-to-server automation permission (requires explicit opt-in for live demat accounts)
+    is_automation_enabled = Column(Boolean, default=False)
     auth_status = Column(String(30), default="DISCONNECTED")  # CONNECTED, DISCONNECTED, EXPIRED, ERROR
     
     # Depository & Order Placement Flags

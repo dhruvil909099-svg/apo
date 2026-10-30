@@ -60,15 +60,38 @@ export function getWebSocketUrl(): string {
   return `${protocol}//${host}${base}/market/ws${query}`;
 }
 
+export function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(^|;\\s*)ipopro_csrf=([^;]*)'));
+  if (match) return decodeURIComponent(match[2]);
+  if (typeof window !== 'undefined') {
+    return localStorage.getItem('ipopro_csrf_token') || null;
+  }
+  return null;
+}
+
+export function setCsrfToken(token: string | null): void {
+  if (typeof window !== 'undefined') {
+    if (token && token.trim()) {
+      localStorage.setItem('ipopro_csrf_token', token.trim());
+    } else {
+      localStorage.removeItem('ipopro_csrf_token');
+    }
+  }
+}
+
 export function getAuthHeaders(): Record<string, string> {
   const token = getStoredToken();
-  if (!token) {
-    return {};
+  const csrf = getCsrfToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+    headers['X-API-Key'] = token;
   }
-  return {
-    'Authorization': `Bearer ${token}`,
-    'X-API-Key': token,
-  };
+  if (csrf) {
+    headers['X-CSRF-Token'] = csrf;
+  }
+  return headers;
 }
 
 export function setApiKey(key: string): void {
@@ -146,6 +169,7 @@ async function fetchJson<T>(url: string, options?: FetchOptions): Promise<T> {
 
       try {
         const response = await fetch(url, {
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
             ...getAuthHeaders(),
@@ -820,8 +844,8 @@ export const api = {
   }),
 
   // User Authentication
-  login: async (username: string, password: string): Promise<{ access_token: string; token_type: string; expires_in_seconds: number; user: any }> => {
-    const res = await fetchJson<{ access_token: string; token_type: string; expires_in_seconds: number; user: any }>(
+  login: async (username: string, password: string): Promise<any> => {
+    const res = await fetchJson<any>(
       `${getApiBase()}/auth/login`,
       {
         method: 'POST',
@@ -832,22 +856,83 @@ export const api = {
     );
     if (res.access_token) {
       setAccessToken(res.access_token);
-      if (typeof window !== 'undefined' && res.user) {
-        localStorage.setItem('ipopro_user', JSON.stringify(res.user));
+      if (res.csrf_token) {
+        setCsrfToken(res.csrf_token);
+      }
+      if (typeof window !== 'undefined') {
+        const u = res.user || { username: res.username, role: res.role, id: res.user_id };
+        localStorage.setItem('ipopro_user', JSON.stringify(u));
       }
     }
     return res;
   },
 
-  register: (data: { username: string; email: string; password: string }) => fetchJson<{ message: string; user: any }>(
-    `${getApiBase()}/auth/register`,
-    {
-      method: 'POST',
-      body: JSON.stringify(data),
-      skipDeduplication: true,
-      headers: { 'Content-Type': 'application/json' },
+  register: async (data: { username: string; email: string; password: string }): Promise<any> => {
+    const res = await fetchJson<any>(
+      `${getApiBase()}/auth/register`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+        skipDeduplication: true,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    if (res.access_token) {
+      setAccessToken(res.access_token);
+      if (res.csrf_token) setCsrfToken(res.csrf_token);
+      if (typeof window !== 'undefined') {
+        const u = res.user || { username: res.username, role: res.role, id: res.user_id };
+        localStorage.setItem('ipopro_user', JSON.stringify(u));
+      }
     }
-  ),
+    return res;
+  },
+
+  setupAdmin: async (data: { username: string; email: string; password: string; confirm_password: string }): Promise<any> => {
+    const res = await fetchJson<any>(
+      `${getApiBase()}/auth/setup-admin`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+        skipDeduplication: true,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    if (res.access_token) {
+      setAccessToken(res.access_token);
+      if (res.csrf_token) setCsrfToken(res.csrf_token);
+      if (typeof window !== 'undefined') {
+        const u = { username: res.username, role: res.role, id: res.user_id };
+        localStorage.setItem('ipopro_user', JSON.stringify(u));
+      }
+    }
+    return res;
+  },
+
+  changePassword: async (data: { current_password: string; new_password: string; confirm_password: string }): Promise<any> => {
+    const res = await fetchJson<any>(
+      `${getApiBase()}/auth/change-password`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+        skipDeduplication: true,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    if (res.access_token) {
+      setAccessToken(res.access_token);
+      if (res.csrf_token) setCsrfToken(res.csrf_token);
+    }
+    return res;
+  },
+
+  getBootstrapStatus: () => fetchJson<{
+    initial_setup_required: boolean;
+    auth_required: boolean;
+    allow_registration: boolean;
+    trading_mode: string;
+    app_name: string;
+  }>(`${getApiBase()}/auth/bootstrap-status`, { skipDeduplication: true }),
 
   logout: async (): Promise<void> => {
     try {
@@ -859,10 +944,11 @@ export const api = {
       // ignore
     } finally {
       setAccessToken(null);
+      setCsrfToken(null);
     }
   },
 
-  getMe: () => fetchJson<{ authenticated: boolean; user: any }>(`${getApiBase()}/auth/me`, {
+  getMe: () => fetchJson<{ authenticated: boolean; user: any; must_change_password?: boolean }>(`${getApiBase()}/auth/me`, {
     skipDeduplication: true,
   }),
 
@@ -872,6 +958,8 @@ export const api = {
     authenticated: boolean;
     user?: any;
     app_version: string;
+    must_change_password?: boolean;
+    initial_setup_required?: boolean;
   }>(`${getApiBase()}/auth/status`, { skipDeduplication: true }),
 };
 
