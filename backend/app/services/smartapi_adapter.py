@@ -673,8 +673,66 @@ class SmartAPIAdapter:
                 "message": "Order submission timed out. Status unknown. Do not retry live order without reconciliation."
             }
         except Exception as e:
-            logger.error(f"Live order placement error for {self.client_code}: {str(e)}")
             return {"success": False, "status": "REJECTED", "message": f"Network exception: {str(e)}", "error_code": "NETWORK_FAIL"}
+
+    def modify_order(self, order_id: str, modify_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Modifies an open order through SmartAPI modifyOrder endpoint.
+        POST /rest/secure/angelbroking/order/v1/modifyOrder
+        """
+        self._enforce_rate_limit(0.1)
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/modifyOrder"
+        payload = {
+            "variety": modify_data.get("variety", "NORMAL"),
+            "orderid": str(order_id),
+            "ordertype": modify_data.get("order_type", "LIMIT"),
+            "producttype": modify_data.get("product_type", "DELIVERY"),
+            "duration": "DAY",
+            "price": str(modify_data.get("price", "0.0")),
+            "quantity": str(modify_data["quantity"])
+        }
+        if modify_data.get("trigger_price"):
+            payload["triggerprice"] = str(modify_data["trigger_price"])
+
+        try:
+            resp = requests.post(url, json=payload, headers=self._get_headers(), timeout=10)
+            data = resp.json()
+            if data.get("status") and data.get("data"):
+                return {"success": True, "broker_order_id": data["data"].get("orderid", order_id), "message": "Order modified successfully"}
+            return {"success": False, "message": data.get("message", "Order modification rejected")}
+        except Exception as e:
+            return {"success": False, "message": f"Exception modifying order: {str(e)}"}
+
+    def cancel_order(self, order_id: str, variety: str = "NORMAL") -> Dict[str, Any]:
+        """
+        Cancels an open order through SmartAPI cancelOrder endpoint.
+        POST /rest/secure/angelbroking/order/v1/cancelOrder
+        """
+        self._enforce_rate_limit(0.1)
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/cancelOrder"
+        payload = {
+            "variety": variety,
+            "orderid": str(order_id)
+        }
+        try:
+            resp = requests.post(url, json=payload, headers=self._get_headers(), timeout=10)
+            data = resp.json()
+            if data.get("status"):
+                return {"success": True, "broker_order_id": order_id, "message": "Order cancelled successfully"}
+            return {"success": False, "message": data.get("message", "Order cancellation rejected")}
+        except Exception as e:
+            return {"success": False, "message": f"Exception cancelling order: {str(e)}"}
+
+    def get_individual_order_details(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches individual order details through SmartAPI order details endpoint.
+        GET /rest/secure/angelbroking/order/v1/details/{orderid}
+        """
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/details/{order_id}"
+        data = self._send_request("GET", url, rate_limit_seconds=1.0, rate_limit_category="order_book")
+        if data and (data.get("status") is True or data.get("success") is True):
+            return data.get("data")
+        return None
 
     def estimate_charges(self, orders: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

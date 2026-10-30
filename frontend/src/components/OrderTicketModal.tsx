@@ -528,7 +528,12 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
       const res = await api.placeSingleOrder(orderPayload);
       setIsSubmitting(false);
       setShowConfirmModal(false);
-      onOrderSuccess(`Order submitted successfully! Status: ${res.status} (Client ID: ${res.client_order_id.slice(0, 8)})`);
+      const isPaper = res.is_paper_trade ?? true;
+      onOrderSuccess(
+        isPaper
+          ? `Paper order executed in simulator! Status: ${res.status} (Client ID: ${res.client_order_id?.slice(0, 8) || 'N/A'}). Note: Simulated orders do NOT appear in the Angel One app.`
+          : `Live order placed with Angel One! Status: ${res.status} (Broker Order ID: ${res.broker_order_id})`
+      );
       onClose();
     } catch (err: any) {
       setIsSubmitting(false);
@@ -589,7 +594,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[94vh]">
+      <div className="relative bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[94vh]">
         
         {/* HEADER: Symbol, Account Selector Dropdown, Live Price, Close */}
         <div className={`px-5 py-3.5 border-b flex items-center justify-between ${
@@ -1386,27 +1391,34 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
           </div>
         )}
 
-        {/* Confirmation Modal */}
+        {/* Confirmation Modal — Exactly matches buying box dimensions */}
         {showConfirmModal && (
-          <div className="absolute inset-0 bg-white/95 backdrop-blur-xs p-6 flex flex-col justify-between z-30 animate-in fade-in duration-100">
+          <div className="absolute inset-0 bg-white z-30 p-5 sm:p-6 rounded-2xl flex flex-col justify-between overflow-y-auto animate-in fade-in duration-100">
             <div>
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3.5">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-5 h-5 text-brand-600" />
                   <span className="font-bold text-slate-900 text-sm">
-                    {tradingScope === 'MULTI' ? 'Confirm Multi-Account Paper Batch' : 'Confirm Order Submission'}
+                    {tradingScope === 'MULTI' ? 'Review & Confirm Multi-Account Batch' : 'Review & Confirm Order'}
+                  </span>
+                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded">
+                    SIMULATED PAPER
                   </span>
                 </div>
-                <button onClick={() => setShowConfirmModal(false)} className="text-slate-400 hover:text-slate-600">
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmModal(false)}
+                  className="text-slate-400 hover:text-slate-600"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="space-y-2.5 text-xs">
+              <div className="space-y-3 text-xs">
                 {tradingScope === 'MULTI' ? (
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
                     <div className="flex justify-between font-bold">
-                      <span>Total Accounts:</span>
+                      <span className="text-slate-600">Selected Accounts:</span>
                       <span className="font-mono text-brand-700">{selectedAccountIds.length} Accounts</span>
                     </div>
                     <div className="flex justify-between">
@@ -1425,59 +1437,146 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                         ₹{multiAccountBatchItems.reduce((acc, i) => acc + i.tradeValue, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </span>
                     </div>
+
+                    <div className="mt-2 max-h-36 overflow-y-auto border border-slate-200 rounded-lg bg-white">
+                      <table className="w-full text-[11px] text-left">
+                        <thead className="bg-slate-100 text-slate-500 font-semibold sticky top-0">
+                          <tr>
+                            <th className="p-1.5">Account</th>
+                            <th className="p-1.5 text-right">Qty</th>
+                            <th className="p-1.5 text-right">Value</th>
+                            <th className="p-1.5 text-right">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-mono">
+                          {multiAccountBatchItems.map((b) => (
+                            <tr key={b.account.id}>
+                              <td className="p-1.5 font-sans font-medium text-slate-800">
+                                {b.account.nickname} <span className="text-slate-400 font-mono text-[10px]">({b.account.masked_client_code})</span>
+                              </td>
+                              <td className="p-1.5 text-right font-bold">{b.quantity}</td>
+                              <td className="p-1.5 text-right">₹{b.tradeValue.toFixed(2)}</td>
+                              <td className="p-1.5 text-right">
+                                <span className={`px-1 py-0.2 rounded text-[9px] font-bold ${
+                                  b.isEligible ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                }`}>
+                                  {b.isEligible ? 'Ready' : 'Blocked'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 ) : (
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
-                    <div className="flex justify-between">
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                    <div className="flex justify-between items-center pb-1.5 border-b border-slate-200">
                       <span className="text-slate-500">Account:</span>
-                      <span className="font-bold text-slate-900">{currentAccount?.nickname} ({currentAccount?.masked_client_code})</span>
+                      <div className="text-right">
+                        <span className="font-bold text-slate-900">{currentAccount?.nickname}</span>
+                        <span className="ml-1 text-slate-400 font-mono">({currentAccount?.masked_client_code})</span>
+                        <span className="ml-1 text-[9px] px-1 bg-slate-200 text-slate-700 rounded font-semibold">
+                          {currentAccount?.is_demo ? 'Demo' : 'Angel One'}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Side:</span>
-                      <span className={`font-bold ${side === 'BUY' ? 'text-emerald-700' : 'text-rose-700'}`}>{side}</span>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">Order Action:</span>
+                      <span className={`px-2 py-0.5 rounded font-bold text-xs ${
+                        side === 'BUY' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                      }`}>
+                        {side === 'BUY' ? 'BUY (Long)' : 'SELL (Exit)'}
+                      </span>
                     </div>
+
                     <div className="flex justify-between">
                       <span className="text-slate-500">Instrument:</span>
-                      <span className="font-mono font-bold text-slate-900">{sym} ({exchange})</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {sym} ({exchange}) {token ? `• Token: ${token}` : ''}
+                      </span>
                     </div>
+
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Quantity:</span>
-                      <span className="font-mono font-bold text-slate-900">{quantity} Shares</span>
+                      <span className="text-slate-500">Quantity & Product:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {quantity} Shares • {productType} ({productType === 'DELIVERY' ? 'CNC' : 'MIS'})
+                      </span>
                     </div>
+
                     <div className="flex justify-between">
                       <span className="text-slate-500">Execution Price:</span>
                       <span className="font-mono font-bold text-slate-900">
-                        {orderType === 'MARKET' ? `Market (Ref: ₹${quote.ltp?.toFixed(2) || '—'})` : `₹${effectivePrice.toFixed(2)}`}
+                        {orderType === 'MARKET' ? `Market Execution (Ref: ₹${quote.ltp?.toFixed(2) || '—'})` : `Limit @ ₹${effectivePrice.toFixed(2)}`}
                       </span>
                     </div>
+
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Order & Product:</span>
-                      <span className="font-semibold text-slate-800">{orderType} • {productType}</span>
+                      <span className="text-slate-500">Order Type:</span>
+                      <span className="font-semibold text-slate-800">{orderType}</span>
                     </div>
+
                     <div className="flex justify-between pt-1 border-t border-slate-200">
-                      <span className="text-slate-700 font-bold">Required Margin:</span>
-                      <span className="font-mono font-bold text-violet-700">
-                        {margin.requiredMargin !== null
-                          ? `₹${margin.requiredMargin.toFixed(2)} (Broker verified)`
-                          : 'Unavailable (Broker connection required)'}
+                      <span className="text-slate-600">Margin for Order:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {margin.requiredMargin !== null ? `₹${margin.requiredMargin.toFixed(2)}` : 'Unavailable'}
+                        <span className="ml-1 text-[9px] px-1 bg-emerald-50 text-emerald-700 font-sans font-semibold rounded">
+                          BROKER ESTIMATE
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Estimated Charges:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {charges.totalCharges !== null ? `+ ₹${charges.totalCharges.toFixed(2)}` : 'Unavailable'}
+                        <span className="ml-1 text-[9px] px-1 bg-slate-100 text-slate-600 font-sans font-semibold rounded">
+                          BROKER ESTIMATE
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between pt-1 border-t border-slate-200 font-bold text-slate-900">
+                      <span>Total Required Margin:</span>
+                      <span className="font-mono text-brand-700">
+                        {margin.requiredMargin !== null && charges.totalCharges !== null
+                          ? `₹${(margin.requiredMargin + charges.totalCharges).toFixed(2)}`
+                          : (margin.requiredMargin !== null ? `₹${margin.requiredMargin.toFixed(2)}` : 'Unavailable')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between pt-0.5 text-slate-500 text-[11px]">
+                      <span>Available Funds:</span>
+                      <span className="font-mono font-bold text-slate-700">
+                        ₹{((currentAccount?.available_cash) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        <span className="ml-1 text-[9px] font-normal text-slate-400">SMARTAPI RMS</span>
                       </span>
                     </div>
                   </div>
                 )}
 
-                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-[11px] text-amber-900">
-                  <span className="font-bold">Execution Protection:</span> Operating in simulated PAPER trading mode. Simulated orders are safely isolated and do not execute live demat transactions without formal manual authorization.
+                {/* PROMINENT MODE EXPLANATION NOTICE */}
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                    <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                    <span>SIMULATED PAPER TRADING MODE ACTIVE</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-amber-800">
+                    This order will execute inside the IPOPro Simulator for safety.
+                    <span className="font-bold text-amber-950"> No real money is debited, and this order will NOT appear in your Angel One mobile app.</span>
+                  </p>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
+            <div className="flex items-center gap-3 pt-3.5 border-t border-slate-100 mt-2">
               <button
                 type="button"
                 onClick={() => setShowConfirmModal(false)}
                 className="flex-1 py-2.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
               >
-                Back to Edit
+                ← Back to Edit
               </button>
               <button
                 type="button"
@@ -1489,7 +1588,9 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                     : 'bg-rose-600 hover:bg-rose-700'
                 }`}
               >
-                {isSubmitting ? 'Submitting Batch...' : (tradingScope === 'MULTI' ? 'Confirm Paper Batch' : `Confirm & Place ${side}`)}
+                {isSubmitting
+                  ? 'Submitting...'
+                  : (tradingScope === 'MULTI' ? `Confirm Paper Batch (${selectedAccountIds.length})` : `Confirm & Place ${side} (Paper)`)}
               </button>
             </div>
           </div>

@@ -270,9 +270,9 @@ def place_single_order(
         else:
             token = "0"
 
-    client_order_id = str(uuid.uuid4())
-    order = Order(
-        client_order_id=client_order_id,
+    from app.services.order_intent_service import OrderIntentService
+    exec_res = OrderIntentService.create_and_execute_order(
+        db=db,
         account_id=account.id,
         tradingsymbol=clean_symbol,
         symbol_token=token,
@@ -280,66 +280,19 @@ def place_single_order(
         transaction_type=order_in.transaction_type,
         order_type=order_in.order_type,
         product_type=order_in.product_type or "DELIVERY",
-        variety=order_in.variety,
         quantity=order_in.quantity,
         price=order_in.price,
         trigger_price=order_in.trigger_price,
-        status="PREPARED",
-        is_paper_trade=(settings.TRADING_MODE == "PAPER" or account.is_demo)
+        variety=order_in.variety
     )
-    db.add(order)
-    db.commit()
-    db.refresh(order)
 
-    # Execute paper order if in paper mode or demo account
-    if settings.TRADING_MODE == "PAPER" or account.is_demo:
-        PaperTradingService.execute_paper_order(db, order)
-
-    else:
-        # Live order execution via SmartAPI adapter
-        from app.core.security import cipher
-        import time
-        from app.services.smartapi_adapter import SmartAPIAdapter, get_adapter_for_account
-        try:
-            adapter = get_adapter_for_account(
-                account_id=account.id,
-                api_key=cipher.decrypt(account.encrypted_api_key),
-                client_code=account.client_code,
-                pin=cipher.decrypt(account.encrypted_pin),
-                totp_secret=cipher.decrypt(account.encrypted_totp_secret)
-            )
-            if not (adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired):
-                auth_res = adapter.authenticate()
-                if not auth_res["success"]:
-                    order.status = "REJECTED"
-                    order.rejection_reason = auth_res["message"]
-                    db.commit()
-                    return order
-            live_res = adapter.place_order({
-                "variety": order.variety,
-                "tradingsymbol": order.tradingsymbol,
-                "symbol_token": order.symbol_token,
-                "transaction_type": order.transaction_type,
-                "exchange": order.exchange,
-                "order_type": order.order_type,
-                "product_type": order.product_type,
-                "price": order.price,
-                "quantity": order.quantity
-            })
-            if live_res["success"]:
-                order.status = "ACCEPTED"
-                order.broker_order_id = live_res["broker_order_id"]
-            elif live_res.get("status") == "SUBMISSION_UNKNOWN":
-                order.status = "SUBMISSION_UNKNOWN"
-                order.rejection_reason = live_res.get("message", "Live order request timed out. Status unknown.")
-            else:
-                order.status = "REJECTED"
-                order.rejection_reason = live_res["message"]
-            db.commit()
-        except Exception as e:
-            order.status = "REJECTED"
-            order.rejection_reason = str(e)
-            db.commit()
+    order_id = exec_res.get("order_id")
+    order = db.query(Order).filter(Order.id == order_id).first() if order_id else None
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exec_res.get("message", "Order placement failed")
+        )
 
     return OrderResponse(
         id=order.id,
@@ -444,9 +397,45 @@ def modify_order(
 
     if eff_price is not None and eff_price > 0:
         order.price = eff_price
-    if eff_quantity is not None and eff_quantity > 0:
-        order.quantity = eff_quantity
-
     db.commit()
     return {"success": True, "message": "Order successfully modified.", "order_id": order.id, "status": order.status}
+
+
+@router.post("/reconcile")
+def reconcile_orders(
+    account_id: int = Query(..., description="Account ID to reconcile with Angel One order book"),
+    db: Session = Depends(get_db)
+):
+    """
+    Reconciles open/pending orders for an account directly against Angel One's genuine order book.
+    Safely resolves SUBMITTING and UNKNOWN_SUBMISSION statuses.
+    """
+    from app.services.broker_reconciliation_service import BrokerReconciliationService
+    result = BrokerReconciliationService.reconcile_account_orders(db, account_id)
+    return result
+
+
+@router.post("/eligibility")
+def check_accounts_eligibility(
+    symbol: str = Query(..., description="Trading symbol (e.g. HINDCOPPER)"),
+    transaction_type: str = Query("BUY", description="BUY or SELL"),
+    quantity: int = Query(1, description="Order quantity"),
+    price: float = Query(0.0, description="Order price"),
+    product_type: str = Query("DELIVERY", description="DELIVERY or INTRADAY"),
+    db: Session = Depends(get_db)
+):
+    """
+    Mode C — Evaluates all accounts in the system and returns categorized Eligible vs Blocked accounts
+    with specific reasons (funds, holdings, DDPI, session state).
+    """
+    from app.services.account_eligibility_service import AccountEligibilityService
+    return AccountEligibilityService.filter_all_eligible_accounts(
+        db=db,
+        symbol=symbol,
+        transaction_type=transaction_type,
+        quantity=quantity,
+        price=price,
+        product_type=product_type
+    )
+
 
