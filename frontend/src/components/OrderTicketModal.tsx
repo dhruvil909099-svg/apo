@@ -649,9 +649,13 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               <span className="text-[11px] px-2 py-0.5 rounded font-mono font-bold bg-white border border-slate-200 text-slate-700">
                 {exchange}
               </span>
-              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded flex items-center gap-1">
+              <span className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 ${
+                currentAccount?.is_demo
+                  ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                  : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+              }`}>
                 <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                <span>SIMULATED PAPER</span>
+                <span>{currentAccount?.is_demo ? 'DEMO SIMULATION' : 'ANGEL ONE SMARTAPI'}</span>
               </span>
             </div>
 
@@ -1444,8 +1448,12 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   <span className="font-bold text-slate-900 text-sm">
                     {tradingScope === 'MULTI' ? 'Review & Confirm Multi-Account Batch' : 'Review & Confirm Order'}
                   </span>
-                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded">
-                    SIMULATED PAPER
+                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${
+                    tradingScope === 'MULTI'
+                      ? 'bg-amber-100 text-amber-800'
+                      : (currentAccount?.is_demo ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800')
+                  }`}>
+                    {tradingScope === 'MULTI' ? 'MULTI-ACCOUNT' : (currentAccount?.is_demo ? 'DEMO SIMULATION' : 'ANGEL ONE SMARTAPI')}
                   </span>
                 </div>
                 <button
@@ -1612,16 +1620,29 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 )}
 
                 {/* PROMINENT MODE EXPLANATION NOTICE */}
-                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-1">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-900">
-                    <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                    <span>SIMULATED PAPER TRADING MODE ACTIVE</span>
+                {tradingScope === 'MULTI' || currentAccount?.is_demo ? (
+                  <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                      <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <span>{tradingScope === 'MULTI' ? 'MULTI-ACCOUNT BATCH WORKSPACE' : 'DEMO SIMULATION MODE ACTIVE'}</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-800">
+                      {tradingScope === 'MULTI'
+                        ? 'Multi-account batch execution runs in approval/simulation workspace pending individual SEBI client authorizations. No live unauthorized multi-client orders are routed.'
+                        : 'This order will execute inside the IPOPro Simulator for safety. No real money is debited, and this order will NOT appear in your Angel One mobile app.'}
+                    </p>
                   </div>
-                  <p className="text-[11px] leading-relaxed text-amber-800">
-                    This order will execute inside the IPOPro Simulator for safety.
-                    <span className="font-bold text-amber-950"> No real money is debited, and this order will NOT appear in your Angel One mobile app.</span>
-                  </p>
-                </div>
+                ) : (
+                  <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-950 space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold text-emerald-900">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                      <span>ANGEL ONE SMARTAPI LIVE ORDER</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-emerald-800">
+                      This order will be routed directly to Angel One via SmartAPI for client <span className="font-bold text-emerald-950">{currentAccount?.masked_client_code}</span>. Real funds and holdings will be affected.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1635,17 +1656,21 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               </button>
               <button
                 type="button"
-                disabled={isSubmitting}
+                disabled={isSubmitting || (!currentAccount?.is_demo && currentAccount?.auth_status !== 'CONNECTED' && tradingScope === 'SINGLE')}
                 onClick={tradingScope === 'MULTI' ? handleMultiBatchSubmit : handleSingleSubmit}
                 className={`flex-1 py-2.5 text-xs font-bold text-white rounded-xl shadow-md transition-all ${
                   side === 'BUY'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
                     : 'bg-rose-600 hover:bg-rose-700'
-                }`}
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 {isSubmitting
                   ? 'Submitting...'
-                  : (tradingScope === 'MULTI' ? `Confirm Paper Batch (${selectedAccountIds.length})` : `Confirm & Place ${side} (Paper)`)}
+                  : (tradingScope === 'MULTI'
+                      ? `Confirm Batch (${selectedAccountIds.length})`
+                      : (currentAccount?.is_demo
+                          ? `Confirm & Place ${side} (Demo)`
+                          : `Confirm & Send ${side} to Angel One`))}
               </button>
             </div>
           </div>
@@ -1658,13 +1683,13 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               <div className="flex items-center justify-between border-b pb-3 mb-4">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-5 h-5 text-emerald-600" />
-                  <span className="font-bold text-slate-900 text-sm">Paper Batch Execution Results</span>
+                  <span className="font-bold text-slate-900 text-sm">Multi-Account Batch Execution Results</span>
                 </div>
                 <button
                   onClick={() => {
                     setShowBatchResultsModal(false);
                     onOrderSuccess({
-                      message: `Paper batch executed: ${batchSummary?.success || 0} succeeded out of ${batchSummary?.total || 0}.`,
+                      message: `Batch processed: ${batchSummary?.success || 0} succeeded, ${batchSummary?.failed || 0} rejected out of ${batchSummary?.total || 0}.`,
                       accountId: currentAccount?.id || 0,
                       symbol: sym,
                       status: 'EXECUTED',
@@ -1720,7 +1745,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                             accountId: r.account_id || currentAccount?.id || 0,
                             symbol: sym,
                             status: r.status,
-                            isPaper: true,
+                            isPaper: !r.broker_order_id,
                             isBatch: false,
                             clientOrderId: r.client_order_id,
                             brokerOrderId: r.broker_order_id
@@ -1739,10 +1764,10 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                               ? 'bg-emerald-100 text-emerald-800'
                               : 'bg-rose-100 text-rose-800'
                           }`}>
-                            {r.status === 'EXECUTED' ? 'PAPER_FILLED' : r.status}
+                            {r.status}
                           </span>
                         </td>
-                        <td className="p-2 font-sans text-slate-500 text-[11px]">{r.rejection_reason || 'Simulated Fill'}</td>
+                        <td className="p-2 font-sans text-slate-500 text-[11px]">{r.rejection_reason || 'Batch Order Processed'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1756,7 +1781,7 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 onClick={() => {
                   setShowBatchResultsModal(false);
                   onOrderSuccess({
-                    message: `Paper batch executed: ${batchSummary?.success || 0} succeeded out of ${batchSummary?.total || 0}.`,
+                    message: `Batch processed: ${batchSummary?.success || 0} succeeded, ${batchSummary?.failed || 0} rejected out of ${batchSummary?.total || 0}.`,
                     accountId: currentAccount?.id || 0,
                     symbol: sym,
                     status: 'EXECUTED',

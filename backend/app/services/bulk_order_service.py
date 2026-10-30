@@ -263,6 +263,31 @@ class BulkOrderService:
             )
 
             if not is_live_batch_permitted:
+                if not order.is_paper_trade and not account.is_demo:
+                    # Strictly REJECT live order requests. Never silently convert to a simulated paper trade.
+                    order.status = "REJECTED"
+                    order.rejection_reason = (
+                        "MULTI-CLIENT LIVE SUBMISSION BLOCKED: SEBI intermediary licensing (AP/RIA) "
+                        "and individual client DDPI/eDIS transaction authorizations are mandatory before executing live multi-account batches. "
+                        "Live batch execution remains disabled."
+                    )
+                    db.commit()
+                    failed_count += 1
+                    results.append({
+                        "account_id": account.id,
+                        "nickname": account.nickname,
+                        "masked_client_code": account.masked_client_code,
+                        "client_order_id": order.client_order_id,
+                        "broker_order_id": None,
+                        "status": "REJECTED",
+                        "filled_quantity": 0,
+                        "price": order.price,
+                        "rejection_reason": order.rejection_reason,
+                        "is_paper_trade": False
+                    })
+                    continue
+
+                # Paper execution strictly for explicitly configured paper trades / demo accounts
                 sim_res = PaperTradingService.execute_paper_order(db, order)
                 results.append({
                     "account_id": account.id,
@@ -273,7 +298,8 @@ class BulkOrderService:
                     "status": order.status,
                     "filled_quantity": order.filled_quantity,
                     "price": order.execution_price or order.price,
-                    "rejection_reason": order.rejection_reason
+                    "rejection_reason": order.rejection_reason,
+                    "is_paper_trade": True
                 })
                 if order.status in ["ACCEPTED", "EXECUTED"]:
                     successful_count += 1

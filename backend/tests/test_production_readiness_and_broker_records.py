@@ -1,5 +1,6 @@
 import uuid
 import json
+import time
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
@@ -19,7 +20,15 @@ from app.services.bulk_order_service import BulkOrderService
 from app.services.production_readiness_gate import ProductionReadinessGate
 
 
-def create_test_trader(db_session: Session, client_code: str, nickname: str, is_demo: bool = False, cash: float = 100000.0) -> Account:
+def create_test_trader(
+    db_session: Session,
+    client_code: str,
+    nickname: str,
+    is_demo: bool = False,
+    cash: float = 100000.0,
+    is_adult_verified: bool = False,
+    transaction_permission_verified: bool = False
+) -> Account:
     acc = db_session.query(Account).filter(Account.client_code == client_code).first()
     if not acc:
         acc = Account(
@@ -32,7 +41,9 @@ def create_test_trader(db_session: Session, client_code: str, nickname: str, is_
             encrypted_api_key=cipher.encrypt("test_smartapi_key"),
             encrypted_pin=cipher.encrypt("4321"),
             encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
-            is_demo=is_demo
+            is_demo=is_demo,
+            is_adult_verified=is_adult_verified,
+            transaction_permission_verified=transaction_permission_verified
         )
         db_session.add(acc)
         db_session.commit()
@@ -42,6 +53,8 @@ def create_test_trader(db_session: Session, client_code: str, nickname: str, is_
         acc.is_enabled = True
         acc.available_cash = cash
         acc.is_demo = is_demo
+        acc.is_adult_verified = is_adult_verified
+        acc.transaction_permission_verified = transaction_permission_verified
         db_session.commit()
     return acc
 
@@ -170,24 +183,43 @@ def test_production_totals_exclude_demo_balances(client: TestClient, db_session:
     assert funds["data_source"] != "DEMAT_SIMULATOR"
 
 
-# 4. Single-account navigation works
+# 4. Single-account navigation works and production readiness gate enforces strict checks
 def test_single_account_navigation_readiness(client: TestClient, db_session: Session):
-    acc = create_test_trader(db_session, "NAV_ACC_01", "Navigation Trader", is_demo=False)
-
-    gate_eval = ProductionReadinessGate.evaluate_account_readiness(
+    # 4.1 Enabled, non-demo account alone is NOT evidence of adult eligibility or permission (blocked)
+    unverified_acc = create_test_trader(db_session, "UNVERIFIED_ACC", "Unverified Trader", is_demo=False, is_adult_verified=False, transaction_permission_verified=False)
+    gate_unverified = ProductionReadinessGate.evaluate_account_readiness(
         db=db_session,
-        account_id=acc.id
+        account_id=unverified_acc.id
     )
-    assert "account_id" in gate_eval
-    assert "checks" in gate_eval
-    assert gate_eval["account_id"] == acc.id
-    assert gate_eval["checks"]["eligible_account_holder"]["passed"] is True
-    assert gate_eval["checks"]["official_trading_apis"]["passed"] is True
+    assert gate_unverified["ready"] is False
+    assert gate_unverified["checks"]["eligible_account_holder"]["passed"] is False
+    assert gate_unverified["checks"]["transaction_permission"]["passed"] is False
 
-    res = client.get(f"/api/v1/orders/production-readiness-gate?account_id={acc.id}&tradingsymbol=SBIN-EQ&quantity=5&price=800")
-    assert res.status_code == 200
-    data = res.json()
-    assert data["account_id"] == acc.id
+    # 4.2 Verified account with adult KYC, active broker session, and transaction permission passes
+    acc = create_test_trader(db_session, "NAV_ACC_01", "Navigation Trader", is_demo=False, is_adult_verified=True, transaction_permission_verified=True)
+
+    mock_adapter = MagicMock()
+    mock_adapter.jwt_token = "mock_valid_jwt"
+    mock_adapter.token_expiry_timestamp = time.time() + 3600
+    mock_adapter.is_session_expired = False
+
+    with patch("app.services.smartapi_adapter.get_adapter_for_account", return_value=mock_adapter):
+        gate_eval = ProductionReadinessGate.evaluate_account_readiness(
+            db=db_session,
+            account_id=acc.id
+        )
+        assert "account_id" in gate_eval
+        assert "checks" in gate_eval
+        assert gate_eval["account_id"] == acc.id
+        assert gate_eval["checks"]["eligible_account_holder"]["passed"] is True
+        assert gate_eval["checks"]["broker_authorisation"]["passed"] is True
+        assert gate_eval["checks"]["transaction_permission"]["passed"] is True
+        assert gate_eval["checks"]["official_trading_apis"]["passed"] is True
+
+        res = client.get(f"/api/v1/orders/production-readiness-gate?account_id={acc.id}&tradingsymbol=SBIN-EQ&quantity=5&price=800")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["account_id"] == acc.id
 
 
 # 5. Multi-account selection works

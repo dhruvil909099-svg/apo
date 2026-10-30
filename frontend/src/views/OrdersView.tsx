@@ -3,7 +3,7 @@ import {
   ClipboardList, Search, Filter, RefreshCw,
   XCircle, CheckCircle2, Clock, AlertTriangle, Plus,
   Shield, AlertOctagon, TrendingUp, TrendingDown, ArrowRight,
-  AlertCircle
+  AlertCircle, ShieldCheck
 } from 'lucide-react';
 import { Order, Account } from '../types';
 import { api } from '../api';
@@ -89,24 +89,27 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ orders, accounts, onRefr
 
   return (
     <div className="space-y-6">
-      {/* Paper Trading Banner */}
-      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 flex items-center justify-between text-amber-800">
+      {/* Authoritative Broker Records Header */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between text-slate-800 shadow-2xs">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-700">
-            <Shield className="w-4 h-4" />
+          <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
+            <ShieldCheck className="w-4 h-4" />
           </div>
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-amber-900">
-              Isolated Paper Trading Sandbox
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900 flex items-center gap-2">
+              <span>Authoritative Angel One SmartAPI Order Book</span>
+              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-semibold px-2 py-0.5 rounded border border-emerald-200">
+                LIVE BROKER RECORDS
+              </span>
             </h4>
-            <p className="text-[11px] text-amber-700">
-              All buy & sell tickets are strictly routed to the simulation engine. Zero live capital or real broker orders are executed.
+            <p className="text-[11px] text-slate-500">
+              Displaying genuine broker order records from connected Angel One trading accounts. Historical simulations are isolated in the test archive.
             </p>
           </div>
         </div>
         <div className="text-right">
-          <span className="text-[10px] font-mono uppercase bg-amber-200/60 text-amber-900 font-bold px-2 py-0.5 rounded">
-            Virtual Environment
+          <span className="text-[10px] font-mono uppercase bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded border border-slate-200">
+            Verified SmartAPI Ledger
           </span>
         </div>
       </div>

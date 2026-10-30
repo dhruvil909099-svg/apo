@@ -5,7 +5,7 @@ import {
   PieChart, Activity, Sliders, ChevronDown, ChevronRight,
   ExternalLink, Wallet, TrendingUp, TrendingDown, Clock,
   ArrowUpRight, Shield, AlertCircle, X, KeyRound, Radio,
-  Filter, ArrowUpDown, SlidersHorizontal, Check, RefreshCcw, Briefcase
+  Filter, ArrowUpDown, SlidersHorizontal, Check, RefreshCcw, Briefcase, Layers, FileText
 } from 'lucide-react';
 import {
   Account, AccountCreatePayload, AccountOverviewResponse,
@@ -2408,12 +2408,28 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                               <span>Holdings</span>
                             </button>
                             <button
+                              onClick={() => setDrawerTab('positions')}
+                              className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors flex items-center gap-1"
+                              title="Navigate to Intraday/F&O Positions"
+                            >
+                              <Layers className="w-3 h-3" />
+                              <span>Positions</span>
+                            </button>
+                            <button
                               onClick={() => setDrawerTab('trades')}
                               className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition-colors flex items-center gap-1"
                               title="Navigate to Executed Trades"
                             >
                               <CheckCircle2 className="w-3 h-3" />
                               <span>Trades</span>
+                            </button>
+                            <button
+                              onClick={() => setDrawerTab('activity-log')}
+                              className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 transition-colors flex items-center gap-1"
+                              title="Navigate to Account Activity Log"
+                            >
+                              <FileText className="w-3 h-3" />
+                              <span>Activity Log</span>
                             </button>
                           </div>
 

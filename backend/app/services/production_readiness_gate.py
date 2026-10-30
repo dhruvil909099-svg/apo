@@ -32,16 +32,31 @@ class ProductionReadinessGate:
         checks: Dict[str, Dict[str, Any]] = {}
         blocking_reasons: List[str] = []
 
-        # 1. Account Holder Eligibility & Non-Demo
-        is_adult_eligible = bool(account.is_enabled and not account.is_demo)
+        # 1. Account Holder Adult Eligibility & Non-Demo
+        # An enabled, non-demo account alone is NOT evidence of adult eligibility
+        is_adult_eligible = bool(
+            account.is_enabled and 
+            not account.is_demo and 
+            getattr(account, "is_adult_verified", False)
+        )
         checks["eligible_account_holder"] = {
             "passed": is_adult_eligible,
-            "detail": f"Account '{account.nickname}' is an enabled production account." if is_adult_eligible else "Account is a demo or disabled account."
+            "detail": (
+                f"Account '{account.nickname}' is an enabled production account with verified adult demat KYC."
+                if is_adult_eligible else
+                f"Account '{account.nickname}' lacks verified adult KYC eligibility. An enabled, non-demo account alone is not evidence of adult demat holder capacity."
+            )
         }
         if not is_adult_eligible:
-            blocking_reasons.append("Demo accounts and disabled accounts are ineligible for real Angel One live execution.")
+            if account.is_demo or not account.is_enabled:
+                blocking_reasons.append("Demo accounts and disabled accounts are ineligible for real Angel One live execution.")
+            else:
+                blocking_reasons.append(
+                    f"Unverified adult eligibility: Account '{account.nickname}' ({account.masked_client_code}) requires verified adult account holder confirmation before live trading."
+                )
 
-        # 2. Broker Session Validity & Credentials
+        # 2. Broker Authorisation & Live Session Validity
+        # A database status flag 'CONNECTED' alone is NOT evidence of active broker authorization
         session_valid = False
         try:
             if not account.is_demo and account.encrypted_api_key and account.encrypted_pin and account.encrypted_totp_secret:
@@ -56,11 +71,37 @@ class ProductionReadinessGate:
             logger.warning(f"Session check error for account {account.id}: {e}")
 
         checks["broker_session_validity"] = {
-            "passed": session_valid or account.auth_status == "CONNECTED",
-            "detail": "Active authenticated SmartAPI session verified." if (session_valid or account.auth_status == "CONNECTED") else f"Session is {account.auth_status}. Authentication required."
+            "passed": session_valid,
+            "detail": (
+                "Active authenticated SmartAPI broker session verified via unexpired cryptographic token."
+                if session_valid else
+                f"Broker session unverified for {account.masked_client_code}. A stored database status alone is not evidence of active SmartAPI authorization."
+            )
         }
-        if not (session_valid or account.auth_status == "CONNECTED"):
-            blocking_reasons.append(f"Account {account.masked_client_code} is {account.auth_status}. Fresh login required.")
+        checks["broker_authorisation"] = checks["broker_session_validity"]
+        if not session_valid:
+            blocking_reasons.append(
+                f"Broker authorization unverified for {account.masked_client_code}. Active Angel One SmartAPI session handshake required."
+            )
+
+        # 3. Explicit Transaction Permission
+        # Operating an account requires explicit client live-transaction authorization
+        has_transaction_permission = bool(
+            getattr(account, "transaction_permission_verified", False) or 
+            getattr(account, "is_automation_enabled", False)
+        )
+        checks["transaction_permission"] = {
+            "passed": has_transaction_permission,
+            "detail": (
+                "Explicit client live transaction execution permission verified."
+                if has_transaction_permission else
+                f"Transaction permission not granted for {account.masked_client_code}. Explicit account-holder mandate required."
+            )
+        }
+        if not has_transaction_permission:
+            blocking_reasons.append(
+                f"Transaction permission missing: Account {account.masked_client_code} requires explicit live trading permission."
+            )
 
         # 3. Official Trading API Access & Supported Instruments
         checks["official_trading_api_access"] = {

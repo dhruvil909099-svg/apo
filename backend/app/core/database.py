@@ -185,6 +185,8 @@ def run_safe_migrations(target_engine=None):
         ("account_group", "VARCHAR(50) DEFAULT 'Family'"),
         ("is_demo", "BOOLEAN DEFAULT FALSE"),
         ("is_automation_enabled", "BOOLEAN DEFAULT FALSE"),
+        ("is_adult_verified", "BOOLEAN DEFAULT FALSE"),
+        ("transaction_permission_verified", "BOOLEAN DEFAULT FALSE"),
         ("auth_status", "VARCHAR(30) DEFAULT 'DISCONNECTED'"),
         ("ddpi_status", "VARCHAR(30) DEFAULT 'UNKNOWN'"),
         ("edis_authorized_today", "BOOLEAN DEFAULT FALSE"),
