@@ -224,6 +224,19 @@ def run_safe_migrations(target_engine=None):
                     logger.info(f"Adding missing column account_holding_snapshots.{col_name} ({col_type})")
                     conn.execute(text(f"ALTER TABLE account_holding_snapshots ADD COLUMN {col_name} {col_type};"))
             conn.commit()
+        existing_indices = {idx["name"] for idx in inspector.get_indexes("account_holding_snapshots")}
+        with active_engine.connect() as conn:
+            if "idx_holdings_acc_isin" not in existing_indices:
+                try:
+                    conn.execute(text("CREATE INDEX idx_holdings_acc_isin ON account_holding_snapshots (account_id, isin);"))
+                except Exception as e:
+                    logger.debug(f"Index idx_holdings_acc_isin creation note: {e}")
+            if "idx_holdings_acc_qty" not in existing_indices:
+                try:
+                    conn.execute(text("CREATE INDEX idx_holdings_acc_qty ON account_holding_snapshots (account_id, quantity);"))
+                except Exception as e:
+                    logger.debug(f"Index idx_holdings_acc_qty creation note: {e}")
+            conn.commit()
 
     # Column definitions to verify for 'orders'
     order_columns_to_add = [

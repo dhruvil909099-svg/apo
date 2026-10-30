@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, ForeignKey, JSON, Index
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -56,3 +56,8 @@ class AccountHoldingSnapshot(Base):
 
     # Relationship
     account = relationship("Account", back_populates="holding_snapshots")
+
+    __table_args__ = (
+        Index("idx_holdings_acc_isin", "account_id", "isin"),
+        Index("idx_holdings_acc_qty", "account_id", "quantity"),
+    )
