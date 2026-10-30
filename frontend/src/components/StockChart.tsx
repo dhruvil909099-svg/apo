@@ -160,6 +160,57 @@ const istClock = () => {
 };
 
 // ---------------------------------------------------------------------------
+// Client-side Candle Cache & Request Deduplication
+// ---------------------------------------------------------------------------
+interface CandleCacheEntry {
+  data: MarketCandleResponse;
+  bars: Bar[];
+  timestamp: number;
+}
+const candleCache = new Map<string, CandleCacheEntry>();
+const inFlightCandleRequests = new Map<string, Promise<MarketCandleResponse>>();
+
+const getCandleCacheKey = (sym: string, iv: string, rng: string, exch?: string, tok?: string) =>
+  `${sym.toUpperCase()}:${iv}:${rng}:${(exch || 'NSE').toUpperCase()}:${tok || ''}`;
+
+const fetchCandlesDeduplicated = (
+  sym: string,
+  iv: string,
+  rng: string,
+  exch?: string,
+  tok?: string
+): Promise<MarketCandleResponse> => {
+  const key = getCandleCacheKey(sym, iv, rng, exch, tok);
+  const cached = candleCache.get(key);
+  // Cache closed candles for 10 minutes (MAX, 5Y, ONE_DAY) or 3 minutes (intraday)
+  const ttl = rng === 'MAX' || rng === '5Y' || iv === 'ONE_DAY' ? 600000 : 180000;
+  if (cached && Date.now() - cached.timestamp < ttl) {
+    return Promise.resolve(cached.data);
+  }
+
+  const existing = inFlightCandleRequests.get(key);
+  if (existing) return existing;
+
+  const promise = api.getMarketCandles(sym, iv, rng, exch, tok)
+    .then((res) => {
+      candleCache.set(key, {
+        data: res,
+        bars: normalizeBars(res.candles),
+        timestamp: Date.now(),
+      });
+      inFlightCandleRequests.delete(key);
+      return res;
+    })
+    .catch((err) => {
+      inFlightCandleRequests.delete(key);
+      throw err;
+    });
+
+  inFlightCandleRequests.set(key, promise);
+  return promise;
+};
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 export const StockChart: React.FC<StockChartProps> = ({
@@ -185,6 +236,7 @@ export const StockChart: React.FC<StockChartProps> = ({
   const [interval, setIntervalValue] = useState(() => normalizeInterval(initialInterval, initialRange));
   const [meta, setMeta] = useState<MarketCandleResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isProgressiveLoading, setIsProgressiveLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isEmpty, setIsEmpty] = useState(false);
   const [ltp, setLtp] = useState(initialLtp || 0);
@@ -384,11 +436,108 @@ export const StockChart: React.FC<StockChartProps> = ({
   // -- Load historical candles (backend -> SmartAPI getCandleData) -------------
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
     setError(null);
     hasMoreHistoryRef.current = true;
 
-    api.getMarketCandles(symbol, interval, range, exchange, symbolToken)
+    const cacheKey = getCandleCacheKey(symbol, interval, range, exchange, symbolToken);
+    const cached = candleCache.get(cacheKey);
+
+    // If exact range is already cached in memory, render instantaneously (0ms)
+    if (cached) {
+      setMeta(cached.data);
+      const bars = cached.bars;
+      barsRef.current = bars;
+      candleRef.current?.setData(bars.map(candlePoint));
+      volRef.current?.setData(bars.map(volPoint));
+      setIsEmpty(bars.length === 0);
+      setIsLoading(false);
+      setIsProgressiveLoading(false);
+      if (bars.length > 0) {
+        const last = { ...bars[bars.length - 1] };
+        lastBarRef.current = last;
+        prevCloseRef.current = initialPrevCloseRef.current || computePrevClose(bars, interval) || cached.data.previous_close || bars[0].open;
+        setLegend({ ...last });
+        applyLtp(last.close);
+        chartRef.current?.timeScale().fitContent();
+      }
+      return;
+    }
+
+    setIsLoading(true);
+
+    // Progressive rendering strategy for MAX and 5Y ranges:
+    // Render 1Y promptly (~200ms) so user sees visible candles immediately,
+    // while full MAX loads in background without blocking the chart interface!
+    if ((range === 'MAX' || range === '5Y') && interval === 'ONE_DAY') {
+      setIsProgressiveLoading(true);
+
+      // Fast initial candle render
+      fetchCandlesDeduplicated(symbol, interval, '1Y', exchange, symbolToken)
+        .then((quickData) => {
+          if (cancelled) return;
+          const quickBars = normalizeBars(quickData.candles);
+          if (quickBars.length && candleRef.current && volRef.current && chartRef.current) {
+            barsRef.current = quickBars;
+            candleRef.current.setData(quickBars.map(candlePoint));
+            volRef.current.setData(quickBars.map(volPoint));
+            setIsEmpty(false);
+            setIsLoading(false);
+            const last = { ...quickBars[quickBars.length - 1] };
+            lastBarRef.current = last;
+            prevCloseRef.current = initialPrevCloseRef.current || computePrevClose(quickBars, interval) || quickData.previous_close || quickBars[0].open;
+            setLegend({ ...last });
+            applyLtp(last.close);
+            chartRef.current.timeScale().fitContent();
+          }
+        })
+        .catch(() => {
+          // Pre-load error ignored; full MAX fetch will handle
+        });
+
+      // Complete authoritative MAX history load
+      fetchCandlesDeduplicated(symbol, interval, range, exchange, symbolToken)
+        .then((fullData) => {
+          if (cancelled) return;
+          setMeta(fullData);
+          const fullBars = normalizeBars(fullData.candles);
+          const candle = candleRef.current;
+          const vol = volRef.current;
+          const chart = chartRef.current;
+          if (!candle || !vol || !chart) return;
+
+          barsRef.current = fullBars;
+          hasMoreHistoryRef.current = Boolean(fullData.has_more_history !== false && fullBars.length > 0);
+          candle.setData(fullBars.map(candlePoint));
+          vol.setData(fullBars.map(volPoint));
+          setIsEmpty(fullBars.length === 0);
+          setIsLoading(false);
+          setIsProgressiveLoading(false);
+
+          if (fullBars.length > 0) {
+            const last = { ...fullBars[fullBars.length - 1] };
+            lastBarRef.current = last;
+            prevCloseRef.current = initialPrevCloseRef.current || computePrevClose(fullBars, interval) || fullData.previous_close || fullBars[0].open;
+            setLegend({ ...last });
+            applyLtp(last.close);
+            chart.timeScale().fitContent();
+          }
+        })
+        .catch((err: any) => {
+          if (!cancelled) {
+            setIsLoading(false);
+            setIsProgressiveLoading(false);
+            if (!barsRef.current.length) {
+              setError(err?.message || 'Failed to load SmartAPI candles');
+            }
+          }
+        });
+
+      return () => { cancelled = true; };
+    }
+
+    // Standard load for other ranges
+    setIsProgressiveLoading(false);
+    fetchCandlesDeduplicated(symbol, interval, range, exchange, symbolToken)
       .then((data) => {
         if (cancelled) return;
         setMeta(data);
@@ -419,7 +568,6 @@ export const StockChart: React.FC<StockChartProps> = ({
         applyLtp(last.close);
 
         if (range === '1D' && interval !== 'ONE_DAY') {
-          // backend fetches a few days for weekends/holidays; zoom to the latest session
           const sessionBars = bars.filter((b) => dayKey(b.time) === dayKey(last.time)).length;
           chart.timeScale().setVisibleLogicalRange({ from: bars.length - Math.max(sessionBars, 20), to: bars.length + 6 });
         } else {
@@ -430,7 +578,10 @@ export const StockChart: React.FC<StockChartProps> = ({
         if (!cancelled) setError(err?.message || 'Failed to load SmartAPI candles');
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+          setIsProgressiveLoading(false);
+        }
       });
 
     return () => { cancelled = true; };
@@ -699,6 +850,13 @@ export const StockChart: React.FC<StockChartProps> = ({
           <div className="absolute top-2 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1d1e22]/90 border border-[#2a2b30] text-[11px] text-[#5b7cfa] shadow-lg backdrop-blur-sm">
             <RefreshCw className="w-3 h-3 animate-spin" />
             <span>Loading older history…</span>
+          </div>
+        )}
+
+        {isProgressiveLoading && !isLoading && (
+          <div className="absolute top-2 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1d1e22]/90 border border-[#2a2b30] text-[11px] text-[#22c3a6] shadow-lg backdrop-blur-sm">
+            <RefreshCw className="w-3 h-3 animate-spin text-[#22c3a6]" />
+            <span>Loading full MAX history…</span>
           </div>
         )}
 
