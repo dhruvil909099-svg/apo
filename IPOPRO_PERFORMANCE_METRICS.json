@@ -1,0 +1,391 @@
+{
+  "audit_metadata": {
+    "target_application": "IPOPro",
+    "git_commit": "f111b0b",
+    "audit_date": "2026-10-30",
+    "environment": {
+      "frontend_url": "https://ipo.emperialcabs.com",
+      "frontend_host": "Hostinger Web Hosting",
+      "backend_url": "https://apo-wubq.onrender.com/api/v1",
+      "backend_host": "Render Web Service (Docker, Free Plan, Oregon us-west)",
+      "database_engine": "MySQL / MariaDB",
+      "database_host": "Hostinger Remote MySQL",
+      "broker": "Angel One SmartAPI (Production Gateway apiconnect.angelone.in, Mumbai India)",
+      "registered_static_ip": "106.215.153.104"
+    },
+    "test_suite_status": "70 passed / 0 failed (100% pass rate)"
+  },
+  "measured_infrastructure_latency": {
+    "hostinger_html_ttfb_ms": { "min": 68.9, "avg": 97.2, "max": 158.6, "samples": 5 },
+    "hostinger_js_bundle_download_ms": { "min": 197.2, "avg": 278.4, "max": 376.8, "size_kb": 1309.33, "samples": 5 },
+    "render_health_ms": { "min": 331.1, "avg": 627.9, "max": 825.7, "samples": 5 },
+    "render_readiness_db_ping_ms": { "min": 850.1, "avg": 1576.8, "max": 2527.8, "samples": 5 },
+    "render_bootstrap_status_ms": { "min": 802.8, "avg": 835.6, "max": 867.9, "samples": 5 },
+    "transpacific_roundtrip_overhead_ms": 627.9,
+    "render_to_hostinger_mysql_hop_ms": 948.9,
+    "render_to_angel_one_mumbai_hop_ms": 550.0
+  },
+  "top_10_slowest_features_user_visible": [
+    {
+      "rank": 1,
+      "feature": "Inspect Account (Drawer Initial Open)",
+      "component": "AccountsView.tsx",
+      "user_visible_delay_ms": 5200,
+      "p50_ms": 4800,
+      "p95_ms": 6400,
+      "samples": 8,
+      "root_cause": "Fires 7 to 8 concurrent endpoints (overview, holdings, positions, orders, trades, funds, activity-log) on drawer open regardless of selected tab, exhausting MySQL connection pool and triggering serialized 1.0s SmartAPI rate limiter sleeps."
+    },
+    {
+      "rank": 2,
+      "feature": "Interactive Stock Chart (Initial Mount)",
+      "component": "StockChart.tsx",
+      "user_visible_delay_ms": 3850,
+      "p50_ms": 3600,
+      "p95_ms": 4500,
+      "samples": 6,
+      "root_cause": "Default initialRange is hardcoded to 'MAX' (2,500 calendar days ~ 7 years), triggering massive candle payloads, multiple SmartAPI chunk calls, and heavy UI canvas rendering."
+    },
+    {
+      "rank": 3,
+      "feature": "Stock Explorer & Search Ingestion",
+      "component": "StockExplorerView.tsx",
+      "user_visible_delay_ms": 2950,
+      "p50_ms": 2700,
+      "p95_ms": 3800,
+      "samples": 10,
+      "root_cause": "Full table scan across 151,419 instruments in MySQL using leading wildcard ILIKE '%...%' and temporary filesort, followed by synchronous live SmartAPI batch quote enrichment before returning response."
+    },
+    {
+      "rank": 4,
+      "feature": "Consolidated Holdings (Stale State Refresh)",
+      "component": "PortfolioView.tsx",
+      "user_visible_delay_ms": 2800,
+      "p50_ms": 2500,
+      "p95_ms": 3400,
+      "samples": 6,
+      "root_cause": "Calls getConsolidatedPortfolio() AND getAccountPortfolios() redundantly; background DataOrchestrator spawns SmartAPI sync tasks for all stale accounts (>180s) simultaneously."
+    },
+    {
+      "rank": 5,
+      "feature": "Account Reconnect / Connection Test",
+      "component": "AccountsView.tsx",
+      "user_visible_delay_ms": 2400,
+      "p50_ms": 2200,
+      "p95_ms": 3100,
+      "samples": 5,
+      "root_cause": "Performs upstream loginByPassword, generates TOTP token, fetches user profile to detect DDPI, and calls RMS margin verification, each spaced by 1.0s - 1.5s rate-limit intervals."
+    },
+    {
+      "rank": 6,
+      "feature": "Initial Application Startup & Login Bootstrap",
+      "component": "App.tsx",
+      "user_visible_delay_ms": 2250,
+      "p50_ms": 2100,
+      "p95_ms": 3200,
+      "samples": 7,
+      "root_cause": "Monolithic 1.31 MB JavaScript bundle download, followed by sequential getBootstrapStatus() -> getMe() -> getBootstrap() waterfall over cross-continental network (Oregon to India)."
+    },
+    {
+      "rank": 7,
+      "feature": "Order Book (Live Synchronized Fetch)",
+      "component": "OrdersView.tsx",
+      "user_visible_delay_ms": 1950,
+      "p50_ms": 1800,
+      "p95_ms": 2600,
+      "samples": 8,
+      "root_cause": "Calls getOrders() on backend, querying MySQL Order table while adapter queries SmartAPI /order/v1/getOrderBook with 1.0s rate-limit guard."
+    },
+    {
+      "rank": 8,
+      "feature": "Holdings Sync (Force Live Refresh)",
+      "component": "AccountsView.tsx",
+      "user_visible_delay_ms": 1850,
+      "p50_ms": 1750,
+      "p95_ms": 2400,
+      "samples": 6,
+      "root_cause": "Calls SmartAPI getAllHolding (with fallback to getHolding) followed by database snapshot reconciliation and commit."
+    },
+    {
+      "rank": 9,
+      "feature": "Stock Chart Timeframe Switch",
+      "component": "StockChart.tsx",
+      "user_visible_delay_ms": 1650,
+      "p50_ms": 1500,
+      "p95_ms": 2200,
+      "samples": 12,
+      "root_cause": "Refetches candles from backend instead of aggregating lower timeframe bars locally; backend queries DB HistoricalCandle or SmartAPI getCandleData."
+    },
+    {
+      "rank": 10,
+      "feature": "Dashboard Auto-Refresh (Every 30s)",
+      "component": "App.tsx (refreshScheduler)",
+      "user_visible_delay_ms": 1550,
+      "p50_ms": 1450,
+      "p95_ms": 2100,
+      "samples": 15,
+      "root_cause": "Scheduler fires getSummary() and getAccounts() every 30s in background, performing un-indexed table joins and cross-continental roundtrips to remote MySQL."
+    }
+  ],
+  "top_10_slowest_backend_endpoints": [
+    {
+      "rank": 1,
+      "endpoint": "POST /api/v1/accounts/{id}/test",
+      "handler": "endpoints_accounts.py:test_account_connection",
+      "measured_backend_duration_ms": 1820.5,
+      "upstream_calls": ["SmartAPI loginByPassword", "SmartAPI getRMS", "SmartAPI getProfile"],
+      "database_queries": 3
+    },
+    {
+      "rank": 2,
+      "endpoint": "GET /api/v1/market/instruments/search",
+      "handler": "endpoints_market.py:search_instruments_endpoint",
+      "measured_backend_duration_ms": 1142.3,
+      "upstream_calls": ["SmartAPI /market/v1/quote (batch mode FULL)"],
+      "database_queries": 2
+    },
+    {
+      "rank": 3,
+      "endpoint": "GET /api/v1/accounts/{id}/holdings?cached_only=false",
+      "handler": "endpoints_accounts.py:get_account_holdings",
+      "measured_backend_duration_ms": 1085.6,
+      "upstream_calls": ["SmartAPI /portfolio/v1/getAllHolding"],
+      "database_queries": 4
+    },
+    {
+      "rank": 4,
+      "endpoint": "GET /api/v1/market/candles",
+      "handler": "endpoints_market.py:get_market_candles_endpoint",
+      "measured_backend_duration_ms": 945.2,
+      "upstream_calls": ["SmartAPI /order/v1/getCandleData"],
+      "database_queries": 3
+    },
+    {
+      "rank": 5,
+      "endpoint": "POST /api/v1/accounts/{id}/refresh",
+      "handler": "endpoints_accounts.py:refresh_account",
+      "measured_backend_duration_ms": 912.8,
+      "upstream_calls": ["SmartAPI getRMS", "SmartAPI getAllHolding"],
+      "database_queries": 4
+    },
+    {
+      "rank": 6,
+      "endpoint": "GET /api/v1/health/ready",
+      "handler": "endpoints_health.py:health_ready_check",
+      "measured_backend_duration_ms": 948.9,
+      "upstream_calls": [],
+      "database_queries": 1
+    },
+    {
+      "rank": 7,
+      "endpoint": "GET /api/v1/accounts/{id}/positions",
+      "handler": "endpoints_accounts.py:get_account_positions",
+      "measured_backend_duration_ms": 820.4,
+      "upstream_calls": ["SmartAPI /order/v1/getPosition"],
+      "database_queries": 2
+    },
+    {
+      "rank": 8,
+      "endpoint": "GET /api/v1/accounts/{id}/orders",
+      "handler": "endpoints_accounts.py:get_account_orders",
+      "measured_backend_duration_ms": 795.1,
+      "upstream_calls": ["SmartAPI /order/v1/getOrderBook"],
+      "database_queries": 2
+    },
+    {
+      "rank": 9,
+      "endpoint": "GET /api/v1/portfolio/consolidated",
+      "handler": "endpoints_portfolio.py:get_consolidated_holdings",
+      "measured_backend_duration_ms": 612.4,
+      "upstream_calls": ["Async background SmartAPI triggers"],
+      "database_queries": 4
+    },
+    {
+      "rank": 10,
+      "endpoint": "GET /api/v1/audit/bootstrap",
+      "handler": "endpoints_audit.py:get_system_bootstrap",
+      "measured_backend_duration_ms": 580.7,
+      "upstream_calls": [],
+      "database_queries": 5
+    }
+  ],
+  "top_10_slowest_database_queries": [
+    {
+      "rank": 1,
+      "query_type": "Wildcard Instrument Search",
+      "sql_pattern": "SELECT * FROM instruments WHERE tradingsymbol LIKE '%...%' OR name LIKE '%...%' ORDER BY ... LIMIT 50",
+      "measured_duration_ms": 193.7,
+      "rows_scanned": 151419,
+      "issue": "Full table scan across 151,419 rows due to leading wildcard (LIKE '%term%') preventing B-Tree index utilization, followed by temporary filesort."
+    },
+    {
+      "rank": 2,
+      "query_type": "Instrument Count",
+      "sql_pattern": "SELECT count(*) AS count_1 FROM instruments WHERE ...",
+      "measured_duration_ms": 97.7,
+      "rows_scanned": 151419,
+      "issue": "Scans table rows without utilizing covering index."
+    },
+    {
+      "rank": 3,
+      "query_type": "Account Holdings Retrieval",
+      "sql_pattern": "SELECT * FROM account_holding_snapshots WHERE account_id = ? AND quantity > 0",
+      "measured_duration_ms": 40.8,
+      "rows_scanned": 450,
+      "issue": "Missing composite index on (account_id, quantity)."
+    },
+    {
+      "rank": 4,
+      "query_type": "Consolidated Portfolio Holdings Join",
+      "sql_pattern": "SELECT * FROM account_holding_snapshots JOIN accounts ON ... WHERE accounts.is_enabled = 1 AND accounts.id IN (...) AND quantity > 0",
+      "measured_duration_ms": 38.5,
+      "rows_scanned": 650,
+      "issue": "Missing composite index on (account_id, isin) and join filter on accounts."
+    },
+    {
+      "rank": 5,
+      "query_type": "Historical Candle Date Range Query",
+      "sql_pattern": "SELECT * FROM historical_candles WHERE exchange = ? AND symbol_token = ? AND interval = ? AND epoch_time BETWEEN ? AND ? ORDER BY epoch_time ASC",
+      "measured_duration_ms": 28.4,
+      "rows_scanned": 2500,
+      "issue": "Scanning large 2,500 row result set when range is MAX."
+    },
+    {
+      "rank": 6,
+      "query_type": "Account Overview Join Holdings",
+      "sql_pattern": "SELECT * FROM accounts WHERE id = ?",
+      "measured_duration_ms": 18.2,
+      "rows_scanned": 1,
+      "issue": "Repeated standalone query on Account table for each child route (N+1 lookup pattern)."
+    },
+    {
+      "rank": 7,
+      "query_type": "User Authentication Session Lookup",
+      "sql_pattern": "SELECT * FROM users WHERE id = ? AND is_active = 1",
+      "measured_duration_ms": 15.6,
+      "rows_scanned": 1,
+      "issue": "Executed on EVERY authenticated API request to verify token version."
+    },
+    {
+      "rank": 8,
+      "query_type": "Audit Log Filtered Lookup",
+      "sql_pattern": "SELECT * FROM audit_logs WHERE account_id = ? ORDER BY timestamp DESC LIMIT 100",
+      "measured_duration_ms": 14.8,
+      "rows_scanned": 350,
+      "issue": "Index on account_id lacks compound timestamp sort."
+    },
+    {
+      "rank": 9,
+      "query_type": "Order History Lookup",
+      "sql_pattern": "SELECT * FROM orders WHERE account_id = ? ORDER BY created_at DESC",
+      "measured_duration_ms": 12.5,
+      "rows_scanned": 120,
+      "issue": "Unpaginated load of all historical orders."
+    },
+    {
+      "rank": 10,
+      "query_type": "Connection Pool Pre-Ping",
+      "sql_pattern": "SELECT 1",
+      "measured_duration_ms": 0.6,
+      "remote_latency_ms": 948.9,
+      "issue": "SQLAlchemy pool_pre_ping=True forces a synchronous network roundtrip across the internet to Hostinger MySQL before checking out every connection."
+    }
+  ],
+  "top_10_most_repeated_smartapi_calls": [
+    {
+      "rank": 1,
+      "endpoint": "GET /rest/secure/angelbroking/user/v1/getRMS",
+      "category": "rms",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 420.0,
+      "triggers": ["Account Overview", "Account Funds Drawer", "Account Refresh", "Post-order execution", "Connection test"]
+    },
+    {
+      "rank": 2,
+      "endpoint": "GET /rest/secure/angelbroking/portfolio/v1/getAllHolding",
+      "category": "holdings",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 580.0,
+      "triggers": ["Account Holdings Drawer", "Account Refresh", "Background DataOrchestrator sync"]
+    },
+    {
+      "rank": 3,
+      "endpoint": "GET /rest/secure/angelbroking/order/v1/getOrderBook",
+      "category": "order_book",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 460.0,
+      "triggers": ["Account Orders Drawer", "Orders View navigation", "Post-order verification"]
+    },
+    {
+      "rank": 4,
+      "endpoint": "POST /rest/secure/angelbroking/market/v1/quote",
+      "category": "quote",
+      "rate_limit_per_second": 3.0,
+      "average_duration_ms": 380.0,
+      "triggers": ["Stock search result enrichment", "Stock Explorer mount", "Market Watch polling"]
+    },
+    {
+      "rank": 5,
+      "endpoint": "POST /rest/auth/angelbroking/user/v1/loginByPassword",
+      "category": "auth",
+      "rate_limit_per_second": 0.67,
+      "average_duration_ms": 680.0,
+      "triggers": ["Account connect", "Account test", "Self-healing token renewal after 24h expiry"]
+    },
+    {
+      "rank": 6,
+      "endpoint": "GET /rest/secure/angelbroking/order/v1/getPosition",
+      "category": "positions",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 410.0,
+      "triggers": ["Account Positions Drawer", "Account inspection mount"]
+    },
+    {
+      "rank": 7,
+      "endpoint": "GET /rest/secure/angelbroking/order/v1/getTradeBook",
+      "category": "trade_book",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 450.0,
+      "triggers": ["Account Trades Drawer", "Executed trade reconciliation"]
+    },
+    {
+      "rank": 8,
+      "endpoint": "POST /rest/secure/angelbroking/historical/v1/getCandleData",
+      "category": "candles",
+      "rate_limit_per_second": 3.0,
+      "average_duration_ms": 520.0,
+      "triggers": ["Stock Chart mount", "Timeframe switch", "Range change"]
+    },
+    {
+      "rank": 9,
+      "endpoint": "GET /rest/secure/angelbroking/portfolio/v1/getHolding",
+      "category": "holdings",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 490.0,
+      "triggers": ["Fallback when getAllHolding returns empty"]
+    },
+    {
+      "rank": 10,
+      "endpoint": "GET /rest/secure/angelbroking/user/v1/getProfile",
+      "category": "profile",
+      "rate_limit_per_second": 1.0,
+      "average_duration_ms": 390.0,
+      "triggers": ["Account connection test to detect DDPI status"]
+    }
+  ],
+  "scaling_benchmark_results": {
+    "1_account_15_positions": { "in_memory_aggregation_ms": 0.032, "db_retrieval_ms": 4.2, "total_ms": 4.232 },
+    "5_accounts_75_positions": { "in_memory_aggregation_ms": 0.119, "db_retrieval_ms": 8.5, "total_ms": 8.619 },
+    "10_accounts_150_positions": { "in_memory_aggregation_ms": 0.276, "db_retrieval_ms": 15.1, "total_ms": 15.376 },
+    "36_accounts_540_positions": { "in_memory_aggregation_ms": 0.626, "db_retrieval_ms": 38.5, "total_ms": 39.126 }
+  },
+  "frontend_bundle_analysis": {
+    "monolithic_js_bundle": "dist/assets/index-DT6dU3FY.js",
+    "uncompressed_size_kb": 1339.94,
+    "gzip_size_kb": 336.89,
+    "css_size_kb": 65.33,
+    "modules_bundled_count": 2317,
+    "code_splitting_enabled": false,
+    "chunk_count": 1
+  }
+}
