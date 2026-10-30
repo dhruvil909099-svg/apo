@@ -57,10 +57,14 @@ def get_consolidated_holdings(
     synced_accounts = sum(1 for a in accounts if a.auth_status in ["CONNECTED", "ACTIVE"])
     failed_accounts = total_selected - synced_accounts
 
-    # Trigger background freshness checks non-blockingly for stale accounts
+    # Trigger bounded background freshness checks for at most 2 connected stale accounts at a time
+    stale_dispatched = 0
     for acc in accounts:
-        if DataOrchestrator.is_data_stale(acc.last_sync_time):
+        if acc.auth_status in ("CONNECTED", "ACTIVE") and DataOrchestrator.is_data_stale(acc.last_sync_time):
             DataOrchestrator.refresh_account_if_stale_background(acc.id)
+            stale_dispatched += 1
+            if stale_dispatched >= 2:
+                break
 
     # 2. Query verified Demat holdings snapshots and genuine IPO allotments for target accounts
     target_account_ids = [a.id for a in accounts]

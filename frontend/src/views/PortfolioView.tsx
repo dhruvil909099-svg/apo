@@ -139,22 +139,30 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
   const loadPortfolioData = async () => {
     setIsLoading(true);
     try {
-      const [consResp, accs] = await Promise.all([
-        api.getConsolidatedPortfolio(
-          selectedAccountIds.length === applicableAccounts.length ? undefined : selectedAccountIds,
-          capitalFilter
-        ),
-        api.getAccountPortfolios()
-      ]);
+      const consResp = await api.getConsolidatedPortfolio(
+        selectedAccountIds.length === applicableAccounts.length ? undefined : selectedAccountIds,
+        capitalFilter
+      );
       setSummary(consResp.summary);
       setConsolidated(consResp.holdings);
-      setAccountPortfolios(accs);
+
+      if (viewMode === 'accounts') {
+        const accs = await api.getAccountPortfolios();
+        setAccountPortfolios(accs);
+      }
     } catch (err: any) {
       console.error('Error loading portfolio:', err);
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Lazy-load account portfolios only when user switches to 'accounts' view tab
+  useEffect(() => {
+    if (viewMode === 'accounts' && accountPortfolios.length === 0) {
+      api.getAccountPortfolios().then(setAccountPortfolios).catch(() => {});
+    }
+  }, [viewMode, accountPortfolios.length]);
 
   const [lastTickTime, setLastTickTime] = useState<Date | null>(null);
   const [streamConnected, setStreamConnected] = useState<boolean>(false);
