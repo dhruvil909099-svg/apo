@@ -14,6 +14,7 @@ import {
   AccountFundsResponse, AccountActivityLogResponse
 } from '../types';
 import { api, getWebSocketUrl } from '../api';
+import { accountReadCache, CACHE_TTL_MS } from '../services/accountReadCache';
 import { HoldingsTable } from '../components/HoldingsTable';
 import { OrderTicketModal, OrderTicketSuccessPayload } from '../components/OrderTicketModal';
 import { StockDetailsModal } from '../components/StockDetailsModal';
@@ -104,14 +105,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('ALL');
   const [tradeSearchQuery, setTradeSearchQuery] = useState<string>('');
 
-  const drawerCacheRef = useRef<Record<number, {
-    overview?: AccountOverviewResponse;
-    holdings?: AccountHoldingItem[];
-    positions?: AccountPositionItem[];
-    orders?: AccountOrderItem[];
-    trades?: AccountTradeItem[];
-    lastFetched?: number;
-  }>>({});
+  const activeDrawerAccountRef = useRef<number | null>(null);
+  const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({});
 
   // Sync & Cooldown State (Rate limit protection)
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<number>>(new Set());
@@ -235,150 +230,318 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
     };
   }, [accounts]);
 
-  // Fetch drawer data with staged loading & rate-limit pacing
-  const fetchDrawerData = useCallback(async (account: Account, isInitial: boolean = false) => {
-    setIsLoadingDrawer(true);
-    setDrawerError(null);
-    setDrawerHoldingsError(null);
-    setDrawerPositionsError(null);
-    setDrawerOrdersError(null);
-    setDrawerTradesError(null);
-    setIsDrawerSessionExpired(false);
-    setDrawerDataFreshness('SYNCING');
+  // Helper to update per-tab loading indicator
+  const setTabIsLoading = useCallback((tab: string, loading: boolean) => {
+    setTabLoading((prev) => (prev[tab] === loading ? prev : { ...prev, [tab]: loading }));
+  }, []);
 
-    // Staged Priority 0: Fast retrieval of cached-only holdings from DB if in-memory cache was empty
-    if (isInitial && drawerHoldings.length === 0) {
-      try {
-        const cachedSnap = await api.getAccountHoldings(account.id, true);
-        if (cachedSnap && cachedSnap.length > 0) {
-          setDrawerHoldings(cachedSnap);
-          setDrawerDataFreshness('CACHED');
-        }
-      } catch {
-        // Cached snapshot fetch is opportunistic
+  // 1. Fetch Overview (single light endpoint)
+  const fetchDrawerOverview = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'overview');
+    if (!force && cached) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerOverview(cached.data);
       }
+      return;
     }
-
+    setTabIsLoading('overview', true);
     try {
-      // Staged Priority 1: Account overview & fresh holdings
-      const [ovRes, hdRes] = await Promise.allSettled([
-        api.getAccountOverview(account.id),
-        api.getAccountHoldings(account.id, false),
-      ]);
-
-      if (ovRes.status === 'fulfilled') {
-        setDrawerOverview(ovRes.value);
-      } else {
-        const msg = ovRes.reason?.message || '';
+      const ov = await accountReadCache.deduplicate(`overview:${account.id}`, () => api.getAccountOverview(account.id));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerOverview(ov);
+        accountReadCache.setItem(account.id, 'overview', ov);
+        setDrawerError(null);
+        if (ov.is_disconnected) {
+          setDrawerDataFreshness('DISCONNECTED');
+        } else if (account.is_demo) {
+          setDrawerDataFreshness('CACHED');
+        } else {
+          setDrawerDataFreshness('LIVE');
+        }
+      }
+    } catch (err: any) {
+      if (activeDrawerAccountRef.current === account.id) {
+        const msg = err?.message || '';
         if (msg.includes('401') || msg.toLowerCase().includes('expired')) {
           setIsDrawerSessionExpired(true);
         }
       }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('overview', false);
+      }
+    }
+  }, [setTabIsLoading]);
 
-      if (hdRes.status === 'fulfilled') {
-        setDrawerHoldings(hdRes.value);
+  // 2. Fetch Holdings
+  const fetchDrawerHoldings = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'holdings');
+    if (!force && cached && cached.data.length > 0) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerHoldings(cached.data);
         setDrawerHoldingsError(null);
-      } else {
-        const errMsg = hdRes.reason?.message || 'Failed to load delivery holdings';
-        setDrawerHoldingsError(errMsg);
-        if (hdRes.reason?.status === 401 || errMsg.toLowerCase().includes('expired')) {
-          setIsDrawerSessionExpired(true);
-        }
       }
-
-      // Staged Priority 2: Small 60ms pacing to prevent concurrent upstream broker rate-limiting
-      await new Promise((r) => setTimeout(r, 60));
-
-      const [posRes, ordRes, trRes, fundsRes, actRes] = await Promise.allSettled([
-        api.getAccountPositions(account.id),
-        api.getAccountOrders(account.id),
-        api.getAccountTrades(account.id),
-        api.getAccountFunds(account.id),
-        api.getAccountActivityLog(account.id),
-      ]);
-
-      if (posRes.status === 'fulfilled') {
-        setDrawerPositions(posRes.value);
-        setDrawerPositionsError(null);
-      } else {
-        setDrawerPositions([]);
-        const errMsg = posRes.reason?.message || 'Failed to load derivative positions';
-        setDrawerPositionsError(errMsg);
-        if (posRes.reason?.status === 401 || errMsg.toLowerCase().includes('expired')) {
-          setIsDrawerSessionExpired(true);
-        }
-      }
-
-      if (ordRes.status === 'fulfilled') {
-        setDrawerOrders(ordRes.value);
-        setDrawerOrdersError(null);
-      } else {
-        setDrawerOrders([]);
-        setDrawerOrdersError(ordRes.reason?.message || 'Failed to load order book');
-      }
-
-      if (trRes.status === 'fulfilled') {
-        setDrawerTrades(trRes.value);
-        setDrawerTradesError(null);
-      } else {
-        setDrawerTrades([]);
-        setDrawerTradesError(trRes.reason?.message || 'Failed to load trade executions');
-      }
-
-      if (fundsRes.status === 'fulfilled') {
-        setDrawerFunds(fundsRes.value);
-      } else {
-        setDrawerFunds(null);
-      }
-
-      if (actRes.status === 'fulfilled') {
-        setDrawerActivityLog(actRes.value);
-      } else {
-        setDrawerActivityLog(null);
-      }
-
-      // Update in-memory persistent cache for this account
-      drawerCacheRef.current[account.id] = {
-        overview: ovRes.status === 'fulfilled' ? ovRes.value : drawerCacheRef.current[account.id]?.overview,
-        holdings: hdRes.status === 'fulfilled' ? hdRes.value : drawerCacheRef.current[account.id]?.holdings,
-        positions: posRes.status === 'fulfilled' ? posRes.value : drawerCacheRef.current[account.id]?.positions,
-        orders: ordRes.status === 'fulfilled' ? ordRes.value : drawerCacheRef.current[account.id]?.orders,
-        trades: trRes.status === 'fulfilled' ? trRes.value : drawerCacheRef.current[account.id]?.trades,
-        lastFetched: Date.now(),
-      };
-
-      setLastSyncTimestamp(new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
-      const isAccountLive = !account.is_demo && account.auth_status === 'CONNECTED' && (ovRes.status !== 'fulfilled' || !ovRes.value?.is_disconnected);
-      if (account.is_demo) {
-        setDrawerDataFreshness('CACHED');
-      } else if (!isAccountLive) {
-        setDrawerDataFreshness('DISCONNECTED');
-      } else {
-        setDrawerDataFreshness('LIVE');
+      return;
+    }
+    setTabIsLoading('holdings', true);
+    setDrawerHoldingsError(null);
+    try {
+      const hd = await accountReadCache.deduplicate(`holdings:${account.id}:${force}`, () => api.getAccountHoldings(account.id, false));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerHoldings(hd);
+        accountReadCache.setItem(account.id, 'holdings', hd);
+        setDrawerHoldingsError(null);
       }
     } catch (err: any) {
-      setDrawerError(err.message || 'Failed to fetch account drawer details.');
-      setDrawerDataFreshness('STALE');
+      if (activeDrawerAccountRef.current === account.id) {
+        const errMsg = err?.message || 'Failed to load delivery holdings';
+        setDrawerHoldingsError(errMsg);
+        if (err?.status === 401 || errMsg.toLowerCase().includes('expired')) {
+          setIsDrawerSessionExpired(true);
+        }
+      }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('holdings', false);
+      }
+    }
+  }, [setTabIsLoading]);
+
+  // 3. Fetch Positions
+  const fetchDrawerPositions = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'positions');
+    if (!force && cached) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerPositions(cached.data);
+        setDrawerPositionsError(null);
+      }
+      return;
+    }
+    setTabIsLoading('positions', true);
+    setDrawerPositionsError(null);
+    try {
+      const pos = await accountReadCache.deduplicate(`positions:${account.id}:${force}`, () => api.getAccountPositions(account.id));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerPositions(pos);
+        accountReadCache.setItem(account.id, 'positions', pos);
+        setDrawerPositionsError(null);
+      }
+    } catch (err: any) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerPositions([]);
+        const errMsg = err?.message || 'Failed to load derivative positions';
+        setDrawerPositionsError(errMsg);
+        if (err?.status === 401 || errMsg.toLowerCase().includes('expired')) {
+          setIsDrawerSessionExpired(true);
+        }
+      }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('positions', false);
+      }
+    }
+  }, [setTabIsLoading]);
+
+  // 4. Fetch Orders
+  const fetchDrawerOrders = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'orders');
+    if (!force && cached) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerOrders(cached.data);
+        setDrawerOrdersError(null);
+      }
+      return;
+    }
+    setTabIsLoading('orders', true);
+    setDrawerOrdersError(null);
+    try {
+      const ords = await accountReadCache.deduplicate(`orders:${account.id}:${force}`, () => api.getAccountOrders(account.id));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerOrders(ords);
+        accountReadCache.setItem(account.id, 'orders', ords);
+        setDrawerOrdersError(null);
+      }
+    } catch (err: any) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerOrders([]);
+        setDrawerOrdersError(err?.message || 'Failed to load order book');
+      }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('orders', false);
+      }
+    }
+  }, [setTabIsLoading]);
+
+  // 5. Fetch Trades
+  const fetchDrawerTrades = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'trades');
+    if (!force && cached) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerTrades(cached.data);
+        setDrawerTradesError(null);
+      }
+      return;
+    }
+    setTabIsLoading('trades', true);
+    setDrawerTradesError(null);
+    try {
+      const trs = await accountReadCache.deduplicate(`trades:${account.id}:${force}`, () => api.getAccountTrades(account.id));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerTrades(trs);
+        accountReadCache.setItem(account.id, 'trades', trs);
+        setDrawerTradesError(null);
+      }
+    } catch (err: any) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerTrades([]);
+        setDrawerTradesError(err?.message || 'Failed to load trade executions');
+      }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('trades', false);
+      }
+    }
+  }, [setTabIsLoading]);
+
+  // 6. Fetch Funds
+  const fetchDrawerFunds = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'funds');
+    if (!force && cached) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerFunds(cached.data);
+      }
+      return;
+    }
+    setTabIsLoading('funds', true);
+    try {
+      const fds = await accountReadCache.deduplicate(`funds:${account.id}:${force}`, () => api.getAccountFunds(account.id));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerFunds(fds);
+        accountReadCache.setItem(account.id, 'funds', fds);
+      }
+    } catch {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerFunds(null);
+      }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('funds', false);
+      }
+    }
+  }, [setTabIsLoading]);
+
+  // 7. Fetch Activity Log
+  const fetchDrawerActivityLog = useCallback(async (account: Account, force: boolean = false) => {
+    if (!account) return;
+    const cached = accountReadCache.getItem(account.id, 'activityLog');
+    if (!force && cached) {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerActivityLog(cached.data);
+      }
+      return;
+    }
+    setTabIsLoading('activity-log', true);
+    try {
+      const act = await accountReadCache.deduplicate(`activityLog:${account.id}:${force}`, () => api.getAccountActivityLog(account.id));
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerActivityLog(act);
+        accountReadCache.setItem(account.id, 'activityLog', act);
+      }
+    } catch {
+      if (activeDrawerAccountRef.current === account.id) {
+        setDrawerActivityLog(null);
+      }
+    } finally {
+      if (activeDrawerAccountRef.current === account.id) {
+        setTabIsLoading('activity-log', false);
+      }
+    }
+  }, [setTabIsLoading]);
+
+  // Central on-demand tab dispatcher
+  const loadDrawerTabOnDemand = useCallback((account: Account, tab: DrawerTab, force: boolean = false) => {
+    switch (tab) {
+      case 'overview':
+        fetchDrawerOverview(account, force);
+        break;
+      case 'holdings':
+        fetchDrawerHoldings(account, force);
+        break;
+      case 'positions':
+        fetchDrawerPositions(account, force);
+        break;
+      case 'orders':
+        fetchDrawerOrders(account, force);
+        break;
+      case 'trades':
+        fetchDrawerTrades(account, force);
+        break;
+      case 'funds':
+        fetchDrawerFunds(account, force);
+        break;
+      case 'activity-log':
+        fetchDrawerActivityLog(account, force);
+        break;
+      default:
+        break;
+    }
+  }, [
+    fetchDrawerOverview,
+    fetchDrawerHoldings,
+    fetchDrawerPositions,
+    fetchDrawerOrders,
+    fetchDrawerTrades,
+    fetchDrawerFunds,
+    fetchDrawerActivityLog
+  ]);
+
+  // Auto-fetch the currently selected tab whenever it changes or account opens
+  useEffect(() => {
+    if (selectedAccountForDrawer) {
+      loadDrawerTabOnDemand(selectedAccountForDrawer, drawerTab, false);
+    }
+  }, [selectedAccountForDrawer?.id, drawerTab, loadDrawerTabOnDemand]);
+
+  // Compatibility function for any callers of fetchDrawerData: refreshes active tab + overview
+  const fetchDrawerData = useCallback(async (account: Account, isInitial: boolean = false) => {
+    if (!account) return;
+    setIsLoadingDrawer(true);
+    try {
+      await Promise.all([
+        fetchDrawerOverview(account, true),
+        loadDrawerTabOnDemand(account, drawerTab, true)
+      ]);
+      setLastSyncTimestamp(new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
     } finally {
       setIsLoadingDrawer(false);
     }
-  }, [drawerHoldings.length]);
+  }, [fetchDrawerOverview, loadDrawerTabOnDemand, drawerTab]);
 
   const openAccountDrawer = (acc: Account, initialTab: DrawerTab = 'overview') => {
     setSelectedAccountForDrawer(acc);
     setDrawerTab(initialTab);
+    activeDrawerAccountRef.current = acc.id;
 
-    // Instant load from memory cache if available (< 20ms)
-    const cached = drawerCacheRef.current[acc.id];
+    // Immediately hydrate all available cached data for this account from persistent memory (< 5ms)
+    const cached = accountReadCache.getAccount(acc.id);
     if (cached) {
-      if (cached.overview) setDrawerOverview(cached.overview);
-      if (cached.holdings) setDrawerHoldings(cached.holdings);
-      if (cached.positions) setDrawerPositions(cached.positions);
-      if (cached.orders) setDrawerOrders(cached.orders);
-      if (cached.trades) setDrawerTrades(cached.trades);
+      if (cached.overview) setDrawerOverview(cached.overview.data);
+      if (cached.holdings) setDrawerHoldings(cached.holdings.data);
+      if (cached.positions) setDrawerPositions(cached.positions.data);
+      if (cached.orders) setDrawerOrders(cached.orders.data);
+      if (cached.trades) setDrawerTrades(cached.trades.data);
+      if (cached.funds) setDrawerFunds(cached.funds.data);
+      if (cached.activityLog) setDrawerActivityLog(cached.activityLog.data);
       setDrawerDataFreshness('CACHED');
-      if (cached.lastFetched) {
-        setLastSyncTimestamp(new Date(cached.lastFetched).toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
+      if (cached.overview?.timestamp) {
+        setLastSyncTimestamp(new Date(cached.overview.timestamp).toLocaleTimeString('en-IN', { hour12: false }) + ' IST');
       }
     } else {
       // Instant zero-latency fallback overview from account object (eliminates blank spinner)
@@ -408,11 +571,25 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
       });
     }
 
-    // Trigger non-blocking staged refresh
-    fetchDrawerData(acc, !cached);
+    // Lazy load ONLY essential initial data: overview + initial tab
+    fetchDrawerOverview(acc, false);
+    if (initialTab !== 'overview') {
+      loadDrawerTabOnDemand(acc, initialTab, false);
+    } else if (!cached?.holdings) {
+      // If overview tab and no holdings in memory, fetch cached snapshot (< 15ms) to display portfolio metrics
+      api.getAccountHoldings(acc.id, true)
+        .then((snap) => {
+          if (activeDrawerAccountRef.current === acc.id && snap && snap.length > 0) {
+            setDrawerHoldings(snap);
+            accountReadCache.setItem(acc.id, 'holdings', snap, true);
+          }
+        })
+        .catch(() => {});
+    }
   };
 
   const closeAccountDrawer = () => {
+    activeDrawerAccountRef.current = null;
     setSelectedAccountForDrawer(null);
     setDrawerOverview(null);
     setDrawerHoldings([]);

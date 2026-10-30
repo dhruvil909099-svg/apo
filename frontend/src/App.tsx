@@ -20,6 +20,7 @@ import { DashboardSummary, Account, IPO, Order, MarketQuote } from './types';
 import { api, getWebSocketUrl } from './api';
 import { connectionManager, ConnectionState } from './services/backendConnectionManager';
 import { refreshScheduler } from './services/refreshScheduler';
+import { accountReadCache } from './services/accountReadCache';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { LoginModal } from './components/LoginModal';
 
@@ -103,6 +104,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleLogout = async () => {
+    accountReadCache.clearAll();
     await api.logout();
     setCurrentUser(null);
     fetchAllData(true);
