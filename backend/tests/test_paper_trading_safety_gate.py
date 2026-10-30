@@ -152,7 +152,7 @@ def test_paper_order_insufficient_holdings_safely_rejected(client: TestClient, d
             "transaction_type": "SELL",
             "order_type": "MARKET",
             "variety": "NORMAL",
-            "quantity": 999999,  # Far exceeds available holdings
+            "quantity": 100,  # Exceeds available holdings (15 shares) within global risk limit (5000)
             "price": 0.0,
             "trigger_price": 0.0
         }

@@ -9,15 +9,15 @@ from datetime import datetime
 def test_user_crud_and_admin_protection(client):
     # 1. Create first admin user
     admin_payload = {
-        "username": "superadmin",
-        "email": "admin@ipopro.internal",
+        "username": "superadmin_crud",
+        "email": "superadmin_crud@ipopro.internal",
         "password": "SuperSecretPassword123!",
         "role": "ADMIN"
     }
     res = client.post("/api/v1/users", json=admin_payload)
     assert res.status_code == 201, res.text
     admin_data = res.json()
-    assert admin_data["username"] == "superadmin"
+    assert admin_data["username"] == "superadmin_crud"
     assert admin_data["role"] == "ADMIN"
     admin_id = admin_data["id"]
     # Ensure password hash is not exposed
@@ -51,8 +51,12 @@ def test_user_crud_and_admin_protection(client):
     res = client.delete(f"/api/v1/users/{user_id}")
     assert res.status_code == 204
 
-    # 6. Admin protection - deleting the only active admin should fail with 400
+    # 6. Delete created admin - succeeds with 204 because default admin still exists
     res = client.delete(f"/api/v1/users/{admin_id}")
+    assert res.status_code == 204
+
+    # 7. Admin protection - deleting the last remaining active administrator should fail with 400
+    res = client.delete("/api/v1/users/1")
     assert res.status_code == 400
     assert "Cannot delete the last remaining active administrator" in res.json()["detail"]
 
@@ -201,7 +205,7 @@ def test_paper_trading_buy_flow_and_cash_verification(client, db_session):
     assert allotment is not None
     assert allotment.allotted_quantity >= 10
 
-    # Try order exceeding cash balance: 10,000,000 > available cash -> Order rejected
+    # Try order exceeding cash balance: 450,000 > available cash -> Order rejected
     excess_payload = {
         "account_id": 1,
         "tradingsymbol": "TATATECH-EQ",
@@ -210,7 +214,7 @@ def test_paper_trading_buy_flow_and_cash_verification(client, db_session):
         "exchange": "NSE",
         "order_type": "LIMIT",
         "variety": "NORMAL",
-        "price": 100000.0,
+        "price": 4500.0,
         "quantity": 100
     }
     res = client.post("/api/v1/orders/single", json=excess_payload)

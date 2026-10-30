@@ -20,6 +20,7 @@ Base.metadata.create_all(bind=engine)
 def test_1_olaelec_token_mapping():
     """1. Correct OLAELEC NSE/BSE token mapping."""
     db = SessionLocal()
+    Base.metadata.create_all(bind=db.get_bind())
     try:
         # Seed test instruments if not present in test DB
         bse = db.query(Instrument).filter(Instrument.tradingsymbol == "OLAELEC", Instrument.exchange == "BSE").first()
@@ -282,7 +283,7 @@ def test_10_no_duplicate_transaction_submission():
     from app.services.smartapi_adapter import SmartAPIAdapter
     adapter = SmartAPIAdapter(account_id=1, api_key="dummy", client_code="DUMMY", pin="0000", totp_secret="SECRET")
     
-    with patch("requests.post", side_effect=requests.exceptions.Timeout("Read timed out")):
+    with patch.object(adapter.session, "post", side_effect=requests.exceptions.Timeout("Read timed out")):
         with patch.object(adapter, "_ensure_authenticated", return_value=True):
             res = adapter.place_order({
                 "tradingsymbol": "OLAELEC",
@@ -299,6 +300,7 @@ def test_10_no_duplicate_transaction_submission():
 def test_11_paper_mode_enforcement():
     """11. Paper trading mode is strictly enforced and isolated from live broker endpoints."""
     db = SessionLocal()
+    Base.metadata.create_all(bind=db.get_bind())
     try:
         demo_acc = db.query(Account).filter(Account.is_demo == True).first()
         if demo_acc:

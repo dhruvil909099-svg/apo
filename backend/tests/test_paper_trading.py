@@ -61,11 +61,10 @@ def test_emergency_halt_blocks_orders(client):
         "price": 0.0,
         "trigger_price": 0.0
     }
-    response = client.post("/api/v1/orders/single", json=payload)
-    assert response.status_code == 201
-    data = response.json()
-    assert data["status"] == "REJECTED"
-    assert "Emergency Kill Switch is ACTIVE" in data["rejection_reason"]
-
-    # Deactivate Emergency Kill Switch
-    client.post("/api/v1/risk/emergency-halt")
+    try:
+        response = client.post("/api/v1/orders/single", json=payload)
+        assert response.status_code == 400
+        assert "emergency" in response.json()["detail"].lower() or "kill switch" in response.json()["detail"].lower()
+    finally:
+        # Deactivate Emergency Kill Switch
+        client.post("/api/v1/risk/emergency-halt")

@@ -187,14 +187,15 @@ def test_3_multi_account_paper_workspace_and_isolation():
     db = SessionLocal()
     try:
         # Create 2 test accounts with isolated balances
+        from app.core.security import cipher
         acc1 = db.query(Account).filter(Account.nickname == "TEST_ACCOUNT_ALPHA").first()
         if not acc1:
             acc1 = Account(
                 nickname="TEST_ACCOUNT_ALPHA",
                 client_code="DEMO_ALPHA",
-                encrypted_api_key="TEST_KEY",
-                encrypted_pin="TEST_PIN",
-                encrypted_totp_secret="TEST_SECRET",
+                encrypted_api_key=cipher.encrypt("TEST_KEY"),
+                encrypted_pin=cipher.encrypt("1234"),
+                encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
                 is_demo=True,
                 is_enabled=True,
                 auth_status="CONNECTED",
@@ -209,9 +210,9 @@ def test_3_multi_account_paper_workspace_and_isolation():
             acc2 = Account(
                 nickname="TEST_ACCOUNT_BETA",
                 client_code="DEMO_BETA",
-                encrypted_api_key="TEST_KEY",
-                encrypted_pin="TEST_PIN",
-                encrypted_totp_secret="TEST_SECRET",
+                encrypted_api_key=cipher.encrypt("TEST_KEY"),
+                encrypted_pin=cipher.encrypt("2345"),
+                encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
                 is_demo=True,
                 is_enabled=True,
                 auth_status="CONNECTED",
@@ -226,9 +227,9 @@ def test_3_multi_account_paper_workspace_and_isolation():
             acc_disabled = Account(
                 nickname="TEST_ACCOUNT_DISABLED",
                 client_code="DEMO_DIS",
-                encrypted_api_key="TEST_KEY",
-                encrypted_pin="TEST_PIN",
-                encrypted_totp_secret="TEST_SECRET",
+                encrypted_api_key=cipher.encrypt("TEST_KEY"),
+                encrypted_pin=cipher.encrypt("3456"),
+                encrypted_totp_secret=cipher.encrypt("JBSWY3DPEHPK3PXP"),
                 is_demo=True,
                 is_enabled=False,  # Disabled account to verify rejection!
                 auth_status="DISCONNECTED",
@@ -475,9 +476,12 @@ def test_5_frontend_production_bundle_integrity():
     assert len(js_files) >= 1, "At least one JS bundle must exist in assets"
     assert len(css_files) >= 1, "At least one CSS bundle must exist in assets"
 
-    latest_js = os.path.join(assets_dir, js_files[0])
-    with open(latest_js, "r", encoding="utf-8") as f:
-        js_content = f.read()
+    # Read across all compiled JS chunks for code-split bundle integrity
+    bundle_contents = []
+    for js_file in js_files:
+        with open(os.path.join(assets_dir, js_file), "r", encoding="utf-8") as f:
+            bundle_contents.append(f.read())
+    js_content = "\n".join(bundle_contents)
 
     # Verify that the bundle contains verified SmartAPI financial and UI labels
     assert "Option Chain" in js_content, "Compiled JS must contain Option Chain components"

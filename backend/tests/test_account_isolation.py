@@ -56,7 +56,7 @@ def test_account_orders_isolation(client: TestClient, db_session: Session):
         quantity=15,
         price=1050.0,
         status="EXECUTED",
-        is_paper_trade=True
+        is_paper_trade=False
     )
     order2 = Order(
         client_order_id="user_b_order_002",
@@ -69,20 +69,20 @@ def test_account_orders_isolation(client: TestClient, db_session: Session):
         quantity=25,
         price=120.0,
         status="EXECUTED",
-        is_paper_trade=True
+        is_paper_trade=False
     )
     db_session.add_all([order1, order2])
     db_session.commit()
 
     # Query Account 1 orders
-    res1 = client.get("/api/v1/orders?account_id=1")
+    res1 = client.get("/api/v1/orders?account_id=1&include_simulated=true")
     assert res1.status_code == 200
     data1 = res1.json()
     assert any(o["client_order_id"] == "user_a_order_001" for o in data1)
     assert not any(o["client_order_id"] == "user_b_order_002" for o in data1)
 
     # Query Account 2 orders
-    res2 = client.get("/api/v1/orders?account_id=2")
+    res2 = client.get("/api/v1/orders?account_id=2&include_simulated=true")
     assert res2.status_code == 200
     data2 = res2.json()
     assert any(o["client_order_id"] == "user_b_order_002" for o in data2)

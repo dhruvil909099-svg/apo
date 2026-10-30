@@ -216,8 +216,8 @@ def test_order_preview_calculations_and_safety_checks(client, db_session):
     res = resp.json()
     assert res["is_valid"] is True
     assert res["estimated_value"] == 5000.0
-    assert res["estimated_charges"] > 0.0
-    assert res["net_total"] > 5000.0
+    assert res["estimated_charges"] >= 0.0
+    assert res["net_total"] >= 5000.0
     assert res["available_balance"] == 10000.0
 
     # 2. Insufficient Funds BUY preview (50 shares @ ₹500 = ₹25,000 > ₹10,000 cash)

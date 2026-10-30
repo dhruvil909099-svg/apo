@@ -17,7 +17,7 @@ def test_get_market_candles(client: TestClient, db_session):
     mock_adapter = MagicMock()
     mock_adapter.get_candle_data.return_value = mock_candles
 
-    with patch("app.api.endpoints_market.get_any_active_market_adapter", return_value=mock_adapter):
+    with patch("app.services.historical_candle_service.get_any_active_market_adapter", return_value=mock_adapter):
         res = client.get("/api/v1/market/candles?symbol=TATATECH&interval=ONE_DAY&range_period=1M")
         assert res.status_code == 200
         data = res.json()
@@ -45,7 +45,7 @@ def test_get_market_candles_intraday(client: TestClient, db_session):
     mock_adapter = MagicMock()
     mock_adapter.get_candle_data.return_value = mock_candles
 
-    with patch("app.api.endpoints_market.get_any_active_market_adapter", return_value=mock_adapter):
+    with patch("app.services.historical_candle_service.get_any_active_market_adapter", return_value=mock_adapter):
         res = client.get("/api/v1/market/candles?symbol=TATATECH&interval=FIFTEEN_MINUTE&range_period=1D")
         assert res.status_code == 200
         data = res.json()
