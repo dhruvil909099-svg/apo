@@ -22,6 +22,7 @@ from app.services.instrument_master_service import (
 )
 
 from app.core.auth import get_optional_current_user, authorize_account_access, UserPrincipal, REVOKED_MASTER_KEYS
+from app.core.cache import app_cache
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
@@ -478,7 +479,12 @@ def calculate_order_margin(
 def get_market_quotes(db: Session = Depends(get_db)):
     """
     Returns market snapshots for tracked IPOs.
+    Uses 5-second TTL in-memory caching to eliminate remote DB latency.
     """
+    cached = app_cache.get("market_quotes_list")
+    if cached is not None:
+        return cached
+
     ipos = db.query(IPO).all()
     quotes = []
     for ipo in ipos:
@@ -500,6 +506,7 @@ def get_market_quotes(db: Session = Depends(get_db)):
             "is_stale": False,
             "timestamp": datetime.utcnow().isoformat()
         })
+    app_cache.set("market_quotes_list", quotes, ttl=5.0, tag="quotes")
     return quotes
 
 

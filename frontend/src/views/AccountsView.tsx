@@ -5,7 +5,7 @@ import {
   PieChart, Activity, Sliders, ChevronDown, ChevronRight,
   ExternalLink, Wallet, TrendingUp, TrendingDown, Clock,
   ArrowUpRight, Shield, AlertCircle, X, KeyRound, Radio,
-  Filter, ArrowUpDown, SlidersHorizontal, Check, RefreshCcw
+  Filter, ArrowUpDown, SlidersHorizontal, Check, RefreshCcw, Briefcase
 } from 'lucide-react';
 import {
   Account, AccountCreatePayload, AccountOverviewResponse,
@@ -63,7 +63,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
   const [drawerTrades, setDrawerTrades] = useState<AccountTradeItem[]>([]);
   const [drawerFunds, setDrawerFunds] = useState<AccountFundsResponse | null>(null);
   const [drawerActivityLog, setDrawerActivityLog] = useState<AccountActivityLogResponse | null>(null);
-  const [activityLogFilter, setActivityLogFilter] = useState<'ALL' | 'BROKER' | 'SIMULATED' | 'SYNC' | 'AUDIT'>('ALL');
+  const [activityLogFilter, setActivityLogFilter] = useState<string>('ALL');
 
   // Highlight and Contextual Banner
   const [highlightedSymbol, setHighlightedSymbol] = useState<string | null>(null);
@@ -443,10 +443,10 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
         }
         if (targetAccountNavigation.banner) {
           setOrderStatusContextBanner({
-            status: 'EXECUTED',
+            status: 'ACCEPTED',
             message: targetAccountNavigation.banner,
             symbol: targetAccountNavigation.highlightSymbol || 'Security',
-            isFilled: true
+            isFilled: false
           });
         }
         if (onClearTargetNavigation) {
@@ -2398,6 +2398,25 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                         </div>
 
                         <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setDrawerTab('holdings')}
+                              className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition-colors flex items-center gap-1"
+                              title="Navigate to Demat Holdings"
+                            >
+                              <Briefcase className="w-3 h-3" />
+                              <span>Holdings</span>
+                            </button>
+                            <button
+                              onClick={() => setDrawerTab('trades')}
+                              className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition-colors flex items-center gap-1"
+                              title="Navigate to Executed Trades"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Trades</span>
+                            </button>
+                          </div>
+
                           <div className="relative">
                             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                             <input
@@ -2408,6 +2427,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                               className="pl-8 pr-3 py-1 text-xs border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-brand-500 w-44"
                             />
                           </div>
+
+                          <span className="text-[10px] text-slate-400 font-mono hidden sm:inline" title="Last Refreshed Time">
+                            {lastSyncTimestamp || 'Live'}
+                          </span>
+
                           <button
                             onClick={() => fetchDrawerData(selectedAccountForDrawer, false)}
                             disabled={isLoadingDrawer}
@@ -2656,25 +2680,24 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                       {/* Filter Pills and Summary */}
                       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          {(['ALL', 'BROKER', 'SIMULATED', 'SYNC', 'AUDIT'] as const).map((flt) => (
+                          {[
+                            { id: 'ALL', label: 'All Records' },
+                            { id: 'BROKER', label: 'Live Broker' },
+                            { id: 'SYNC', label: 'Broker-Synced Snapshot' },
+                            { id: 'AUDIT', label: 'IPOPro System Audit' },
+                            { id: 'STATEMENT', label: 'Official Statement Import' },
+                            { id: 'SIMULATED', label: 'Test Simulation Archive' },
+                          ].map((flt) => (
                             <button
-                              key={flt}
-                              onClick={() => setActivityLogFilter(flt)}
+                              key={flt.id}
+                              onClick={() => setActivityLogFilter(flt.id)}
                               className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
-                                activityLogFilter === flt
+                                activityLogFilter === flt.id
                                   ? 'bg-slate-900 text-white shadow-2xs'
                                   : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
                               }`}
                             >
-                              {flt === 'ALL'
-                                ? 'All Events'
-                                : flt === 'BROKER'
-                                ? 'Broker (Live)'
-                                : flt === 'SIMULATED'
-                                ? 'Paper Orders'
-                                : flt === 'SYNC'
-                                ? 'Syncs'
-                                : 'Audit'}
+                              {flt.label}
                             </button>
                           ))}
                         </div>
@@ -2688,10 +2711,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                         const allEvents = drawerActivityLog?.activities || [];
                         const filtered = allEvents.filter((ev: import('../types').AccountActivityLogItem) => {
                           if (activityLogFilter === 'ALL') return true;
-                          if (activityLogFilter === 'BROKER') return ev.origin === 'LIVE_BROKER';
-                          if (activityLogFilter === 'SIMULATED') return ev.origin === 'SIMULATED_ORDER';
-                          if (activityLogFilter === 'SYNC') return ev.origin === 'BROKER_SYNC';
-                          if (activityLogFilter === 'AUDIT') return ev.origin === 'AUDIT_EVENT';
+                          if (activityLogFilter === 'BROKER') return ev.origin === 'LIVE BROKER' || ev.origin === 'LIVE_BROKER';
+                          if (activityLogFilter === 'SYNC') return ev.origin === 'BROKER-SYNCED SNAPSHOT' || ev.origin === 'BROKER_SYNC';
+                          if (activityLogFilter === 'AUDIT') return ev.origin === 'IPOPRO SYSTEM AUDIT' || ev.origin === 'AUDIT_EVENT';
+                          if (activityLogFilter === 'STATEMENT') return ev.origin === 'OFFICIAL STATEMENT IMPORT';
+                          if (activityLogFilter === 'SIMULATED') return ev.origin === 'TEST SIMULATION' || ev.origin === 'SIMULATED_ORDER';
                           return true;
                         });
 
@@ -2720,9 +2744,10 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                               </thead>
                               <tbody className="divide-y divide-slate-100 text-[11px]">
                                 {filtered.map((item: import('../types').AccountActivityLogItem) => {
-                                  const isBroker = item.origin === 'LIVE_BROKER';
-                                  const isSim = item.origin === 'SIMULATED_ORDER';
-                                  const isSync = item.origin === 'BROKER_SYNC';
+                                  const isBroker = item.origin === 'LIVE BROKER' || item.origin === 'LIVE_BROKER';
+                                  const isSim = item.origin === 'TEST SIMULATION' || item.origin === 'SIMULATED_ORDER';
+                                  const isSync = item.origin === 'BROKER-SYNCED SNAPSHOT' || item.origin === 'BROKER_SYNC';
+                                  const isStmt = item.origin === 'OFFICIAL STATEMENT IMPORT';
                                   const refId = item.details?.order_id ? String(item.details.order_id) : item.id;
                                   return (
                                     <tr key={item.id} className="hover:bg-slate-50">
@@ -2737,15 +2762,19 @@ export const AccountsView: React.FC<AccountsViewProps> = ({ accounts, onRefresh,
                                             ? 'bg-amber-50 text-amber-800 border border-amber-200'
                                             : isSync
                                             ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                                            : isStmt
+                                            ? 'bg-purple-50 text-purple-800 border border-purple-200'
                                             : 'bg-slate-100 text-slate-700 border border-slate-200'
                                         }`}>
-                                          {item.origin === 'LIVE_BROKER'
-                                            ? 'Angel One Live'
-                                            : item.origin === 'SIMULATED_ORDER'
-                                            ? 'Simulated Paper'
-                                            : item.origin === 'BROKER_SYNC'
-                                            ? 'Broker Sync'
-                                            : 'IPOPro Audit'}
+                                          {isBroker
+                                            ? 'LIVE BROKER'
+                                            : isSim
+                                            ? 'TEST SIMULATION'
+                                            : isSync
+                                            ? 'BROKER-SYNCED SNAPSHOT'
+                                            : isStmt
+                                            ? 'OFFICIAL STATEMENT IMPORT'
+                                            : 'IPOPRO SYSTEM AUDIT'}
                                         </span>
                                       </td>
                                       <td className="py-2.5 px-3 font-semibold text-slate-900">{item.event_type}</td>

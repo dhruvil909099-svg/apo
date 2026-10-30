@@ -42,23 +42,31 @@ class OrderIntentService:
         Creates a durable order intent, validates eligibility and risk,
         and safely routes to either Paper Simulator or Live SmartAPI Adapter.
         """
-        account = db.query(Account).filter(Account.id == account_id).first()
-        if not account:
-            return {"success": False, "status": "REJECTED", "message": f"Account {account_id} not found."}
+        try:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return {"success": False, "status": "REJECTED", "message": f"Account {account_id} not found."}
 
-        # Idempotency check: if client_order_id already exists in database
-        client_order_id = idempotency_key or str(uuid.uuid4())
-        existing = db.query(Order).filter(Order.client_order_id == client_order_id).first()
-        if existing:
-            logger.warning(f"Duplicate order submission blocked by idempotency key: {client_order_id}")
+            # Idempotency check: if client_order_id already exists in database
+            client_order_id = idempotency_key or str(uuid.uuid4())
+            existing = db.query(Order).filter(Order.client_order_id == client_order_id).first()
+            if existing:
+                logger.warning(f"Duplicate order submission blocked by idempotency key: {client_order_id}")
+                return {
+                    "success": existing.status in ("ACCEPTED", "EXECUTED"),
+                    "status": existing.status,
+                    "order_id": existing.id,
+                    "client_order_id": existing.client_order_id,
+                    "broker_order_id": existing.broker_order_id,
+                    "is_paper_trade": existing.is_paper_trade,
+                    "message": f"Order already processed (Status: {existing.status}). Duplicate submission prevented."
+                }
+        except Exception as e:
+            logger.error(f"Database error during order intent persistence: {e}")
             return {
-                "success": existing.status in ("ACCEPTED", "EXECUTED"),
-                "status": existing.status,
-                "order_id": existing.id,
-                "client_order_id": existing.client_order_id,
-                "broker_order_id": existing.broker_order_id,
-                "is_paper_trade": existing.is_paper_trade,
-                "message": f"Order already processed (Status: {existing.status}). Duplicate submission prevented."
+                "success": False,
+                "status": "DB_PERSISTENCE_FAILED",
+                "message": f"Database failure: Unable to durably record order intent ({str(e)}). Submission blocked."
             }
 
         # Risk validation

@@ -108,12 +108,32 @@ export const App: React.FC = () => {
     fetchAllData(true);
   };
 
-  // Resilient independent data loading with Promise.allSettled
+  // Resilient independent data loading with fast single-roundtrip bootstrap optimization
   const fetchAllData = useCallback(async (isManual = false) => {
     setIsRefreshing(true);
     connectionManager.setLifecycle('LOADING_DATA', 'Synchronizing dashboard records...');
 
     try {
+      // 1. Fast path: Attempt unified bootstrap in a single network round trip
+      try {
+        const boot = await api.getBootstrap();
+        if (boot && boot.summary) {
+          setSummary(boot.summary);
+          if (Array.isArray(boot.accounts)) setAccounts(boot.accounts);
+          if (Array.isArray(boot.ipos)) setIpos(boot.ipos);
+          if (Array.isArray(boot.quotes)) setQuotes(boot.quotes);
+          // Fetch orders in parallel non-blocking
+          api.getOrders().then(o => Array.isArray(o) && setOrders(o)).catch(() => {});
+          setLastUpdated(new Date());
+          connectionManager.setLifecycle('READY', 'All dashboard sections synchronized');
+          setIsRefreshing(false);
+          return;
+        }
+      } catch (bootErr) {
+        // Fall back to multi-endpoint parallel fetching if bootstrap is unavailable
+      }
+
+      // 2. Resilient parallel fallback
       const [sumRes, accRes, ipoRes, ordRes, quoteRes] = await Promise.allSettled([
         api.getSummary(),
         api.getAccounts(),
@@ -403,7 +423,15 @@ export const App: React.FC = () => {
               />
             )}
             {currentTab === 'bulk-orders' && (
-              <BulkOrderView ipos={ipos} accounts={accounts} onOrderPlaced={handleManualRefresh} />
+              <BulkOrderView
+                ipos={ipos}
+                accounts={accounts}
+                onOrderPlaced={handleManualRefresh}
+                onNavigateToBatchActivity={(batch) => {
+                  setTargetPortfolioBatch(batch);
+                  setCurrentTab('portfolio');
+                }}
+              />
             )}
             {currentTab === 'orders' && (
               <OrdersView orders={orders} accounts={accounts} onRefresh={handleManualRefresh} />

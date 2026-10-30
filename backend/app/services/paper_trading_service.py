@@ -109,8 +109,9 @@ class PaperTradingService:
                 order.status = "ACCEPTED"
                 order.filled_quantity = 0
 
-        # Update cash and holdings upon execution
-        if order.status == "EXECUTED":
+        # Update cash and holdings upon execution ONLY for demo simulation accounts.
+        # Genuine broker accounts strictly rely on authentic SmartAPI RMS & Demat sync.
+        if order.status == "EXECUTED" and account.is_demo:
             exec_p = order.execution_price or order.price or effective_ltp
             from app.services.holdings_service import update_holding_on_order_fill
             update_holding_on_order_fill(

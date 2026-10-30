@@ -229,7 +229,7 @@ def test_account_activity_log_endpoint_with_disclaimer(client: TestClient, db_se
         assert len(data["activities"]) >= 2
 
         origins = [item["origin"] for item in data["activities"]]
-        assert "LIVE_BROKER" in origins or "AUDIT_EVENT" in origins
+        assert any(x in origins for x in ["LIVE BROKER", "LIVE_BROKER", "IPOPRO SYSTEM AUDIT", "AUDIT_EVENT"])
 
 
 def test_account_refresh_endpoint(client: TestClient, db_session: Session):

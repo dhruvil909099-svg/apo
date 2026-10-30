@@ -27,6 +27,7 @@ from app.core.auth import get_current_user, authorize_account_access, UserPrinci
 from app.services.account_persistence import persist_accounts_backup
 from app.services.portfolio_sync_service import reconcile_broker_holdings
 from app.services.smartapi_websocket import smartapi_ws_service
+from app.core.cache import app_cache
 import json
 import time
 import logging
@@ -40,6 +41,8 @@ router = APIRouter(prefix="/accounts", tags=["Accounts"])
 def list_accounts(
     group: Optional[str] = Query(None, description="Filter by account group (e.g. Family, Friends)"),
     status_filter: Optional[str] = Query(None, description="Filter by auth status"),
+    capital_type: Optional[str] = Query(None, description="Filter by capital type: 'live' or 'demo'"),
+    is_demo: Optional[bool] = Query(None, description="Filter demo status directly"),
     db: Session = Depends(get_db),
     current_user: UserPrincipal = Depends(get_current_user)
 ):
@@ -50,33 +53,26 @@ def list_accounts(
         query = query.filter(Account.account_group == group)
     if status_filter:
         query = query.filter(Account.auth_status == status_filter)
+    if capital_type == "live" or is_demo is False:
+        query = query.filter(Account.is_demo == False)
+    elif capital_type == "demo" or is_demo is True:
+        query = query.filter(Account.is_demo == True)
     
     accounts = query.order_by(Account.id.asc()).all()
     
-    # Auto-solve / auto-connect accounts that have stored credentials
+    # Fast in-memory check: if adapter has an active valid session in RAM, sync auth_status without remote API calls
     for acc in accounts:
-        if acc.is_enabled and not acc.is_demo and acc.auth_status != "CONNECTED":
+        if acc.is_enabled and not acc.is_demo:
             try:
-                raw_key = cipher.decrypt(acc.encrypted_api_key) if acc.encrypted_api_key else ""
-                raw_pin = cipher.decrypt(acc.encrypted_pin) if acc.encrypted_pin else ""
-                raw_totp = cipher.decrypt(acc.encrypted_totp_secret) if acc.encrypted_totp_secret else ""
-                if raw_key and raw_pin and raw_totp and raw_key != "AUTO_RESTORED_KEY":
-                    adapter = get_adapter_for_account(acc.id, raw_key, acc.client_code, raw_pin, raw_totp)
-                    if adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired:
+                # Fast check in-memory adapter cache only
+                from app.services.smartapi_adapter import _adapter_cache
+                adapter = _adapter_cache.get(acc.id)
+                if adapter and adapter.jwt_token and time.time() < adapter.token_expiry_timestamp and not adapter.is_session_expired:
+                    if acc.auth_status != "CONNECTED":
                         acc.auth_status = "CONNECTED"
                         acc.last_auth_error = None
-                    else:
-                        auth_res = adapter.authenticate()
-                        if auth_res.get("success"):
-                            acc.auth_status = "CONNECTED"
-                            acc.last_sync_time = datetime.utcnow()
-                            acc.last_auth_error = None
-                            rms = adapter.get_rms()
-                            if rms:
-                                acc.available_cash = round(float(rms.get("availablecash", rms.get("net", acc.available_cash))), 2)
-                            db.commit()
-            except Exception as e:
-                logger.warning(f"Auto-solve connection check for account {acc.id}: {e}")
+            except Exception:
+                pass
     
     return [
         AccountResponse(
@@ -194,6 +190,7 @@ def create_account(
     )
     db.add(audit)
     db.commit()
+    app_cache.invalidate_tag("summary")
 
     return AccountResponse(
         id=account.id,
@@ -992,12 +989,14 @@ def get_account_positions(
 @router.get("/{account_id}/orders", response_model=List[AccountOrderItem])
 def get_account_orders(
     account_id: int,
+    include_simulated: bool = Query(False, description="Include test simulation records archive"),
     db: Session = Depends(get_db),
     current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Returns order book for the specified account (pending, executed, rejected, cancelled).
     Keeps orders distinct from executed trades.
+    Excludes simulated test records from production views by default.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
@@ -1064,7 +1063,10 @@ def get_account_orders(
         except Exception as e:
             logger.warning(f"Live order book fetch failed for {account.masked_client_code}, returning local records: {str(e)}")
 
-    orders = db.query(Order).filter(Order.account_id == account_id).order_by(Order.id.desc()).all()
+    orders_query = db.query(Order).filter(Order.account_id == account_id)
+    if not include_simulated and not account.is_demo:
+        orders_query = orders_query.filter(Order.is_paper_trade == False)
+    orders = orders_query.order_by(Order.id.desc()).all()
     results = []
     for o in orders:
         results.append(AccountOrderItem(
@@ -1092,12 +1094,14 @@ def get_account_orders(
 @router.get("/{account_id}/trades", response_model=List[AccountTradeItem])
 def get_account_trades(
     account_id: int,
+    include_simulated: bool = Query(False, description="Include test simulation trades archive"),
     db: Session = Depends(get_db),
     current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Returns confirmed executed trades for the specified account.
     Never misrepresents an acknowledged or unexecuted order as an executed trade.
+    Excludes simulated test records from production views by default.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
@@ -1156,11 +1160,34 @@ def get_account_trades(
             logger.warning(f"Live trade book fetch failed for {account.masked_client_code}, returning local records: {str(e)}")
 
     results = []
-    # Query confirmed executed orders ONLY (strictly excluding pending/rejected/acknowledged orders)
-    executed_orders = db.query(Order).filter(
+    # 1. Query persisted genuine BrokerTradeSnapshot fills from SmartAPI sync
+    snapshots_query = db.query(BrokerTradeSnapshot).filter(BrokerTradeSnapshot.account_id == account_id)
+    if not include_simulated and not account.is_demo:
+        snapshots_query = snapshots_query.filter(BrokerTradeSnapshot.is_paper_trade == False)
+    snapshots = snapshots_query.order_by(BrokerTradeSnapshot.id.desc()).all()
+    for snap in snapshots:
+        results.append(AccountTradeItem(
+            fill_id=snap.fill_id,
+            order_id=snap.broker_order_id,
+            symbol=snap.tradingsymbol,
+            exchange=snap.exchange,
+            transaction_type=snap.transaction_type,
+            product_type=getattr(snap, "product_type", None) or "DELIVERY",
+            fill_price=snap.fill_price,
+            fill_quantity=snap.fill_quantity,
+            trade_value=snap.trade_value,
+            fill_timestamp=(snap.trade_time or snap.created_at).strftime("%Y-%m-%d %H:%M:%S IST") if (snap.trade_time or snap.created_at) else None,
+            is_paper_trade=snap.is_paper_trade
+        ))
+
+    # 2. Query confirmed executed orders (strictly excluding pending/rejected/acknowledged orders)
+    executed_query = db.query(Order).filter(
         Order.account_id == account_id,
         Order.status == "EXECUTED"
-    ).order_by(Order.id.desc()).all()
+    )
+    if not include_simulated and not account.is_demo:
+        executed_query = executed_query.filter(Order.is_paper_trade == False)
+    executed_orders = executed_query.order_by(Order.id.desc()).all()
 
     for o in executed_orders:
         results.append(AccountTradeItem(
@@ -1172,6 +1199,7 @@ def get_account_trades(
             product_type=o.product_type,
             fill_price=o.execution_price or o.price,
             fill_quantity=o.filled_quantity or o.quantity,
+            trade_value=round((o.filled_quantity or o.quantity) * (o.execution_price or o.price), 2),
             fill_timestamp=o.updated_at.strftime("%Y-%m-%d %H:%M:%S IST") if o.updated_at else None,
             is_paper_trade=o.is_paper_trade
         ))
@@ -1488,6 +1516,7 @@ def get_account_funds(
 @router.get("/{account_id}/activity-log", response_model=AccountActivityLogResponse)
 def get_account_activity_log(
     account_id: int,
+    include_simulated: bool = Query(False, description="Whether to include simulation / paper events (test archive only)"),
     db: Session = Depends(get_db),
     current_user: UserPrincipal = Depends(get_current_user)
 ):
@@ -1495,6 +1524,7 @@ def get_account_activity_log(
     Returns unified chronological activity timeline for the specified Angel One account.
     Prioritizes real Angel One broker events (Order Book, Trade Book, RMS Sync, Holdings Sync)
     and transparently tags simulation orders and internal audit records.
+    Excludes simulated records from production views by default unless include_simulated=True.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
@@ -1503,11 +1533,15 @@ def get_account_activity_log(
 
     activities: List[AccountActivityLogItem] = []
 
-    # 1. Orders from DB
-    db_orders = db.query(Order).filter(Order.account_id == account_id).order_by(Order.id.desc()).limit(50).all()
+    # 1. Orders from DB (strictly exclude paper orders from real account production views)
+    orders_q = db.query(Order).filter(Order.account_id == account_id)
+    if not include_simulated and not account.is_demo:
+        orders_q = orders_q.filter(Order.is_paper_trade == False)
+    db_orders = orders_q.order_by(Order.id.desc()).limit(50).all()
+
     for o in db_orders:
         is_paper = o.is_paper_trade
-        origin = "SIMULATED_ORDER" if is_paper else "LIVE_BROKER"
+        origin = "TEST SIMULATION" if is_paper else "LIVE BROKER"
         status_norm = (o.status or "").upper()
         if status_norm in ("EXECUTED", "FILLED", "COMPLETE"):
             ev_type = "ORDER_EXECUTED"
@@ -1570,7 +1604,7 @@ def get_account_activity_log(
                         timestamp=None,
                         formatted_time=str(ttime) or "Today",
                         event_type="TRADE_FILL",
-                        origin="LIVE_BROKER",
+                        origin="LIVE BROKER",
                         symbol=sym,
                         description=f"Exchange Trade Fill: {side} {qty} {sym} @ ₹{price:.2f} (Trade ID: {fill_id})",
                         status="SUCCESS",
@@ -1597,7 +1631,7 @@ def get_account_activity_log(
             timestamp=ts.created_at,
             formatted_time=ts.created_at.strftime("%d %b %Y, %H:%M:%S IST") if ts.created_at else "Historical",
             event_type="TRADE_FILL",
-            origin="BROKER_SYNC",
+            origin="BROKER-SYNCED SNAPSHOT",
             symbol=ts.tradingsymbol,
             description=f"Broker-Synced Trade: {ts.transaction_type} {ts.fill_quantity} {ts.tradingsymbol} @ ₹{ts.fill_price:.2f} (Trade ID: {ts.fill_id})",
             status="SUCCESS",
@@ -1623,7 +1657,7 @@ def get_account_activity_log(
             timestamp=al.timestamp,
             formatted_time=al.timestamp.strftime("%d %b %Y, %H:%M:%S IST") if al.timestamp else "—",
             event_type=al.event_type,
-            origin="AUDIT_EVENT",
+            origin="IPOPRO SYSTEM AUDIT",
             symbol=None,
             description=f"Account audit: {al.event_type.replace('_', ' ').title()}",
             status="INFO",
@@ -1637,7 +1671,7 @@ def get_account_activity_log(
             timestamp=account.last_sync_time,
             formatted_time=account.last_sync_time.strftime("%d %b %Y, %H:%M:%S IST"),
             event_type="BROKER_SYNC",
-            origin="BROKER_SYNC",
+            origin="BROKER-SYNCED SNAPSHOT",
             symbol=None,
             description=f"SmartAPI Balances Synchronized successfully (Cash: ₹{account.available_cash:,.2f})",
             status="SUCCESS",

@@ -43,12 +43,10 @@ def get_consolidated_holdings(
             pass
     elif capital_type == "demo":
         account_query = account_query.filter(Account.is_demo == True)
-    elif capital_type == "live":
-        account_query = account_query.filter(Account.is_demo == False)
     elif capital_type == "all":
         pass
-    elif settings.TRADING_MODE == "LIVE":
-        # In LIVE mode: demo accounts excluded from real portfolio totals by default
+    else:
+        # Production default: strictly exclude demonstration accounts from real portfolio totals and consolidated holdings
         account_query = account_query.filter(Account.is_demo == False)
 
     accounts = account_query.all()

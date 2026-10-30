@@ -4,8 +4,9 @@ from typing import List, Optional, Any, Dict
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.core.database import get_db
+from app.core.cache import app_cache
 from app.models.ipo import IPO, Allotment
 from app.models.account import Account
 from app.models.audit import AuditLog
@@ -179,7 +180,12 @@ def list_ipos(
     status_filter: Optional[str] = Query(None, description="Filter: ALL, OPEN, UPCOMING, CLOSED, LISTED, SME, MAINBOARD"),
     db: Session = Depends(get_db)
 ):
-    query = db.query(IPO)
+    cache_key = f"ipos_list_{status_filter or 'ALL'}"
+    cached = app_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    query = db.query(IPO).options(joinedload(IPO.allotments))
     if status_filter:
         s_upper = status_filter.upper().strip()
         if s_upper == "SME":
@@ -192,7 +198,9 @@ def list_ipos(
             query = query.filter(IPO.status == s_upper)
 
     ipos = query.order_by(IPO.id.desc()).all()
-    return [_build_ipo_response(ipo) for ipo in ipos]
+    results = [_build_ipo_response(ipo) for ipo in ipos]
+    app_cache.set(cache_key, results, ttl=15.0, tag="ipos")
+    return results
 
 
 @router.post("", response_model=IPOResponse, status_code=status.HTTP_201_CREATED)

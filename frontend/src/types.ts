@@ -583,7 +583,7 @@ export interface AccountActivityLogItem {
   timestamp?: string | null;
   formatted_time: string;
   event_type: string;
-  origin: 'LIVE_BROKER' | 'BROKER_SYNC' | 'SIMULATED_ORDER' | 'AUDIT_EVENT';
+  origin: 'LIVE BROKER' | 'BROKER-SYNCED SNAPSHOT' | 'OFFICIAL STATEMENT IMPORT' | 'IPOPRO SYSTEM AUDIT' | 'TEST SIMULATION' | 'LIVE_BROKER' | 'BROKER_SYNC' | 'SIMULATED_ORDER' | 'AUDIT_EVENT';
   symbol?: string | null;
   description: string;
   status: 'SUCCESS' | 'PENDING' | 'FAILED' | 'INFO';

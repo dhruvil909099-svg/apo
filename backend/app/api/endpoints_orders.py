@@ -191,12 +191,13 @@ def list_orders(
     status_filter: Optional[str] = Query(None),
     symbol: Optional[str] = Query(None),
     batch_id: Optional[str] = Query(None),
+    include_simulated: bool = Query(False, description="Include test simulation archive records"),
     db: Session = Depends(get_db),
     current_user: UserPrincipal = Depends(get_current_user)
 ):
-    query = db.query(Order)
+    query = db.query(Order).join(Order.account)
     if not current_user.is_admin and current_user.id is not None:
-        query = query.join(Order.account).filter((Account.user_id == current_user.id) | (Account.user_id.is_(None)))
+        query = query.filter((Account.user_id == current_user.id) | (Account.user_id.is_(None)))
     if account_id:
         query = query.filter(Order.account_id == account_id)
     if status_filter:
@@ -205,6 +206,10 @@ def list_orders(
         query = query.filter(Order.tradingsymbol.contains(symbol.upper()))
     if batch_id:
         query = query.filter(Order.batch_id == batch_id)
+
+    # In production views: exclude simulated orders and demo accounts by default
+    if not include_simulated:
+        query = query.filter(Order.is_paper_trade == False, Account.is_demo == False)
 
     orders = query.order_by(Order.id.desc()).all()
     results = []
@@ -239,6 +244,25 @@ def list_orders(
         ))
 
     return results
+
+
+@router.get("/production-readiness-gate")
+def get_production_readiness_status(
+    account_id: int = Query(..., description="Account ID to verify"),
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
+    """
+    Evaluates account-holder permissions, broker session, static IP, and duplicate protection
+    for single-account live execution readiness without conducting real-money orders.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
+
+    from app.services.production_readiness_gate import ProductionReadinessGate
+    return ProductionReadinessGate.evaluate_account_readiness(db, account_id)
 
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)

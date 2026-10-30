@@ -37,11 +37,11 @@ else:
             "charset": "utf8mb4",
             "connect_timeout": 10,
         }
-    # Conservative connection pooling for remote databases (Hostinger MySQL & PostgreSQL)
+    # High-performance connection pooling for remote databases (Hostinger MySQL & PostgreSQL)
     engine_kwargs.update({
-        "pool_size": 5,
-        "max_overflow": 2,
-        "pool_timeout": 15.0,
+        "pool_size": 10,
+        "max_overflow": 5,
+        "pool_timeout": 10.0,
         "pool_recycle": 280,  # Recycle before Hostinger's 300-second idle connection timeout
         "pool_pre_ping": True,  # Critical for catching dropped remote connections before query checkout
     })

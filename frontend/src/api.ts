@@ -331,6 +331,16 @@ export const api = {
     }
   },
 
+  // High-performance unified bootstrap endpoint (single network round trip)
+  getBootstrap: () => fetchJson<{
+    success: boolean;
+    summary: DashboardSummary;
+    accounts: Account[];
+    ipos: IPO[];
+    quotes: MarketQuote[];
+    server_time: string;
+  }>(`${getApiBase()}/audit/bootstrap`),
+
   // Dashboard Summary KPI
   getSummary: () => fetchJson<DashboardSummary>(`${getApiBase()}/audit/summary`),
 
