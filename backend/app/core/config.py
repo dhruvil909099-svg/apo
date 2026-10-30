@@ -16,14 +16,30 @@ class Settings(BaseSettings):
     APP_ENCRYPTION_KEY: str = Field(..., description="Master key for encrypting credentials at rest")
     
     # API Authentication & Session Security
+    # MASTER_API_KEY is a SERVER-TO-SERVER automation credential only. It must never be shipped
+    # to browsers. Empty (the default) disables master-key authentication entirely.
     MASTER_API_KEY: str = Field(
-        default="ipopro-secure-master-key-2026",
-        description="Master API authentication key for securing all internal endpoints"
+        default="",
+        description="Optional server-to-server admin automation key. Empty disables it. Never embed in frontend."
     )
     REQUIRE_AUTH: bool = Field(
         default=True,
-        description="Enforces API key authentication across all /api/v1 routes"
+        description="Enforces authentication across all protected /api/v1 routes"
     )
+    # Signing key for user session JWTs. If empty, a key is derived from APP_ENCRYPTION_KEY with
+    # HMAC domain separation (so the raw encryption key is never used directly as a signing key).
+    JWT_SECRET_KEY: str = Field(default="", description="HS256 signing secret for user session tokens")
+    ACCESS_TOKEN_TTL_MINUTES: int = Field(default=720, description="User session lifetime in minutes")
+    ALLOW_SELF_REGISTRATION: bool = Field(
+        default=False,
+        description="If False, only administrators can create users (recommended for trading systems)"
+    )
+    # Optional first-run bootstrap of an administrator (only used when no active admin exists)
+    BOOTSTRAP_ADMIN_USERNAME: str = Field(default="", description="Initial admin username (first run only)")
+    BOOTSTRAP_ADMIN_EMAIL: str = Field(default="", description="Initial admin email (first run only)")
+    BOOTSTRAP_ADMIN_PASSWORD: str = Field(default="", description="Initial admin password (first run only, min 12 chars)")
+    LOGIN_MAX_FAILURES: int = Field(default=5, description="Failed logins before temporary lockout")
+    LOGIN_LOCKOUT_SECONDS: int = Field(default=900, description="Lockout duration after repeated failures")
 
     # Optional Primary Angel One Credentials (survives ephemeral container reboots)
     SMARTAPI_CLIENT_CODE: str = Field(default="", description="Primary client code from environment")
@@ -47,6 +63,17 @@ class Settings(BaseSettings):
     RATE_LIMIT_ORDERS_PER_SEC: int = 10
     RATE_LIMIT_PORTFOLIO_PER_SEC: int = 1
     STATIC_IP_CHECK: bool = False
+    
+    # SmartAPI Network Configuration (Configurable outbound headers; TCP source IP must match registered static IP)
+    SMARTAPI_CLIENT_PUBLIC_IP: str = Field(default="", description="Registered Static Public IP for SmartAPI headers")
+    SMARTAPI_CLIENT_LOCAL_IP: str = Field(default="127.0.0.1", description="Local IP for SmartAPI headers")
+    SMARTAPI_MAC_ADDRESS: str = Field(default="fe80::1", description="Client MAC for SmartAPI headers")
+
+    # Regulatory Gates
+    MULTI_CLIENT_LIVE_AUTHORIZED: bool = Field(
+        default=False,
+        description="Explicit commercial & regulatory broker approval flag for multi-client live orders (SEBI compliant)"
+    )
     
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")),

@@ -21,6 +21,8 @@ from app.services.instrument_master_service import (
     get_catalog_summary,
 )
 
+from app.core.auth import get_optional_current_user, authorize_account_access, UserPrincipal, REVOKED_MASTER_KEYS
+
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
 
@@ -407,12 +409,20 @@ def get_single_market_quote(
 @router.post("/brokerage/estimate")
 def estimate_order_brokerage_charges(
     req: BrokerageEstimateRequest,
+    current_user: Optional[UserPrincipal] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Computes official brokerage, statutory taxes, and exchange fees breakdown.
     Uses official SmartAPI Brokerage Calculator API or verified statutory schedules.
     """
+    if req.account_id:
+        acc = db.query(Account).filter(Account.id == req.account_id).first()
+        if not acc:
+            raise HTTPException(status_code=404, detail="Account not found")
+        if current_user:
+            authorize_account_access(acc, current_user)
+
     result = BrokerageEstimateService.estimate_charges(
         db=db,
         exchange=req.exchange,
@@ -431,6 +441,7 @@ def estimate_order_brokerage_charges(
 @router.post("/margin/batch")
 def calculate_order_margin(
     req: MarginEstimateRequest,
+    current_user: Optional[UserPrincipal] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -440,8 +451,11 @@ def calculate_order_margin(
     available_funds = 0.0
     if req.account_id:
         acc = db.query(Account).filter(Account.id == req.account_id).first()
-        if acc:
-            available_funds = float(acc.available_cash or 0.0)
+        if not acc:
+            raise HTTPException(status_code=404, detail="Account not found")
+        if current_user:
+            authorize_account_access(acc, current_user)
+        available_funds = float(acc.available_cash or 0.0)
 
     result = MarginEstimateService.calculate_margin(
         db=db,
@@ -583,10 +597,20 @@ async def update_simulated_price(symbol: str, price: float, db: Session = Depend
 
 
 @router.websocket("/ws")
-async def market_websocket_endpoint(websocket: WebSocket):
+async def market_websocket_endpoint(
+    websocket: WebSocket,
+    token: Optional[str] = Query(None),
+    api_key: Optional[str] = Query(None),
+):
     """
     WebSocket streaming endpoint for real-time market quotes and order status updates.
+    Rejects connections presenting known revoked master keys.
     """
+    provided = (token or api_key or "").strip()
+    if provided in REVOKED_MASTER_KEYS:
+        await websocket.close(code=4001, reason="Revoked or compromised API credential rejected")
+        return
+
     await market_feed_manager.connect(websocket)
     try:
         while True:

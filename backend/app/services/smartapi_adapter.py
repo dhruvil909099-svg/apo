@@ -6,6 +6,7 @@ import random
 from typing import Dict, Any, Optional, List
 import requests
 from app.core.security import generate_totp_token, sanitize_dict_for_logging
+from app.core.config import settings
 
 logger = logging.getLogger("smartapi_adapter")
 
@@ -113,15 +114,18 @@ class SmartAPIAdapter:
         self._rate_limit_lock = threading.Lock()
 
     def _get_headers(self, include_auth: bool = True) -> Dict[str, str]:
+        pub_ip = getattr(settings, "SMARTAPI_CLIENT_PUBLIC_IP", "") or "106.193.147.1"
+        local_ip = getattr(settings, "SMARTAPI_CLIENT_LOCAL_IP", "127.0.0.1") or "127.0.0.1"
+        mac_addr = getattr(settings, "SMARTAPI_MAC_ADDRESS", "fe80::1") or "fe80::1"
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "X-PrivateKey": self.api_key,
             "X-UserType": "USER",
             "X-SourceID": "WEB",
-            "X-ClientLocalIP": "127.0.0.1",
-            "X-ClientPublicIP": "106.193.147.1",
-            "X-MACAddress": "fe80::1",
+            "X-ClientLocalIP": local_ip,
+            "X-ClientPublicIP": pub_ip,
+            "X-MACAddress": mac_addr,
         }
         if include_auth and self.jwt_token:
             headers["Authorization"] = f"Bearer {self.jwt_token}"
@@ -585,6 +589,27 @@ class SmartAPIAdapter:
         self.last_error = data.get("message") or "Broker returned error fetching trade book"
         return None
 
+    def get_individual_order_details(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves lifecycle details of a specific order from /order/v1/details/{orderid}.
+        """
+        if not self._ensure_authenticated():
+            logger.warning(f"Session not authenticated for order details fetch ({self.client_code})")
+            return None
+
+        url = f"{self.BASE_URL}/rest/secure/angelbroking/order/v1/details/{order_id}"
+        data = self._send_request("GET", url, rate_limit_seconds=1.0, rate_limit_category="order_details")
+        if data is None:
+            return None
+
+        if data.get("status") is True or data.get("success") is True:
+            self.last_error = None
+            raw = data.get("data")
+            return raw if isinstance(raw, dict) else (data if isinstance(data, dict) else {})
+
+        self.last_error = data.get("message") or "Broker returned error fetching order details"
+        return None
+
     def get_candle_data(
         self,
         exchange: str,
@@ -648,32 +673,53 @@ class SmartAPIAdapter:
             payload["triggerprice"] = str(order_data["trigger_price"])
 
         try:
-            resp = requests.post(url, json=payload, headers=self._get_headers(), timeout=10)
-            data = resp.json()
-            if data.get("status") and data.get("data"):
-                broker_order_id = data["data"].get("orderid")
+            resp = self.session.post(url, json=payload, headers=self._get_headers(), timeout=10)
+            data, parse_err = safe_parse_smartapi_response(resp, "placeOrder", self.client_code)
+            if parse_err:
+                logger.error(f"Live order response unparseable ({parse_err}) for {self.client_code} on {order_data.get('tradingsymbol')}")
+                return {
+                    "success": False,
+                    "status": "SUBMISSION_UNKNOWN",
+                    "error_code": "GATEWAY_UNCERTAIN",
+                    "message": "Order was dispatched, but broker gateway returned an unparseable response. Status unknown. Do not retry live order without reconciliation."
+                }
+
+            if data and (data.get("status") is True or data.get("success") is True):
+                res_data = data.get("data") or {}
+                broker_order_id = res_data.get("orderid") or data.get("orderid")
+                unique_order_id = res_data.get("uniqueorderid") or data.get("uniqueorderid")
                 return {
                     "success": True,
-                    "broker_order_id": broker_order_id,
+                    "broker_order_id": str(broker_order_id) if broker_order_id else None,
+                    "unique_order_id": str(unique_order_id) if unique_order_id else None,
                     "status": "ACKNOWLEDGED",
                     "message": "Order successfully submitted to broker"
                 }
+
+            msg = data.get("message") if data else "Order placement rejected"
+            err_code = str(data.get("errorcode") or data.get("errorCode") or "REJECTED") if data else "REJECTED"
             return {
                 "success": False,
                 "status": "REJECTED",
-                "message": data.get("message", "Order placement rejected"),
-                "error_code": data.get("errorcode", "REJECTED")
+                "message": msg,
+                "error_code": err_code
             }
-        except requests.exceptions.Timeout:
-            logger.error(f"Live order submission timed out for {self.client_code} on {order_data.get('tradingsymbol')}")
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.error(f"Live order transmission/read timeout for {self.client_code} on {order_data.get('tradingsymbol')}: {str(e)}")
             return {
                 "success": False,
                 "status": "SUBMISSION_UNKNOWN",
                 "error_code": "GATEWAY_TIMEOUT",
-                "message": "Order submission timed out. Status unknown. Do not retry live order without reconciliation."
+                "message": "Order submission timed out or connection dropped. Status unknown. Do not retry live order without reconciliation."
             }
         except Exception as e:
-            return {"success": False, "status": "REJECTED", "message": f"Network exception: {str(e)}", "error_code": "NETWORK_FAIL"}
+            logger.error(f"Unexpected exception during order submission for {self.client_code}: {str(e)}")
+            return {
+                "success": False,
+                "status": "SUBMISSION_UNKNOWN",
+                "message": f"Network exception: {str(e)}. Status uncertain. Reconcile via Order Book.",
+                "error_code": "NETWORK_FAIL"
+            }
 
     def modify_order(self, order_id: str, modify_data: Dict[str, Any]) -> Dict[str, Any]:
         """

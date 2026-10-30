@@ -143,6 +143,7 @@ class AccountPositionItem(BaseModel):
 
 class AccountOrderItem(BaseModel):
     order_id: str
+    unique_order_id: Optional[str] = None
     symbol: str
     exchange: str = "NSE"
     transaction_type: str
@@ -150,6 +151,7 @@ class AccountOrderItem(BaseModel):
     product_type: str
     quantity: int
     filled_quantity: int = 0
+    pending_quantity: int = 0
     price: float = 0.0
     trigger_price: float = 0.0
     average_price: Optional[float] = None
@@ -181,3 +183,43 @@ class AccountSyncResponse(BaseModel):
     positions_count: int = 0
     available_cash: Optional[float] = None
     sync_timestamp: str
+
+
+class AccountFundsResponse(BaseModel):
+    account_id: int
+    nickname: str
+    masked_client_code: str
+    available_cash: float
+    net_available_margin: float
+    collateral_margin: float = 0.0
+    utilized_margin: float = 0.0
+    unrealized_m2m: float = 0.0
+    realized_m2m: float = 0.0
+    span_margin: float = 0.0
+    option_premium: float = 0.0
+    var_margin: float = 0.0
+    elm_margin: float = 0.0
+    last_sync_time: Optional[datetime] = None
+    data_source: str = "ANGEL_ONE_RMS"
+    status: str = "LIVE"  # LIVE, CACHED, UNAVAILABLE
+
+
+class AccountActivityLogItem(BaseModel):
+    id: str
+    timestamp: Optional[datetime] = None
+    formatted_time: str
+    event_type: str  # ORDER_SUBMITTED, ORDER_EXECUTED, TRADE_FILL, RMS_SYNC, HOLDINGS_REFRESH, SESSION_CONNECTED, AUDIT_EVENT
+    origin: str      # LIVE_BROKER, BROKER_SYNC, SIMULATED_ORDER, AUDIT_EVENT
+    symbol: Optional[str] = None
+    description: str
+    status: str      # SUCCESS, PENDING, FAILED, INFO
+    details: Optional[dict] = None
+
+
+class AccountActivityLogResponse(BaseModel):
+    account_id: int
+    nickname: str
+    masked_client_code: str
+    activities: list[AccountActivityLogItem]
+    historical_notice: str = "Historical records are not available from this broker API for the selected period. Angel One SmartAPI Order Book and Trade Book provide current-day live records. Prior records are retained from historical snapshots."
+

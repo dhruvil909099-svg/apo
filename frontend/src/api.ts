@@ -3,11 +3,11 @@ import {
   MarketQuote, ConsolidatedHolding, AccountPortfolio,
   BulkOrderPreview, RiskLimit, AuditLog, DashboardSummary,
   AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
-  AccountOrderItem, AccountTradeItem, AccountSyncResponse
+  AccountOrderItem, AccountTradeItem, AccountSyncResponse,
+  AccountFundsResponse, AccountActivityLogResponse
 } from './types';
 
 const DEFAULT_API_BASE = 'https://apo-wubq.onrender.com/api/v1';
-const DEFAULT_KEY = 'ipopro-secure-master-key-2026';
 
 export function getApiBase(): string {
   if (typeof window !== 'undefined') {
@@ -29,11 +29,27 @@ export function setApiBase(url: string): void {
   }
 }
 
+export function getStoredToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('ipopro_access_token') || localStorage.getItem('ipopro_api_key') || null;
+}
+
+export function setAccessToken(token: string | null): void {
+  if (typeof window !== 'undefined') {
+    if (token && token.trim()) {
+      localStorage.setItem('ipopro_access_token', token.trim());
+    } else {
+      localStorage.removeItem('ipopro_access_token');
+      localStorage.removeItem('ipopro_api_key');
+      localStorage.removeItem('ipopro_user');
+    }
+  }
+}
+
 export function getWebSocketUrl(): string {
   const base = getApiBase();
-  const stored = typeof window !== 'undefined' ? localStorage.getItem('ipopro_api_key') : null;
-  const key = stored || DEFAULT_KEY;
-  const query = `?api_key=${encodeURIComponent(key)}`;
+  const token = getStoredToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
 
   if (base.startsWith('http://') || base.startsWith('https://')) {
     const wsBase = base.replace(/^http/, 'ws');
@@ -45,18 +61,18 @@ export function getWebSocketUrl(): string {
 }
 
 export function getAuthHeaders(): Record<string, string> {
-  const stored = typeof window !== 'undefined' ? localStorage.getItem('ipopro_api_key') : null;
-  const key = stored || DEFAULT_KEY;
+  const token = getStoredToken();
+  if (!token) {
+    return {};
+  }
   return {
-    'X-API-Key': key,
-    'Authorization': `Bearer ${key}`
+    'Authorization': `Bearer ${token}`,
+    'X-API-Key': token,
   };
 }
 
 export function setApiKey(key: string): void {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('ipopro_api_key', key);
-  }
+  setAccessToken(key);
 }
 
 export class ApiError extends Error {
@@ -336,6 +352,12 @@ export const api = {
   getAccountPositions: (id: number) => fetchJson<AccountPositionItem[]>(`${getApiBase()}/accounts/${id}/positions`),
   getAccountOrders: (id: number) => fetchJson<AccountOrderItem[]>(`${getApiBase()}/accounts/${id}/orders`),
   getAccountTrades: (id: number) => fetchJson<AccountTradeItem[]>(`${getApiBase()}/accounts/${id}/trades`),
+  getAccountFunds: (id: number) => fetchJson<AccountFundsResponse>(`${getApiBase()}/accounts/${id}/funds`),
+  getAccountActivityLog: (id: number) => fetchJson<AccountActivityLogResponse>(`${getApiBase()}/accounts/${id}/activity-log`),
+  refreshAccount: (id: number) => fetchJson<{ success: boolean; message: string; refreshed_at: string; available_cash: number }>(
+    `${getApiBase()}/accounts/${id}/refresh`,
+    { method: 'POST', timeoutMs: 35000 }
+  ),
   syncAccount: (id: number) => fetchJson<AccountSyncResponse>(`${getApiBase()}/accounts/${id}/sync`, { method: 'POST', timeoutMs: 45000 }),
 
   // IPOs
@@ -796,6 +818,61 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ instruments, mode })
   }),
+
+  // User Authentication
+  login: async (username: string, password: string): Promise<{ access_token: string; token_type: string; expires_in_seconds: number; user: any }> => {
+    const res = await fetchJson<{ access_token: string; token_type: string; expires_in_seconds: number; user: any }>(
+      `${getApiBase()}/auth/login`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+        skipDeduplication: true,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    if (res.access_token) {
+      setAccessToken(res.access_token);
+      if (typeof window !== 'undefined' && res.user) {
+        localStorage.setItem('ipopro_user', JSON.stringify(res.user));
+      }
+    }
+    return res;
+  },
+
+  register: (data: { username: string; email: string; password: string }) => fetchJson<{ message: string; user: any }>(
+    `${getApiBase()}/auth/register`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+      skipDeduplication: true,
+      headers: { 'Content-Type': 'application/json' },
+    }
+  ),
+
+  logout: async (): Promise<void> => {
+    try {
+      await fetchJson<{ message: string; logged_out: boolean }>(`${getApiBase()}/auth/logout`, {
+        method: 'POST',
+        skipDeduplication: true,
+      });
+    } catch {
+      // ignore
+    } finally {
+      setAccessToken(null);
+    }
+  },
+
+  getMe: () => fetchJson<{ authenticated: boolean; user: any }>(`${getApiBase()}/auth/me`, {
+    skipDeduplication: true,
+  }),
+
+  getAuthStatus: () => fetchJson<{
+    require_auth: boolean;
+    self_registration_enabled: boolean;
+    authenticated: boolean;
+    user?: any;
+    app_version: string;
+  }>(`${getApiBase()}/auth/status`, { skipDeduplication: true }),
 };
 
 

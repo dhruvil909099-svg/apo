@@ -3,7 +3,8 @@ import {
   Users, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, RefreshCw,
   Search, Download, PieChart as PieChartIcon, BarChart3,
-  Layers, ArrowUpDown, X, CheckSquare, Square, AlertTriangle
+  Layers, ArrowUpDown, X, CheckSquare, Square, AlertTriangle,
+  Activity, CheckCircle2, Clock, AlertCircle
 } from 'lucide-react';
 import {
   ResponsiveContainer, PieChart, Pie, Cell,
@@ -16,8 +17,41 @@ import { TradeModal } from '../components/TradeModal';
 
 const PIE_COLORS = ['#0284c7', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#3b82f6', '#14b8a6', '#64748b'];
 
-export const PortfolioView: React.FC = () => {
-  const [viewMode, setViewMode] = useState<'consolidated' | 'accounts' | 'analytics'>('consolidated');
+export interface PortfolioViewProps {
+  initialViewMode?: 'consolidated' | 'accounts' | 'analytics' | 'batch-activity';
+  batchContext?: {
+    batchId?: string;
+    totalOrders?: number;
+    successCount?: number;
+    failedCount?: number;
+    symbol?: string;
+    accounts?: Array<{ accountId: number; nickname: string; status: string; orderId?: string; error?: string }>;
+  } | null;
+  onClearBatchContext?: () => void;
+  onNavigateToAccount?: (accountId: number, tab?: string, symbol?: string) => void;
+}
+
+export const PortfolioView: React.FC<PortfolioViewProps> = ({
+  initialViewMode,
+  batchContext,
+  onClearBatchContext,
+  onNavigateToAccount
+}) => {
+  const [viewMode, setViewMode] = useState<'consolidated' | 'accounts' | 'analytics' | 'batch-activity'>(
+    initialViewMode || (batchContext ? 'batch-activity' : 'consolidated')
+  );
+
+  useEffect(() => {
+    if (batchContext) {
+      setViewMode('batch-activity');
+    }
+  }, [batchContext]);
+
+  useEffect(() => {
+    if (initialViewMode) {
+      setViewMode(initialViewMode);
+    }
+  }, [initialViewMode]);
   const [capitalFilter, setCapitalFilter] = useState<'live' | 'demo' | 'all'>('live');
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'PROFIT' | 'LOSS' | 'READY_SELL' | 'NEEDS_EDIS'>('ALL');
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
@@ -502,6 +536,18 @@ export const PortfolioView: React.FC = () => {
             <PieChartIcon className="w-3.5 h-3.5" />
             <span>Visual Analytics</span>
           </button>
+          <button
+            onClick={() => setViewMode('batch-activity')}
+            className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              viewMode === 'batch-activity' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Batch Activity</span>
+            {batchContext && (
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            )}
+          </button>
         </div>
 
         {viewMode === 'consolidated' && (
@@ -906,6 +952,178 @@ export const PortfolioView: React.FC = () => {
                     />
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* View Mode: Batch Activity (Part 5) */}
+      {viewMode === 'batch-activity' && (
+        <div className="space-y-4">
+          {/* Batch Activity Overview Header */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <Activity className="w-5 h-5 text-brand-600" />
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900">Multi-Account Batch Activity Ledger</h3>
+                  <p className="text-xs text-slate-500">
+                    Track independent instruction execution across authorized Angel One accounts with durable outcome verification.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {batchContext && onClearBatchContext && (
+                  <button
+                    onClick={onClearBatchContext}
+                    className="px-2.5 py-1 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600"
+                  >
+                    Clear Active Batch
+                  </button>
+                )}
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  ANGEL_ONE_SMARTAPI
+                </span>
+              </div>
+            </div>
+
+            {/* Batch Metrics Ribbon */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Total Accounts</span>
+                <div className="text-lg font-bold font-mono text-slate-900 mt-0.5">
+                  {allAccounts.length} Connected
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {applicableAccounts.length} applicable under {capitalFilter.toUpperCase()} filter
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Active Batch Reference</span>
+                <div className="text-lg font-bold font-mono text-brand-700 mt-0.5 truncate" title={batchContext?.batchId || 'None'}>
+                  {batchContext?.batchId ? batchContext.batchId.slice(0, 14) + '...' : 'No active batch'}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {batchContext?.symbol ? `Instrument: ${batchContext.symbol}` : 'Awaiting batch run'}
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Verified Fills / Successes</span>
+                <div className="text-lg font-bold font-mono text-emerald-600 mt-0.5">
+                  {batchContext ? `${batchContext.successCount ?? 0} / ${batchContext.totalOrders ?? 0}` : '—'}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">Confirmed order instructions</div>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Rejections / Errors</span>
+                <div className={`text-lg font-bold font-mono mt-0.5 ${
+                  (batchContext?.failedCount || 0) > 0 ? 'text-rose-600' : 'text-slate-700'
+                }`}>
+                  {batchContext ? `${batchContext.failedCount ?? 0}` : '0'}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">Non-hidden broker errors</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Reconciliation & Regulatory Compliance Notice (Part 5) */}
+          <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-950 flex items-start gap-2.5">
+            <Clock className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">
+                Exchange Delivery Settlement & Batch Integrity Notice:
+              </p>
+              <p className="text-[11px] leading-relaxed text-blue-900">
+                • <strong>Delivery Settlement (T+1):</strong> Newly placed and confirmed buy orders are verified instantly in each account's Order Book and Trade Book. Settled demat shares appear in delivery holdings upon completion of the official exchange T+1 settlement cycle.
+                <br />
+                • <strong>Zero Fabrication Rule:</strong> IPOPro never fabricates instant holding rows or masks failures. If an individual account in a batch fails (e.g. insufficient margin or token expiry), it is explicitly retained below with its original error message.
+                <br />
+                • <strong>Regulatory Authorization:</strong> Live multi-account execution for unrelated clients requires Angel One broker commercial approval and explicit authorisations. Paper-mode batch runs are simulated in an isolated environment.
+              </p>
+            </div>
+          </div>
+
+          {/* Account-by-Account Batch Execution Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+              <h4 className="font-bold text-xs text-slate-800">Individual Account Execution Details</h4>
+              <span className="text-xs text-slate-400">
+                {batchContext?.accounts ? `${batchContext.accounts.length} Accounts in Batch` : `${allAccounts.length} Connected Accounts`}
+              </span>
+            </div>
+
+            {batchContext?.accounts && batchContext.accounts.length > 0 ? (
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-semibold border-b border-slate-200">
+                  <tr>
+                    <th className="py-2.5 px-3">Account</th>
+                    <th className="py-2.5 px-3">Symbol</th>
+                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3">Order / Batch Ref</th>
+                    <th className="py-2.5 px-3">Execution Detail</th>
+                    <th className="py-2.5 px-3">Notes / Error</th>
+                    <th className="py-2.5 px-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-[11px]">
+                  {batchContext.accounts.map((accRow, idx) => {
+                    const isSuccess = ['COMPLETE', 'EXECUTED', 'TRADED', 'SUCCESS'].includes(accRow.status.toUpperCase());
+                    const isFailed = ['FAILED', 'REJECTED', 'ERROR'].includes(accRow.status.toUpperCase());
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="py-2.5 px-3">
+                          <div className="font-bold text-slate-900">{accRow.nickname}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">ID: {accRow.accountId}</div>
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-slate-800">
+                          {batchContext.symbol || '—'}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            isSuccess
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : isFailed
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}>
+                            {accRow.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[10px] text-slate-600">
+                          {accRow.orderId || batchContext.batchId || '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-700">
+                          {isSuccess ? 'Verified batch execution' : 'Submission halted / rejected'}
+                        </td>
+                        <td className="py-2.5 px-3 text-rose-600 text-[10px] max-w-xs">
+                          {accRow.error || (isSuccess ? 'Executed without error' : '—')}
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          {onNavigateToAccount && (
+                            <button
+                              onClick={() => onNavigateToAccount(accRow.accountId, 'orders', batchContext.symbol)}
+                              className="px-2.5 py-1 text-[10px] font-semibold rounded bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-2xs whitespace-nowrap"
+                            >
+                              Inspect Account →
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="py-16 text-center text-slate-400 bg-slate-50">
+                <Activity className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                <p className="font-semibold text-slate-600">No batch executions recorded in current session</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Execute a multi-account paper batch from the Stock Explorer or Accounts drawer to view live batch tracking here.
+                </p>
               </div>
             )}
           </div>

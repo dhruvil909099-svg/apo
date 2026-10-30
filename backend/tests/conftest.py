@@ -20,9 +20,11 @@ from app.core.database import Base, get_db
 import app.core.database as app_db
 from app.main import app
 from app.core.security import cipher
+from app.core.auth import create_access_token, hash_password
 from app.models.account import Account
 from app.models.ipo import IPO, Allotment
 from app.models.risk import RiskLimit
+from app.models.user import User
 
 # In-memory test engine with StaticPool so all threads/sessions share the same memory DB
 test_engine = create_engine(
@@ -38,6 +40,19 @@ app_db.SessionLocal = TestingSessionLocal
 
 def seed_test_fixtures(db):
     """Injects dedicated test fixtures into the in-memory test database."""
+    pwd_hash, salt = hash_password("Admin@IPOPro2026!")
+    admin_user = User(
+        username="admin",
+        email="admin@ipopro.internal",
+        hashed_password=pwd_hash,
+        salt=salt,
+        role="ADMIN",
+        is_active=True,
+        token_version=0
+    )
+    db.add(admin_user)
+    db.flush()
+
     accounts = [
         Account(
             nickname="Self - Primary Demat",
@@ -211,7 +226,17 @@ def db_session():
 
 
 @pytest.fixture(scope="function")
-def client(db_session):
+def admin_user(db_session):
+    return db_session.query(User).filter(User.username == "admin").first()
+
+
+@pytest.fixture(scope="function")
+def admin_token(admin_user):
+    return create_access_token(admin_user)
+
+
+@pytest.fixture(scope="function")
+def client(db_session, admin_token):
     def override_get_db():
         try:
             yield db_session
@@ -220,7 +245,8 @@ def client(db_session):
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
-        test_client.headers["X-API-Key"] = "ipopro-secure-master-key-2026"
+        test_client.headers["Authorization"] = f"Bearer {admin_token}"
+        test_client.headers["X-API-Key"] = admin_token
         yield test_client
     app.dependency_overrides.clear()
 

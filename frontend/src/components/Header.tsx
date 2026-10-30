@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
   RefreshCw, Clock, ShieldCheck, AlertOctagon,
-  Server, KeyRound, Wifi, WifiOff, AlertTriangle, CheckCircle2
+  Server, KeyRound, Wifi, WifiOff, AlertTriangle, CheckCircle2,
+  User, LogOut
 } from 'lucide-react';
 import { DashboardSummary, Account } from '../types';
 import { connectionManager, ConnectionState } from '../services/backendConnectionManager';
@@ -13,6 +14,9 @@ interface HeaderProps {
   onRefresh: () => void;
   isRefreshing: boolean;
   lastUpdated?: Date | null;
+  currentUser?: { username: string; role: string } | null;
+  onOpenLogin?: () => void;
+  onLogout?: () => void;
 }
 
 const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
@@ -35,6 +39,9 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh,
   isRefreshing,
   lastUpdated,
+  currentUser,
+  onOpenLogin,
+  onLogout,
 }) => {
   const [timeStr, setTimeStr] = useState<string>('');
   const [connState, setConnState] = useState<ConnectionState>(connectionManager.getState());
@@ -212,6 +219,38 @@ export const Header: React.FC<HeaderProps> = ({
           <Clock className="w-3.5 h-3.5 text-slate-400" />
           <span>{timeStr || 'Loading IST...'}</span>
         </div>
+
+        {/* User Authentication Profile */}
+        {currentUser ? (
+          <div className="flex items-center gap-2 pl-1">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-xs">
+              <User className="w-3.5 h-3.5 text-brand-600" />
+              <span className="font-semibold text-slate-800">{currentUser.username}</span>
+              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-brand-50 text-brand-700 border border-brand-200">
+                {currentUser.role}
+              </span>
+            </div>
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                title="Sign out of IPOPro"
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-600 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        ) : (
+          onOpenLogin && (
+            <button
+              onClick={onOpenLogin}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-semibold text-xs shadow-sm shadow-brand-600/30 transition-all"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>Sign In</span>
+            </button>
+          )
+        )}
 
         {/* Refresh Button */}
         <button

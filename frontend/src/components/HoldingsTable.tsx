@@ -9,6 +9,7 @@ import { AccountHoldingItem } from '../types';
 interface HoldingsTableProps {
   holdings: AccountHoldingItem[];
   isLoading: boolean;
+  highlightSymbol?: string | null;
   onRefresh: () => void;
   onOpenOrderTicket: (holding: AccountHoldingItem, side: 'BUY' | 'SELL') => void;
   onOpenDetailsModal: (holding: AccountHoldingItem, view: 'depth' | 'chart' | 'details' | 'corporate') => void;
@@ -17,6 +18,7 @@ interface HoldingsTableProps {
 export const HoldingsTable: React.FC<HoldingsTableProps> = ({
   holdings,
   isLoading,
+  highlightSymbol,
   onRefresh,
   onOpenOrderTicket,
   onOpenDetailsModal,
@@ -438,11 +440,18 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
                   const sym = h.trading_symbol || `${h.symbol}-EQ`;
                   const isSelected = selectedSymbols.has(h.symbol);
                   const flash = flashMap[h.symbol];
+                  const isHighlighted = highlightSymbol && (h.symbol === highlightSymbol || h.trading_symbol === highlightSymbol || (h.trading_symbol && h.trading_symbol.includes(highlightSymbol)));
 
                   return (
                     <tr
                       key={idx}
-                      className={`hover:bg-slate-50/90 transition-colors group ${isSelected ? 'bg-brand-50/30' : ''}`}
+                      className={`hover:bg-slate-50/90 transition-colors group ${
+                        isSelected
+                          ? 'bg-brand-50/30'
+                          : isHighlighted
+                          ? 'bg-amber-50/80 border-l-4 border-l-amber-500 font-medium'
+                          : ''
+                      }`}
                     >
                       <td className="py-3.5 px-3 text-center">
                         <input
@@ -463,6 +472,11 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
                             title="Click to open live TradingView candlestick chart"
                           >
                             <span>{h.symbol}</span>
+                            {isHighlighted && (
+                              <span className="text-[9px] px-1.5 py-0.2 bg-amber-200 text-amber-900 rounded font-bold uppercase">
+                                Just Traded
+                              </span>
+                            )}
                             <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 bg-slate-100 text-slate-500 rounded border border-slate-200">
                               {h.exchange || 'NSE'}
                             </span>

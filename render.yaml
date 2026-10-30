@@ -15,7 +15,9 @@ services:
       - key: REQUIRE_AUTH
         value: "true"
       - key: MASTER_API_KEY
-        value: "ipopro-secure-master-key-2026"
+        sync: false  # Optional server-to-server key; if unset, master key bypass is disabled
+      - key: JWT_SECRET_KEY
+        sync: false  # Secret key for signing user session JWT tokens
       - key: ALLOWED_ORIGINS
         value: "http://localhost:5173,http://localhost:3000,https://ipo.emperialcabs.com"
       - key: SMARTAPI_API_KEY

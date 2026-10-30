@@ -16,6 +16,8 @@ class User(Base):
     salt = Column(String(64), nullable=False)
     role = Column(String(20), default="USER", nullable=False)  # "ADMIN" or "USER"
     is_active = Column(Boolean, default=True, nullable=False)
+    # Incremented on logout / password change to revoke all previously issued session tokens
+    token_version = Column(Integer, default=0, nullable=False)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -47,14 +47,30 @@ def test_invalid_credentials_rejected_401(unauthenticated_client: TestClient):
     assert "Invalid API key" in res.json()["detail"]
 
 
+def test_revoked_master_key_permanently_rejected(unauthenticated_client: TestClient):
+    """Verifies that the leaked/revoked master key is rejected with HTTP 401."""
+    res = unauthenticated_client.get(
+        "/api/v1/accounts",
+        headers={"X-API-Key": "ipopro-secure-master-key-2026"}
+    )
+    assert res.status_code == 401
+    assert "compromised" in res.json()["detail"].lower() or "revoked" in res.json()["detail"].lower()
+
+
 def test_valid_credentials_accepted_200(unauthenticated_client: TestClient):
-    """Verifies that valid X-API-Key and Bearer tokens are accepted with HTTP 200."""
-    valid_key = "ipopro-secure-master-key-2026"
+    """Verifies that valid authenticated session JWT is accepted with HTTP 200."""
+    login_res = unauthenticated_client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "Admin@IPOPro2026!"}
+    )
+    assert login_res.status_code == 200
+    valid_jwt = login_res.json()["access_token"]
+    assert valid_jwt is not None
 
     # Via X-API-Key header
     res1 = unauthenticated_client.get(
         "/api/v1/accounts",
-        headers={"X-API-Key": valid_key}
+        headers={"X-API-Key": valid_jwt}
     )
     assert res1.status_code == 200
     assert len(res1.json()) >= 1
@@ -62,7 +78,7 @@ def test_valid_credentials_accepted_200(unauthenticated_client: TestClient):
     # Via Authorization Bearer header
     res2 = unauthenticated_client.get(
         "/api/v1/accounts",
-        headers={"Authorization": f"Bearer {valid_key}"}
+        headers={"Authorization": f"Bearer {valid_jwt}"}
     )
     assert res2.status_code == 200
 
@@ -78,21 +94,22 @@ def test_public_endpoints_accessible_without_auth(unauthenticated_client: TestCl
     res = unauthenticated_client.get("/")
     assert res.status_code == 200
 
-    # Auth Login with valid key
+    # Auth Login with valid credentials
     res = unauthenticated_client.post(
         "/api/v1/auth/login",
-        json={"api_key": "ipopro-secure-master-key-2026"}
+        json={"username": "admin", "password": "Admin@IPOPro2026!"}
     )
     assert res.status_code == 200
     assert res.json()["authenticated"] is True
-    assert res.json()["access_token"] == "ipopro-secure-master-key-2026"
+    assert "access_token" in res.json()
 
-    # Auth Login with invalid key
+    # Auth Login with invalid password
     res = unauthenticated_client.post(
         "/api/v1/auth/login",
-        json={"api_key": "incorrect-password"}
+        json={"username": "admin", "password": "WrongPassword123!"}
     )
     assert res.status_code == 401
+
 
 
 def test_security_headers_enforced(client: TestClient):
@@ -169,9 +186,8 @@ def test_emergency_halt_blocks_orders_and_bulk_execution(client: TestClient, db_
         "trigger_price": 0.0
     }
     res = client.post("/api/v1/orders/single", json=order_payload)
-    assert res.status_code == 201
-    assert res.json()["status"] == "REJECTED"
-    assert "Emergency Kill Switch is ACTIVE" in res.json()["rejection_reason"]
+    assert res.status_code == 400
+    assert "emergency" in res.json()["detail"].lower() or "kill switch" in res.json()["detail"].lower()
 
     # 2. Bulk execution attempt
     bulk_res = client.post("/api/v1/orders/bulk-execute", json={

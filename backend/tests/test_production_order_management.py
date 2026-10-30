@@ -21,6 +21,7 @@ Base.metadata.create_all(bind=engine)
 
 @pytest.fixture
 def db_session():
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         yield db

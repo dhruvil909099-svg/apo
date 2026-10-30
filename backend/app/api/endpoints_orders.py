@@ -18,6 +18,7 @@ from app.schemas.order import (
 )
 from app.services.bulk_order_service import BulkOrderService
 from app.services.paper_trading_service import PaperTradingService
+from app.core.auth import get_current_user, authorize_account_access, UserPrincipal
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -25,7 +26,8 @@ router = APIRouter(prefix="/orders", tags=["Orders"])
 @router.post("/preview", response_model=OrderPreviewResponse)
 def preview_single_order(
     req: OrderPreviewRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Validates single order parameters, checks available funds/holdings,
@@ -34,6 +36,7 @@ def preview_single_order(
     account = db.query(Account).filter(Account.id == req.account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     clean_symbol = req.tradingsymbol.replace("-EQ", "").strip().upper()
     ipo = db.query(IPO).filter(IPO.symbol == clean_symbol).first()
@@ -187,9 +190,12 @@ def list_orders(
     status_filter: Optional[str] = Query(None),
     symbol: Optional[str] = Query(None),
     batch_id: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     query = db.query(Order)
+    if not current_user.is_admin and current_user.id is not None:
+        query = query.join(Order.account).filter((Account.user_id == current_user.id) | (Account.user_id.is_(None)))
     if account_id:
         query = query.filter(Order.account_id == account_id)
     if status_filter:
@@ -234,15 +240,18 @@ def list_orders(
     return results
 
 
+@router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/single", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def place_single_order(
     order_in: OrderSingleCreate,
     db: Session = Depends(get_db),
-    _rate_ok: bool = Depends(rate_limit_orders)
+    _rate_ok: bool = Depends(rate_limit_orders),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     account = db.query(Account).filter(Account.id == order_in.account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     if not account.is_enabled:
         raise HTTPException(

@@ -14,6 +14,20 @@ interface StockExplorerViewProps {
   ipos?: import('../types').IPO[];
   quotes?: import('../types').MarketQuote[];
   onNavigateToBulkOrders?: (symbol: string) => void;
+  onNavigateToAccount?: (nav: {
+    accountId: number;
+    initialTab?: string;
+    highlightSymbol?: string;
+    banner?: string;
+  }) => void;
+  onNavigateToPortfolioBatch?: (batch: {
+    batchId?: string;
+    totalOrders?: number;
+    successCount?: number;
+    failedCount?: number;
+    symbol?: string;
+    accounts?: Array<{ accountId: number; nickname: string; status: string; orderId?: string; error?: string }>;
+  }) => void;
 }
 
 type MainCategory = 'ALL' | 'NSE' | 'BSE' | 'FUTURES' | 'OPTIONS' | 'COMMODITIES' | 'INDICES';
@@ -23,7 +37,9 @@ const ALPHABET = ['ALL', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 
 export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
   ipos,
   quotes,
-  onNavigateToBulkOrders
+  onNavigateToBulkOrders,
+  onNavigateToAccount,
+  onNavigateToPortfolioBatch,
 }) => {
   const [activeCategory, setActiveCategory] = useState<MainCategory>('ALL');
   const [selectedLetter, setSelectedLetter] = useState<string>('ALL');
@@ -960,9 +976,28 @@ export const StockExplorerView: React.FC<StockExplorerViewProps> = ({
             setIsOrderModalOpen(false);
             setOrderTicketInstrument(null);
           }}
-          onOrderSuccess={(msg) => {
+          onOrderSuccess={(result) => {
             setIsOrderModalOpen(false);
             setOrderTicketInstrument(null);
+            if (typeof result === 'object' && result !== null) {
+              if (result.isBatch && onNavigateToPortfolioBatch) {
+                onNavigateToPortfolioBatch({
+                  batchId: result.batchId,
+                  totalOrders: result.totalOrders,
+                  successCount: result.successCount,
+                  failedCount: result.failedCount,
+                  symbol: result.symbol,
+                  accounts: result.accounts
+                });
+              } else if (result.accountId && onNavigateToAccount) {
+                onNavigateToAccount({
+                  accountId: result.accountId,
+                  initialTab: 'orders',
+                  highlightSymbol: result.symbol,
+                  banner: result.message
+                });
+              }
+            }
           }}
         />
       )}

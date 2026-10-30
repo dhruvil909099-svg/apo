@@ -13,6 +13,7 @@ from app.models.chat import ChatMessage
 from app.models.holding import AccountHoldingSnapshot
 from app.models.instrument import Instrument
 from app.models.historical_candle import HistoricalCandle
+from app.models.broker_activity import BrokerTradeSnapshot, BrokerSyncMetadata
 
 __all__ = [
     "Account",
@@ -33,4 +34,6 @@ __all__ = [
     "PortfolioNote",
     "Notification",
     "ChatMessage",
+    "BrokerTradeSnapshot",
+    "BrokerSyncMetadata",
 ]

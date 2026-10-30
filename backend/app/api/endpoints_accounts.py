@@ -12,15 +12,18 @@ from app.models.audit import AuditLog
 from app.models.ipo import Allotment, IPO
 from app.models.order import Order
 from app.models.holding import AccountHoldingSnapshot
+from app.models.broker_activity import BrokerTradeSnapshot, BrokerSyncMetadata
 from app.schemas.account import (
     AccountCreate, AccountUpdate, AccountReconnectRequest, AccountResponse, AccountTestResult, AccountTestPayload,
     AccountOverviewResponse, AccountHoldingItem, AccountPositionItem,
-    AccountOrderItem, AccountTradeItem, AccountSyncResponse
+    AccountOrderItem, AccountTradeItem, AccountSyncResponse,
+    AccountFundsResponse, AccountActivityLogItem, AccountActivityLogResponse
 )
 from app.services.smartapi_adapter import (
     SmartAPIAdapter, get_adapter_for_account, invalidate_adapter_for_account,
     get_any_active_market_adapter
 )
+from app.core.auth import get_current_user, authorize_account_access, UserPrincipal
 from app.services.account_persistence import persist_accounts_backup
 from app.services.portfolio_sync_service import reconcile_broker_holdings
 from app.services.smartapi_websocket import smartapi_ws_service
@@ -37,9 +40,12 @@ router = APIRouter(prefix="/accounts", tags=["Accounts"])
 def list_accounts(
     group: Optional[str] = Query(None, description="Filter by account group (e.g. Family, Friends)"),
     status_filter: Optional[str] = Query(None, description="Filter by auth status"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     query = db.query(Account)
+    if not current_user.is_admin and current_user.id is not None:
+        query = query.filter((Account.user_id == current_user.id) | (Account.user_id.is_(None)))
     if group:
         query = query.filter(Account.account_group == group)
     if status_filter:
@@ -93,7 +99,11 @@ def list_accounts(
 
 
 @router.post("", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
-def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
+def create_account(
+    account_in: AccountCreate,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     # Standardize client code (strictly uppercase without whitespace)
     clean_client_code = account_in.client_code.strip().upper()
     existing = db.query(Account).filter(Account.client_code == clean_client_code).first()
@@ -149,6 +159,7 @@ def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
             initial_error = str(e)
 
     account = Account(
+        user_id=current_user.id if current_user and current_user.id else None,
         nickname=account_in.nickname.strip(),
         client_code=clean_client_code,
         account_group=account_in.account_group.strip() or "Family",
@@ -202,10 +213,15 @@ def create_account(account_in: AccountCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{account_id}", response_model=AccountResponse)
-def get_account(account_id: int, db: Session = Depends(get_db)):
+def get_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     return AccountResponse(
         id=account.id,
@@ -225,10 +241,16 @@ def get_account(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
-def update_account(account_id: int, account_in: AccountUpdate, db: Session = Depends(get_db)):
+def update_account(
+    account_id: int,
+    account_in: AccountUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     if account_in.nickname is not None:
         account.nickname = account_in.nickname.strip()
@@ -327,7 +349,8 @@ def update_account(account_id: int, account_in: AccountUpdate, db: Session = Dep
 def reconnect_account_full_credentials(
     account_id: int,
     req: AccountReconnectRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Submits full Angel One credentials (client_code, api_key, pin, totp_secret)
@@ -337,6 +360,7 @@ def reconnect_account_full_credentials(
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     clean_code = req.client_code.strip().upper()
     clean_key = req.api_key.strip()
@@ -447,10 +471,15 @@ def reconnect_account_full_credentials(
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_account(account_id: int, db: Session = Depends(get_db)):
+def delete_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     invalidate_adapter_for_account(account_id)
     db.delete(account)
@@ -462,11 +491,13 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
 def test_account_connection(
     account_id: int,
     payload: Optional[AccountTestPayload] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     manual_totp = (payload.totp_code.strip() if payload and payload.totp_code and payload.totp_code.strip() else None)
 
@@ -549,13 +580,18 @@ def test_account_connection(
 
 
 @router.get("/{account_id}/overview", response_model=AccountOverviewResponse)
-def get_account_overview(account_id: int, db: Session = Depends(get_db)):
+def get_account_overview(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Returns verified account profile overview, funds, connection health, and holdings summary.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     # Fetch holdings from unified holdings model
     from app.services.holdings_service import get_unified_account_holdings
@@ -614,7 +650,8 @@ def get_account_holdings(
     account_id: int,
     cached_only: bool = Query(False, description="Return cached DB holdings immediately without broker roundtrip"),
     force_sync: bool = Query(False, description="Force fresh upstream roundtrip to Angel One"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Returns verified equity delivery holdings for the specified account.
@@ -624,6 +661,7 @@ def get_account_holdings(
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     # Fast path: check if verified holdings already exist in database
     existing_snapshots = db.query(AccountHoldingSnapshot).filter(
@@ -883,7 +921,11 @@ def get_account_holdings(
 
 
 @router.get("/{account_id}/positions", response_model=List[AccountPositionItem])
-def get_account_positions(account_id: int, db: Session = Depends(get_db)):
+def get_account_positions(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Returns open and closed intraday/derivative positions for the specified account.
     Maintains clean separation between open positions and delivery holdings.
@@ -891,6 +933,7 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     if not account.is_demo and account.auth_status == "CONNECTED":
         try:
@@ -947,7 +990,11 @@ def get_account_positions(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{account_id}/orders", response_model=List[AccountOrderItem])
-def get_account_orders(account_id: int, db: Session = Depends(get_db)):
+def get_account_orders(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Returns order book for the specified account (pending, executed, rejected, cancelled).
     Keeps orders distinct from executed trades.
@@ -955,6 +1002,7 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     # If live account and connected, fetch live order book from SmartAPI
     if not account.is_demo and account.auth_status == "CONNECTED":
@@ -987,11 +1035,13 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
                 for bo in broker_orders:
                     qty = int(bo.get("quantity", 0))
                     filled_qty = int(bo.get("filledshares", 0))
+                    unfilled_qty = int(bo.get("unfilledshares") or max(0, qty - filled_qty))
                     p = float(bo.get("price", 0.0))
                     tp = float(bo.get("triggerprice", 0.0))
                     avg_p = float(bo.get("averageprice", 0.0)) if bo.get("averageprice") else None
                     results.append(AccountOrderItem(
                         order_id=str(bo.get("orderid", "")),
+                        unique_order_id=str(bo.get("uniqueorderid", "")) if bo.get("uniqueorderid") else None,
                         symbol=bo.get("tradingsymbol", "—"),
                         exchange=bo.get("exchange", "NSE"),
                         transaction_type=bo.get("transactiontype", "BUY"),
@@ -999,6 +1049,7 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
                         product_type=bo.get("producttype", "DELIVERY"),
                         quantity=qty,
                         filled_quantity=filled_qty,
+                        pending_quantity=unfilled_qty,
                         price=p,
                         trigger_price=tp,
                         average_price=avg_p,
@@ -1018,6 +1069,7 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
     for o in orders:
         results.append(AccountOrderItem(
             order_id=o.broker_order_id or o.client_order_id,
+            unique_order_id=o.client_order_id,
             symbol=o.tradingsymbol,
             exchange=o.exchange,
             transaction_type=o.transaction_type,
@@ -1025,6 +1077,7 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
             product_type=o.product_type,
             quantity=o.quantity,
             filled_quantity=o.filled_quantity,
+            pending_quantity=max(0, o.quantity - o.filled_quantity),
             price=o.price,
             trigger_price=o.trigger_price,
             average_price=o.execution_price,
@@ -1037,7 +1090,11 @@ def get_account_orders(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{account_id}/trades", response_model=List[AccountTradeItem])
-def get_account_trades(account_id: int, db: Session = Depends(get_db)):
+def get_account_trades(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Returns confirmed executed trades for the specified account.
     Never misrepresents an acknowledged or unexecuted order as an executed trade.
@@ -1045,6 +1102,7 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     # If live account and connected, fetch live trade book from SmartAPI
     if not account.is_demo and account.auth_status == "CONNECTED":
@@ -1079,7 +1137,7 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
                     fill_p = float(bt.get("fillprice", 0.0))
                     trade_val = round(fill_qty * fill_p, 2)
                     results.append(AccountTradeItem(
-                        fill_id=str(bt.get("tradeid", "")),
+                        fill_id=str(bt.get("tradeid") or bt.get("fillid") or ""),
                         order_id=str(bt.get("orderid", "")),
                         symbol=bt.get("tradingsymbol", "—"),
                         exchange=bt.get("exchange", "NSE"),
@@ -1122,7 +1180,11 @@ def get_account_trades(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{account_id}/sync", response_model=AccountSyncResponse)
-def sync_account_data(account_id: int, db: Session = Depends(get_db)):
+def sync_account_data(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Triggers on-demand read-only refresh of RMS funds, holdings, and connection status.
     Does NOT submit or modify any financial order or live trade.
@@ -1130,6 +1192,7 @@ def sync_account_data(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
 
     if not account.is_demo and account.auth_status in ("DISCONNECTED", "REAUTHENTICATION_REQUIRED"):
         raise HTTPException(
@@ -1293,3 +1356,401 @@ def batch_create_demo_accounts(
     db.commit()
     persist_accounts_backup(db)
     return {"message": f"Successfully created {len(created)} demo accounts for testing.", "count": len(created)}
+
+
+@router.get("/{account_id}/funds", response_model=AccountFundsResponse)
+def get_account_funds(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
+    """
+    Returns official Angel One RMS funds and margin limits (/rest/secure/angelbroking/user/v1/getRMS).
+    Provides genuine broker RMS figures: available cash, net margin, collateral, utilized margins, and M2M.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
+
+    if account.is_demo:
+        return AccountFundsResponse(
+            account_id=account.id,
+            nickname=account.nickname,
+            masked_client_code=account.masked_client_code,
+            available_cash=float(account.available_cash or 100000.0),
+            net_available_margin=float(account.available_cash or 100000.0),
+            collateral_margin=0.0,
+            utilized_margin=0.0,
+            unrealized_m2m=0.0,
+            realized_m2m=0.0,
+            span_margin=0.0,
+            option_premium=0.0,
+            var_margin=0.0,
+            elm_margin=0.0,
+            last_sync_time=account.last_sync_time or datetime.utcnow(),
+            data_source="DEMAT_SIMULATOR",
+            status="CACHED"
+        )
+
+    if account.auth_status != "CONNECTED":
+        return AccountFundsResponse(
+            account_id=account.id,
+            nickname=account.nickname,
+            masked_client_code=account.masked_client_code,
+            available_cash=float(account.available_cash or 0.0),
+            net_available_margin=float(account.available_cash or 0.0),
+            collateral_margin=0.0,
+            utilized_margin=0.0,
+            unrealized_m2m=0.0,
+            realized_m2m=0.0,
+            span_margin=0.0,
+            option_premium=0.0,
+            var_margin=0.0,
+            elm_margin=0.0,
+            last_sync_time=account.last_sync_time,
+            data_source="ANGEL_ONE_RMS_STALE",
+            status="UNAVAILABLE"
+        )
+
+    try:
+        raw_key = cipher.decrypt(account.encrypted_api_key)
+        raw_pin = cipher.decrypt(account.encrypted_pin)
+        raw_totp = cipher.decrypt(account.encrypted_totp_secret)
+        adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
+        rms = adapter.get_rms()
+
+        if adapter.is_session_expired:
+            invalidate_adapter_for_account(account.id)
+            account.auth_status = "EXPIRED"
+            db.commit()
+            raise HTTPException(status_code=401, detail=f"Angel One session expired for {account.masked_client_code}.")
+
+        if rms:
+            avail_cash = float(rms.get("availablecash") or rms.get("net") or account.available_cash or 0.0)
+            net_margin = float(rms.get("net") or avail_cash)
+            collateral = float(rms.get("collateral") or 0.0)
+            util_debits = float(rms.get("utiliseddebits") or 0.0)
+            unreal_m2m = float(rms.get("m2munrealized") or 0.0)
+            real_m2m = float(rms.get("m2mrealized") or 0.0)
+            span = float(rms.get("utilisedspan") or rms.get("spanmargin") or 0.0)
+            opt_prem = float(rms.get("utilisedoptionpremium") or rms.get("optionpremium") or 0.0)
+            var_m = float(rms.get("utilisedvar") or rms.get("varmargin") or 0.0)
+            elm_m = float(rms.get("utilisedelm") or rms.get("elmmargin") or 0.0)
+
+            account.available_cash = avail_cash
+            account.last_sync_time = datetime.utcnow()
+            db.commit()
+
+            return AccountFundsResponse(
+                account_id=account.id,
+                nickname=account.nickname,
+                masked_client_code=account.masked_client_code,
+                available_cash=avail_cash,
+                net_available_margin=net_margin,
+                collateral_margin=collateral,
+                utilized_margin=util_debits,
+                unrealized_m2m=unreal_m2m,
+                realized_m2m=real_m2m,
+                span_margin=span,
+                option_premium=opt_prem,
+                var_margin=var_m,
+                elm_margin=elm_m,
+                last_sync_time=account.last_sync_time,
+                data_source="ANGEL_ONE_RMS",
+                status="LIVE"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Live RMS fetch failed for {account.masked_client_code}: {e}")
+
+    return AccountFundsResponse(
+        account_id=account.id,
+        nickname=account.nickname,
+        masked_client_code=account.masked_client_code,
+        available_cash=float(account.available_cash or 0.0),
+        net_available_margin=float(account.available_cash or 0.0),
+        collateral_margin=0.0,
+        utilized_margin=0.0,
+        unrealized_m2m=0.0,
+        realized_m2m=0.0,
+        span_margin=0.0,
+        option_premium=0.0,
+        var_margin=0.0,
+        elm_margin=0.0,
+        last_sync_time=account.last_sync_time,
+        data_source="ANGEL_ONE_RMS_CACHED",
+        status="CACHED"
+    )
+
+
+@router.get("/{account_id}/activity-log", response_model=AccountActivityLogResponse)
+def get_account_activity_log(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
+    """
+    Returns unified chronological activity timeline for the specified Angel One account.
+    Prioritizes real Angel One broker events (Order Book, Trade Book, RMS Sync, Holdings Sync)
+    and transparently tags simulation orders and internal audit records.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
+
+    activities: List[AccountActivityLogItem] = []
+
+    # 1. Orders from DB
+    db_orders = db.query(Order).filter(Order.account_id == account_id).order_by(Order.id.desc()).limit(50).all()
+    for o in db_orders:
+        is_paper = o.is_paper_trade
+        origin = "SIMULATED_ORDER" if is_paper else "LIVE_BROKER"
+        status_norm = (o.status or "").upper()
+        if status_norm in ("EXECUTED", "FILLED", "COMPLETE"):
+            ev_type = "ORDER_EXECUTED"
+            item_status = "SUCCESS"
+        elif "REJECT" in status_norm:
+            ev_type = "ORDER_REJECTED"
+            item_status = "FAILED"
+        elif "CANCEL" in status_norm:
+            ev_type = "ORDER_CANCELLED"
+            item_status = "FAILED"
+        else:
+            ev_type = "ORDER_SUBMITTED"
+            item_status = "PENDING"
+
+        desc = f"{o.transaction_type} {o.quantity} {o.tradingsymbol} ({o.order_type} • {o.product_type})"
+        if o.rejection_reason:
+            desc += f" — {o.rejection_reason}"
+        elif o.execution_price:
+            desc += f" @ ₹{o.execution_price:.2f}"
+
+        activities.append(AccountActivityLogItem(
+            id=f"ord_{o.id}",
+            timestamp=o.created_at,
+            formatted_time=o.created_at.strftime("%d %b %Y, %H:%M:%S IST") if o.created_at else "—",
+            event_type=ev_type,
+            origin=origin,
+            symbol=o.tradingsymbol,
+            description=desc,
+            status=item_status,
+            details={
+                "client_order_id": o.client_order_id,
+                "broker_order_id": o.broker_order_id,
+                "quantity": o.quantity,
+                "filled_quantity": o.filled_quantity,
+                "price": o.price,
+                "execution_price": o.execution_price,
+                "status": o.status
+            }
+        ))
+
+    # 2. Broker Trade Book (Confirmed Fills)
+    if not account.is_demo and account.auth_status == "CONNECTED":
+        try:
+            raw_key = cipher.decrypt(account.encrypted_api_key)
+            raw_pin = cipher.decrypt(account.encrypted_pin)
+            raw_totp = cipher.decrypt(account.encrypted_totp_secret)
+            adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
+            trades = adapter.get_trade_book()
+            if trades:
+                for t in trades:
+                    fill_id = str(t.get("tradeid") or t.get("fillid") or "")
+                    sym = str(t.get("tradingsymbol") or "—")
+                    qty = int(t.get("fillsize") or 0)
+                    price = float(t.get("fillprice") or 0.0)
+                    side = str(t.get("transactiontype") or "BUY")
+                    ttime = t.get("filltime") or t.get("exchtime") or ""
+
+                    activities.append(AccountActivityLogItem(
+                        id=f"trade_{fill_id}",
+                        timestamp=None,
+                        formatted_time=str(ttime) or "Today",
+                        event_type="TRADE_FILL",
+                        origin="LIVE_BROKER",
+                        symbol=sym,
+                        description=f"Exchange Trade Fill: {side} {qty} {sym} @ ₹{price:.2f} (Trade ID: {fill_id})",
+                        status="SUCCESS",
+                        details={
+                            "fill_id": fill_id,
+                            "order_id": t.get("orderid"),
+                            "fill_quantity": qty,
+                            "fill_price": price,
+                            "trade_value": round(qty * price, 2)
+                        }
+                    ))
+        except Exception as e:
+            logger.warning(f"Could not load live trades for activity log ({account.masked_client_code}): {e}")
+
+    # 2b. Broker-Synced Trade Snapshots (Locally retained fills)
+    trade_snapshots = db.query(BrokerTradeSnapshot).filter(BrokerTradeSnapshot.account_id == account_id).order_by(BrokerTradeSnapshot.id.desc()).limit(50).all()
+    seen_fill_ids = {a.details.get("fill_id") for a in activities if a.details and "fill_id" in a.details}
+    for ts in trade_snapshots:
+        if ts.fill_id in seen_fill_ids:
+            continue
+        seen_fill_ids.add(ts.fill_id)
+        activities.append(AccountActivityLogItem(
+            id=f"snap_trade_{ts.id}",
+            timestamp=ts.created_at,
+            formatted_time=ts.created_at.strftime("%d %b %Y, %H:%M:%S IST") if ts.created_at else "Historical",
+            event_type="TRADE_FILL",
+            origin="BROKER_SYNC",
+            symbol=ts.tradingsymbol,
+            description=f"Broker-Synced Trade: {ts.transaction_type} {ts.fill_quantity} {ts.tradingsymbol} @ ₹{ts.fill_price:.2f} (Trade ID: {ts.fill_id})",
+            status="SUCCESS",
+            details={
+                "fill_id": ts.fill_id,
+                "order_id": ts.broker_order_id,
+                "fill_quantity": ts.fill_quantity,
+                "fill_price": ts.fill_price,
+                "trade_value": ts.trade_value
+            }
+        ))
+
+    # 3. Audit Logs
+    audit_entries = db.query(AuditLog).filter(AuditLog.account_id == account_id).order_by(AuditLog.id.desc()).limit(20).all()
+    for al in audit_entries:
+        try:
+            parsed_d = json.loads(al.details_json) if al.details_json else {}
+        except Exception:
+            parsed_d = {}
+
+        activities.append(AccountActivityLogItem(
+            id=f"audit_{al.id}",
+            timestamp=al.timestamp,
+            formatted_time=al.timestamp.strftime("%d %b %Y, %H:%M:%S IST") if al.timestamp else "—",
+            event_type=al.event_type,
+            origin="AUDIT_EVENT",
+            symbol=None,
+            description=f"Account audit: {al.event_type.replace('_', ' ').title()}",
+            status="INFO",
+            details=parsed_d
+        ))
+
+    # 4. Sync events
+    if account.last_sync_time:
+        activities.append(AccountActivityLogItem(
+            id=f"sync_{account.id}_{int(account.last_sync_time.timestamp())}",
+            timestamp=account.last_sync_time,
+            formatted_time=account.last_sync_time.strftime("%d %b %Y, %H:%M:%S IST"),
+            event_type="BROKER_SYNC",
+            origin="BROKER_SYNC",
+            symbol=None,
+            description=f"SmartAPI Balances Synchronized successfully (Cash: ₹{account.available_cash:,.2f})",
+            status="SUCCESS",
+            details={"available_cash": account.available_cash, "auth_status": account.auth_status}
+        ))
+
+    # Sort activities newest first
+    activities.sort(key=lambda a: a.timestamp or datetime.min, reverse=True)
+
+    return AccountActivityLogResponse(
+        account_id=account.id,
+        nickname=account.nickname,
+        masked_client_code=account.masked_client_code,
+        activities=activities,
+        historical_notice="Historical records are not available from this broker API for the selected period. Angel One SmartAPI Order Book and Trade Book provide current-day live records. Prior records are retained from historical snapshots."
+    )
+
+
+@router.post("/{account_id}/refresh")
+def refresh_account_data(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
+    """
+    Triggers an on-demand SmartAPI refresh of RMS limits, delivery holdings, positions,
+    order book, and trade book for the specified account.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
+
+    if account.is_demo:
+        account.last_sync_time = datetime.utcnow()
+        db.commit()
+        return {
+            "success": True,
+            "message": "Demo account refreshed from Demat simulator.",
+            "refreshed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S IST"),
+            "available_cash": account.available_cash
+        }
+
+    if account.auth_status != "CONNECTED":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Account is {account.auth_status}. Please reconnect to Angel One SmartAPI."
+        )
+
+    try:
+        raw_key = cipher.decrypt(account.encrypted_api_key)
+        raw_pin = cipher.decrypt(account.encrypted_pin)
+        raw_totp = cipher.decrypt(account.encrypted_totp_secret)
+        adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
+
+        # 1. RMS Limits
+        rms = adapter.get_rms()
+        if rms:
+            avail_cash = float(rms.get("availablecash") or rms.get("net") or account.available_cash or 0.0)
+            account.available_cash = avail_cash
+
+        # 2. Holdings
+        holdings = adapter.get_holdings()
+        if holdings is not None:
+            reconcile_broker_holdings(db, account, holdings, datetime.utcnow())
+
+        account.last_sync_time = datetime.utcnow()
+        account.last_auth_error = None
+        db.commit()
+
+        return {
+            "success": True,
+            "account_id": account.id,
+            "message": f"Synchronized Angel One broker data for {account.nickname}.",
+            "refreshed_at": account.last_sync_time.strftime("%Y-%m-%d %H:%M:%S IST"),
+            "available_cash": account.available_cash
+        }
+    except Exception as e:
+        logger.error(f"Error refreshing account {account.masked_client_code}: {e}")
+        raise HTTPException(status_code=502, detail=f"Broker refresh failed: {str(e)}")
+
+
+@router.get("/{account_id}/orders/{broker_order_id}/details")
+def get_broker_order_details(
+    account_id: int,
+    broker_order_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
+    """
+    Retrieves individual order lifecycle details from SmartAPI (/order/v1/details/{orderid}).
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    authorize_account_access(account, current_user)
+
+    if account.is_demo or account.auth_status != "CONNECTED":
+        local_ord = db.query(Order).filter(Order.account_id == account_id, Order.broker_order_id == broker_order_id).first()
+        if local_ord:
+            return {"status": True, "data": {"orderid": local_ord.broker_order_id, "status": local_ord.status, "text": local_ord.rejection_reason}}
+        raise HTTPException(status_code=404, detail="Order not found in demo records")
+
+    try:
+        raw_key = cipher.decrypt(account.encrypted_api_key)
+        raw_pin = cipher.decrypt(account.encrypted_pin)
+        raw_totp = cipher.decrypt(account.encrypted_totp_secret)
+        adapter = get_adapter_for_account(account.id, raw_key, account.client_code, raw_pin, raw_totp)
+        details = adapter.get_individual_order_details(broker_order_id)
+        if details:
+            order_data = details.get("data") if (isinstance(details, dict) and "data" in details and isinstance(details.get("data"), dict)) else details
+            return {"status": True, "data": order_data}
+        return {"status": False, "message": adapter.last_error or "Could not fetch order details"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch order details: {str(e)}")
+

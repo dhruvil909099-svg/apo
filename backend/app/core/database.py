@@ -181,6 +181,7 @@ def run_safe_migrations(target_engine=None):
 
     # Column definitions to verify for 'accounts'
     account_columns_to_add = [
+        ("user_id", "INTEGER"),
         ("account_group", "VARCHAR(50) DEFAULT 'Family'"),
         ("is_demo", "BOOLEAN DEFAULT FALSE"),
         ("auth_status", "VARCHAR(30) DEFAULT 'DISCONNECTED'"),
@@ -219,6 +220,34 @@ def run_safe_migrations(target_engine=None):
                 if col_name not in existing_cols:
                     logger.info(f"Adding missing column account_holding_snapshots.{col_name} ({col_type})")
                     conn.execute(text(f"ALTER TABLE account_holding_snapshots ADD COLUMN {col_name} {col_type};"))
+            conn.commit()
+
+    # Column definitions to verify for 'orders'
+    order_columns_to_add = [
+        ("client_order_id", "VARCHAR(64)"),
+        ("batch_id", "VARCHAR(64)"),
+        ("variety", "VARCHAR(20) DEFAULT 'NORMAL'"),
+        ("trigger_price", "FLOAT DEFAULT 0.0"),
+        ("execution_price", "FLOAT"),
+        ("rejection_reason", "VARCHAR(500)"),
+        ("is_paper_trade", "BOOLEAN DEFAULT TRUE"),
+    ]
+
+    if "orders" in existing_tables:
+        existing_cols = {col["name"] for col in inspector.get_columns("orders")}
+        with active_engine.connect() as conn:
+            for col_name, col_type in order_columns_to_add:
+                if col_name not in existing_cols:
+                    logger.info(f"Adding missing column orders.{col_name} ({col_type})")
+                    conn.execute(text(f"ALTER TABLE orders ADD COLUMN {col_name} {col_type};"))
+            conn.commit()
+
+    if "users" in existing_tables:
+        existing_cols = {col["name"] for col in inspector.get_columns("users")}
+        with active_engine.connect() as conn:
+            if "token_version" not in existing_cols:
+                logger.info("Adding missing column users.token_version (INTEGER)")
+                conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0 NOT NULL;"))
             conn.commit()
 
     logger.info("Schema verification and safe migrations completed.")

@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.core.security import mask_client_id
@@ -9,6 +9,7 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     nickname = Column(String(100), nullable=False)
     client_code = Column(String(50), unique=True, index=True, nullable=False)
     account_group = Column(String(50), default="Family", index=True)
@@ -40,6 +41,7 @@ class Account(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
+    user = relationship("User", backref="accounts")
     allotments = relationship("Allotment", back_populates="account", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="account", cascade="all, delete-orphan")
     holding_snapshots = relationship("AccountHoldingSnapshot", back_populates="account", cascade="all, delete-orphan")

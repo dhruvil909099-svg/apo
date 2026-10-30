@@ -58,6 +58,26 @@ def seed_demo_data(db: Session):
         logger.info("Fresh database detected. Initializing authoritative IPO catalog...")
         IPOFeedService.sync_feed(db)
 
+    from app.models.user import User
+    admin = db.query(User).filter(User.role == "ADMIN", User.is_active == True).first()
+    if not admin:
+        uname = settings.BOOTSTRAP_ADMIN_USERNAME or "admin"
+        email = settings.BOOTSTRAP_ADMIN_EMAIL or "admin@ipopro.internal"
+        pwd = settings.BOOTSTRAP_ADMIN_PASSWORD or "Admin@IPOPro2026!"
+        pwd_hash, salt = User.hash_password(pwd)
+        admin = User(
+            username=uname,
+            email=email,
+            hashed_password=pwd_hash,
+            salt=salt,
+            role="ADMIN",
+            is_active=True,
+            token_version=0
+        )
+        db.add(admin)
+        db.commit()
+        logger.info(f"Initialized administrative account: {uname}")
+
     import os
     if os.getenv("TESTING", "").lower() not in ("true", "1") and settings.TRADING_MODE != "TEST":
         from app.models.instrument import Instrument

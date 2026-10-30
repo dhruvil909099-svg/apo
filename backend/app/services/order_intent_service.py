@@ -95,6 +95,29 @@ class OrderIntentService:
         db.commit()
         db.refresh(order)
 
+        # Durable Audit Trail: Intent recorded before external communication
+        try:
+            from app.models.audit import AuditLog
+            import json
+            audit_entry = AuditLog(
+                event_type="ORDER_INTENT_CREATED",
+                account_id=account.id,
+                operator="SYSTEM",
+                details_json=json.dumps({
+                    "order_id": order.id,
+                    "client_order_id": order.client_order_id,
+                    "symbol": order.tradingsymbol,
+                    "quantity": order.quantity,
+                    "price": order.price,
+                    "side": order.transaction_type,
+                    "is_paper": is_paper
+                })
+            )
+            db.add(audit_entry)
+            db.commit()
+        except Exception:
+            pass
+
         # 2. Execution Routing
         if is_paper:
             # Paper execution (100% simulated, never debits real funds or contacts Angel One exchange)
@@ -195,14 +218,17 @@ class OrderIntentService:
                         "message": order.rejection_reason
                     }
             except Exception as e:
-                order.status = "REJECTED"
-                order.rejection_reason = str(e)
+                logger.error(f"Uncertain exception during live order submission: {str(e)}")
+                # CRITICAL: If an exception occurs after order was marked SUBMITTING, the request may have reached Angel One!
+                # Mark as UNKNOWN_SUBMISSION so it is reconciled rather than blindly retried!
+                order.status = "UNKNOWN_SUBMISSION"
+                order.rejection_reason = f"Submission transport exception ({str(e)}). Status unknown. Reconcile via Order Book."
                 db.commit()
                 return {
                     "success": False,
-                    "status": "REJECTED",
+                    "status": "UNKNOWN_SUBMISSION",
                     "order_id": order.id,
                     "client_order_id": order.client_order_id,
                     "is_paper_trade": False,
-                    "message": f"Exception submitting live order: {str(e)}"
+                    "message": order.rejection_reason
                 }

@@ -21,6 +21,7 @@ import { api, getWebSocketUrl } from './api';
 import { connectionManager, ConnectionState } from './services/backendConnectionManager';
 import { refreshScheduler } from './services/refreshScheduler';
 import { AlertCircle, RefreshCw } from 'lucide-react';
+import { LoginModal } from './components/LoginModal';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
@@ -33,6 +34,37 @@ export const App: React.FC = () => {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connState, setConnState] = useState<ConnectionState>(connectionManager.getState());
 
+  // User authentication session state
+  const [currentUser, setCurrentUser] = useState<{ id?: number; username: string; role: string } | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('ipopro_user');
+        return stored ? JSON.parse(stored) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
+
+  // Cross-view post-order navigation states (Parts 4 & 5)
+  const [targetAccountNavigation, setTargetAccountNavigation] = useState<{
+    accountId: number;
+    initialTab?: string;
+    highlightSymbol?: string;
+    banner?: string;
+  } | null>(null);
+
+  const [targetPortfolioBatch, setTargetPortfolioBatch] = useState<{
+    batchId?: string;
+    totalOrders?: number;
+    successCount?: number;
+    failedCount?: number;
+    symbol?: string;
+    accounts?: Array<{ accountId: number; nickname: string; status: string; orderId?: string; error?: string }>;
+  } | null>(null);
+
   const hasInitiallyLoaded = useRef(false);
 
   // Subscribe to Connection Manager
@@ -43,6 +75,27 @@ export const App: React.FC = () => {
     connectionManager.initialize();
     return () => unsub();
   }, []);
+
+  // Verify and sync authenticated user session
+  useEffect(() => {
+    api.getMe()
+      .then((res: any) => {
+        if (res && res.authenticated) {
+          setCurrentUser(res.user || { username: res.username || 'Operator', role: res.role || 'USER' });
+        }
+      })
+      .catch((err: any) => {
+        if (err?.status === 401) {
+          setCurrentUser(null);
+        }
+      });
+  }, []);
+
+  const handleLogout = async () => {
+    await api.logout();
+    setCurrentUser(null);
+    fetchAllData(true);
+  };
 
   // Resilient independent data loading with Promise.allSettled
   const fetchAllData = useCallback(async (isManual = false) => {
@@ -230,6 +283,9 @@ export const App: React.FC = () => {
           onRefresh={handleManualRefresh}
           isRefreshing={isRefreshing}
           lastUpdated={lastUpdated}
+          currentUser={currentUser}
+          onOpenLogin={() => setIsLoginModalOpen(true)}
+          onLogout={handleLogout}
         />
 
         {/* Transient Connection Notification Strip */}
@@ -278,7 +334,12 @@ export const App: React.FC = () => {
               />
             )}
             {currentTab === 'accounts' && (
-              <AccountsView accounts={accounts} onRefresh={handleManualRefresh} />
+              <AccountsView
+                accounts={accounts}
+                onRefresh={handleManualRefresh}
+                targetAccountNavigation={targetAccountNavigation}
+                onClearTargetNavigation={() => setTargetAccountNavigation(null)}
+              />
             )}
             {currentTab === 'ipo-tracker' && (
               <IPOTrackerView ipos={ipos} accounts={accounts} onRefresh={handleManualRefresh} />
@@ -286,12 +347,33 @@ export const App: React.FC = () => {
             {currentTab === 'market-watch' && (
               <MarketWatchView quotes={quotes} onRefresh={handleManualRefresh} />
             )}
-            {currentTab === 'portfolio' && <PortfolioView />}
+            {currentTab === 'portfolio' && (
+              <PortfolioView
+                batchContext={targetPortfolioBatch}
+                onClearBatchContext={() => setTargetPortfolioBatch(null)}
+                onNavigateToAccount={(accId, tab, sym) => {
+                  setTargetAccountNavigation({
+                    accountId: accId,
+                    initialTab: tab,
+                    highlightSymbol: sym
+                  });
+                  setCurrentTab('accounts');
+                }}
+              />
+            )}
             {currentTab === 'stock-explorer' && (
               <StockExplorerView
                 ipos={ipos}
                 quotes={quotes}
                 onNavigateToBulkOrders={() => setCurrentTab('bulk-orders')}
+                onNavigateToAccount={(nav) => {
+                  setTargetAccountNavigation(nav);
+                  setCurrentTab('accounts');
+                }}
+                onNavigateToPortfolioBatch={(batch) => {
+                  setTargetPortfolioBatch(batch);
+                  setCurrentTab('portfolio');
+                }}
               />
             )}
             {currentTab === 'single-account-tasks' && (
@@ -329,6 +411,15 @@ export const App: React.FC = () => {
           </div>
         </main>
       </div>
+
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onLoginSuccess={(u) => {
+          setCurrentUser(u);
+          fetchAllData(true);
+        }}
+      />
     </div>
   );
 };

@@ -15,6 +15,7 @@ from app.core.security import cipher
 
 from app.models.order import Order
 from app.services.data_orchestrator import DataOrchestrator
+from app.core.auth import get_current_user, scope_account_query, UserPrincipal
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio & Holdings"])
 
@@ -23,15 +24,16 @@ router = APIRouter(prefix="/portfolio", tags=["Portfolio & Holdings"])
 def get_consolidated_holdings(
     account_ids: Optional[str] = Query(None, description="Comma-separated list of account IDs to include"),
     capital_type: Optional[str] = Query(None, description="Account type filter: 'live', 'demo', or 'all'"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Returns consolidated portfolio overview and itemized holdings across all or selected authorized accounts.
     Calculates weighted average cost basis, total market value, unrealized P&L, day's change,
     available vs sellable quantities, and portfolio allocation percentages.
     """
-    # 1. Determine accounts filter
-    account_query = db.query(Account).filter(Account.is_enabled == True)
+    # 1. Determine accounts filter scoped to authorized accounts
+    account_query = scope_account_query(db.query(Account).filter(Account.is_enabled == True), current_user, Account)
     selected_ids = None
     if account_ids:
         try:
@@ -50,7 +52,7 @@ def get_consolidated_holdings(
         account_query = account_query.filter(Account.is_demo == False)
 
     accounts = account_query.all()
-    all_enabled_accounts = db.query(Account).filter(Account.is_enabled == True).all()
+    all_enabled_accounts = scope_account_query(db.query(Account).filter(Account.is_enabled == True), current_user, Account).all()
 
     total_connected = len(all_enabled_accounts)
     total_selected = len(accounts)
@@ -286,7 +288,11 @@ def get_consolidated_holdings(
 
 
 @router.get("/holding/{symbol}")
-def get_holding_detail(symbol: str, db: Session = Depends(get_db)):
+def get_holding_detail(
+    symbol: str,
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Returns dedicated instrument terminal details for a single holding,
     including account-level ownership, sellable quantities, recent orders, and permitted actions.
@@ -296,11 +302,12 @@ def get_holding_detail(symbol: str, db: Session = Depends(get_db)):
     if not ipo:
         raise HTTPException(status_code=404, detail=f"Instrument '{clean_symbol}' not found in holdings registry.")
 
-    allotments = db.query(Allotment).join(Account).filter(
+    allotments_q = db.query(Allotment).join(Account).filter(
         Allotment.ipo_id == ipo.id,
         Account.is_enabled == True,
         Allotment.allotted_quantity > 0
-    ).all()
+    )
+    allotments = scope_account_query(allotments_q, current_user, Account).all()
 
     ltp = ipo.current_ltp or ipo.issue_price or 100.0
     prev = ipo.previous_close or ipo.issue_price or ltp
@@ -393,12 +400,13 @@ def get_holding_detail(symbol: str, db: Session = Depends(get_db)):
 @router.get("/accounts")
 def get_account_portfolios(
     account_ids: Optional[str] = Query(None, description="Comma-separated list of account IDs to include"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
 ):
     """
     Returns account-level holdings, cash balances, and synchronization health.
     """
-    account_query = db.query(Account).filter(Account.is_enabled == True)
+    account_query = scope_account_query(db.query(Account).filter(Account.is_enabled == True), current_user, Account)
     if account_ids:
         try:
             ids = [int(x.strip()) for x in account_ids.split(",") if x.strip()]
@@ -464,12 +472,15 @@ def get_account_portfolios(
 
 
 @router.post("/sync")
-def trigger_portfolio_sync(db: Session = Depends(get_db)):
+def trigger_portfolio_sync(
+    db: Session = Depends(get_db),
+    current_user: UserPrincipal = Depends(get_current_user)
+):
     """
     Triggers real holdings and cash margin synchronization from Angel One SmartAPI
     across all enabled accounts. Updates demat holdings and ledger balances.
     """
-    accounts = db.query(Account).filter(Account.is_enabled == True).all()
+    accounts = scope_account_query(db.query(Account).filter(Account.is_enabled == True), current_user, Account).all()
     synced_count = 0
     failed_count = 0
     now = datetime.utcnow()

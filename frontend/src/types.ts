@@ -516,6 +516,7 @@ export interface AccountPositionItem {
 
 export interface AccountOrderItem {
   order_id: string;
+  unique_order_id?: string;
   symbol: string;
   exchange: string;
   transaction_type: string;
@@ -523,6 +524,7 @@ export interface AccountOrderItem {
   product_type: string;
   quantity: number;
   filled_quantity: number;
+  pending_quantity?: number;
   price: number;
   trigger_price: number;
   average_price?: number;
@@ -555,6 +557,45 @@ export interface AccountSyncResponse {
   positions_count: number;
   available_cash?: number | null;
   sync_timestamp: string;
+}
+
+export interface AccountFundsResponse {
+  account_id: number;
+  nickname: string;
+  masked_client_code: string;
+  available_cash: number;
+  net_available_margin: number;
+  collateral_margin: number;
+  utilized_margin: number;
+  unrealized_m2m: number;
+  realized_m2m: number;
+  span_margin: number;
+  option_premium: number;
+  var_margin: number;
+  elm_margin: number;
+  last_sync_time?: string | null;
+  data_source: string;
+  status: 'LIVE' | 'CACHED' | 'UNAVAILABLE';
+}
+
+export interface AccountActivityLogItem {
+  id: string;
+  timestamp?: string | null;
+  formatted_time: string;
+  event_type: string;
+  origin: 'LIVE_BROKER' | 'BROKER_SYNC' | 'SIMULATED_ORDER' | 'AUDIT_EVENT';
+  symbol?: string | null;
+  description: string;
+  status: 'SUCCESS' | 'PENDING' | 'FAILED' | 'INFO';
+  details?: Record<string, any>;
+}
+
+export interface AccountActivityLogResponse {
+  account_id: number;
+  nickname: string;
+  masked_client_code: string;
+  activities: AccountActivityLogItem[];
+  historical_notice: string;
 }
 
 export interface AppUser {

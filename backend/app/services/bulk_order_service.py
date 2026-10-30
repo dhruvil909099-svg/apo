@@ -254,7 +254,15 @@ class BulkOrderService:
             db.commit()
 
             # Execute via paper trader or live adapter
-            if settings.TRADING_MODE == "PAPER" or account.is_demo:
+            # SEBI & Angel One Regulatory Gate: Multi-client batch execution is strictly paper-mode
+            # unless an authorized commercial broker dealer terminal licensing arrangement is verified.
+            is_live_batch_permitted = (
+                settings.TRADING_MODE == "LIVE" and 
+                not account.is_demo and 
+                getattr(settings, "MULTI_CLIENT_LIVE_AUTHORIZED", False)
+            )
+
+            if not is_live_batch_permitted:
                 sim_res = PaperTradingService.execute_paper_order(db, order)
                 results.append({
                     "account_id": account.id,
@@ -272,7 +280,7 @@ class BulkOrderService:
                 else:
                     failed_count += 1
             else:
-                # Live Execution via SmartAPI adapter
+                # Live Execution via SmartAPI adapter (requires commercial dealer license)
                 try:
                     adapter = get_adapter_for_account(
                         account_id=account.id,

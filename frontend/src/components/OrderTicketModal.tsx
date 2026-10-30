@@ -2,10 +2,31 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   X, ShieldCheck, AlertCircle, TrendingUp, TrendingDown,
   Info, Check, HelpCircle, ArrowRight, RefreshCw, Calculator, FileText, Lock,
-  Users, User, ChevronDown, CheckSquare, Square, Layers
+  Users, User, ChevronDown, CheckSquare, Square, Layers, Activity
 } from 'lucide-react';
 import { Account, AccountHoldingItem } from '../types';
 import { api } from '../api';
+
+export interface OrderTicketSuccessPayload {
+  message: string;
+  accountId: number;
+  symbol: string;
+  status: string;
+  isPaper: boolean;
+  brokerOrderId?: string;
+  clientOrderId?: string;
+  executionPrice?: number;
+  filledQuantity?: number;
+  quantity?: number;
+  isFilled?: boolean;
+  isBatch?: boolean;
+  batchId?: string;
+  totalOrders?: number;
+  successCount?: number;
+  failedCount?: number;
+  accounts?: Array<{ accountId: number; nickname: string; status: string; orderId?: string; error?: string }>;
+  batchSummary?: { total: number; success: number; failed: number } | null;
+}
 
 interface OrderTicketModalProps {
   isOpen: boolean;
@@ -14,7 +35,7 @@ interface OrderTicketModalProps {
   defaultSide?: 'BUY' | 'SELL';
   defaultOrderType?: 'LIMIT' | 'MARKET' | 'STOPLOSS_LIMIT' | 'STOPLOSS_MARKET';
   onClose: () => void;
-  onOrderSuccess: (orderMessage: string) => void;
+  onOrderSuccess: (result: OrderTicketSuccessPayload | string) => void;
 }
 
 interface MarketQuoteState {
@@ -529,11 +550,23 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
       setIsSubmitting(false);
       setShowConfirmModal(false);
       const isPaper = res.is_paper_trade ?? true;
-      onOrderSuccess(
-        isPaper
-          ? `Paper order executed in simulator! Status: ${res.status} (Client ID: ${res.client_order_id?.slice(0, 8) || 'N/A'}). Note: Simulated orders do NOT appear in the Angel One app.`
-          : `Live order placed with Angel One! Status: ${res.status} (Broker Order ID: ${res.broker_order_id})`
-      );
+      const status = res.status || 'SUBMITTED';
+      const msg = isPaper
+        ? `Paper order executed in simulator! Status: ${status} (Client ID: ${res.client_order_id?.slice(0, 8) || 'N/A'}). Note: Simulated orders do NOT appear in the Angel One app.`
+        : `Live order placed with Angel One! Status: ${status} (Broker Order ID: ${res.broker_order_id})`;
+
+      onOrderSuccess({
+        message: msg,
+        accountId: currentAccount.id,
+        symbol: sym,
+        status: status,
+        isPaper: isPaper,
+        brokerOrderId: res.broker_order_id,
+        clientOrderId: res.client_order_id,
+        executionPrice: res.execution_price,
+        filledQuantity: res.filled_quantity,
+        isBatch: false
+      });
       onClose();
     } catch (err: any) {
       setIsSubmitting(false);
@@ -574,14 +607,24 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
       if (execRes && execRes.results) {
         setBatchResults(execRes.results);
         const successCount = execRes.results.filter((r: any) => r.status === 'ACCEPTED' || r.status === 'EXECUTED' || r.status === 'SUBMITTED').length;
-        setBatchSummary({
+        const sum = {
           total: execRes.results.length,
           success: successCount,
           failed: execRes.results.length - successCount,
-        });
+        };
+        setBatchSummary(sum);
         setShowBatchResultsModal(true);
       } else {
-        onOrderSuccess(`Multi-account batch confirmed! Processed ${targets.length} paper accounts.`);
+        onOrderSuccess({
+          message: `Multi-account batch confirmed! Processed ${targets.length} paper accounts.`,
+          accountId: currentAccount?.id || 0,
+          symbol: sym,
+          status: 'EXECUTED',
+          isPaper: true,
+          isBatch: true,
+          batchId: prepRes.batch_id,
+          batchSummary: { total: targets.length, success: targets.length, failed: 0 }
+        });
         onClose();
       }
     } catch (err: any) {
@@ -1492,10 +1535,11 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                     </div>
 
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Instrument:</span>
-                      <span className="font-mono font-bold text-slate-900">
-                        {sym} ({exchange}) {token ? `• Token: ${token}` : ''}
-                      </span>
+                      <span className="text-slate-500">Security:</span>
+                      <div className="text-right font-mono font-bold text-slate-900">
+                        <div>{holding?.company_name || sym}</div>
+                        <div className="text-[11px] text-slate-500 font-normal">{sym} ({exchange}) • Token: {token || 'N/A'}</div>
+                      </div>
                     </div>
 
                     <div className="flex justify-between">
@@ -1547,10 +1591,21 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                     </div>
 
                     <div className="flex justify-between pt-0.5 text-slate-500 text-[11px]">
-                      <span>Available Funds:</span>
+                      <span>{side === 'BUY' ? 'Available Funds:' : 'Sellable Holdings:'}</span>
                       <span className="font-mono font-bold text-slate-700">
-                        ₹{((currentAccount?.available_cash) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        <span className="ml-1 text-[9px] font-normal text-slate-400">SMARTAPI RMS</span>
+                        {side === 'BUY'
+                          ? `₹${((currentAccount?.available_cash) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                          : `${holding?.available_quantity ?? holding?.quantity ?? 0} Shares`}
+                        <span className="ml-1 text-[9px] font-normal text-slate-400">
+                          {side === 'BUY' ? 'SMARTAPI RMS' : (currentAccount?.ddpi_status === 'ACTIVE' ? 'DDPI ACTIVE' : 'eDIS T-PIN')}
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between pt-0.5 text-slate-500 text-[10px] border-t border-slate-100">
+                      <span>Routing & Gateway:</span>
+                      <span className="font-mono text-slate-600">
+                        {currentAccount?.is_demo ? 'Demat Simulator' : 'Angel One SmartAPI (Static IP Gate)'}
                       </span>
                     </div>
                   </div>
@@ -1608,7 +1663,15 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                 <button
                   onClick={() => {
                     setShowBatchResultsModal(false);
-                    onOrderSuccess(`Paper batch executed: ${batchSummary?.success || 0} filled.`);
+                    onOrderSuccess({
+                      message: `Paper batch executed: ${batchSummary?.success || 0} succeeded out of ${batchSummary?.total || 0}.`,
+                      accountId: currentAccount?.id || 0,
+                      symbol: sym,
+                      status: 'EXECUTED',
+                      isPaper: true,
+                      isBatch: true,
+                      batchSummary
+                    });
                     onClose();
                   }}
                   className="text-slate-400 hover:text-slate-600"
@@ -1646,8 +1709,29 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-mono">
                     {batchResults.map((r, i) => (
-                      <tr key={i}>
-                        <td className="p-2 font-sans font-semibold text-slate-900">{r.nickname}</td>
+                      <tr
+                        key={i}
+                        className="hover:bg-slate-50 cursor-pointer"
+                        title="Click to inspect this account directly"
+                        onClick={() => {
+                          setShowBatchResultsModal(false);
+                          onOrderSuccess({
+                            message: `Inspecting account: ${r.nickname}. Order status: ${r.status}.`,
+                            accountId: r.account_id || currentAccount?.id || 0,
+                            symbol: sym,
+                            status: r.status,
+                            isPaper: true,
+                            isBatch: false,
+                            clientOrderId: r.client_order_id,
+                            brokerOrderId: r.broker_order_id
+                          });
+                          onClose();
+                        }}
+                      >
+                        <td className="p-2 font-sans font-semibold text-slate-900 flex items-center gap-1.5">
+                          <span>{r.nickname}</span>
+                          <span className="text-[10px] text-slate-400 font-normal">→ Inspect</span>
+                        </td>
                         <td className="p-2 text-slate-500">{r.broker_order_id || r.client_order_id?.slice(0, 8)}</td>
                         <td className="p-2 text-right font-bold">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${
@@ -1666,17 +1750,26 @@ export const OrderTicketModal: React.FC<OrderTicketModalProps> = ({
               </div>
             </div>
 
-            <div className="pt-4 border-t border-slate-100">
+            <div className="pt-4 border-t border-slate-100 flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setShowBatchResultsModal(false);
-                  onOrderSuccess(`Paper batch executed: ${batchSummary?.success || 0} filled.`);
+                  onOrderSuccess({
+                    message: `Paper batch executed: ${batchSummary?.success || 0} succeeded out of ${batchSummary?.total || 0}.`,
+                    accountId: currentAccount?.id || 0,
+                    symbol: sym,
+                    status: 'EXECUTED',
+                    isPaper: true,
+                    isBatch: true,
+                    batchSummary
+                  });
                   onClose();
                 }}
-                className="w-full py-2.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors"
+                className="flex-1 py-2.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-sm"
               >
-                Done
+                <Activity className="w-4 h-4" />
+                <span>Navigate to Consolidated Holdings → Batch Activity</span>
               </button>
             </div>
           </div>
