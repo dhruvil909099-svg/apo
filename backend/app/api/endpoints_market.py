@@ -110,6 +110,7 @@ def search_market_instruments(
     underlying: Optional[str] = Query(None, description="Underlying symbol (e.g. NIFTY, HINDCOPPER)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    enrich_quotes: bool = Query(False, description="Whether to synchronously enrich with SmartAPI live quotes"),
     db: Session = Depends(get_db)
 ):
     """
@@ -125,7 +126,8 @@ def search_market_instruments(
         letter=letter,
         underlying=underlying,
         limit=limit,
-        offset=offset
+        offset=offset,
+        enrich_quotes=enrich_quotes
     )
 
 

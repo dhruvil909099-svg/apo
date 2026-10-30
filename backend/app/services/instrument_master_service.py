@@ -272,11 +272,13 @@ def search_instruments(
     letter: Optional[str] = None,
     underlying: Optional[str] = None,
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    enrich_quotes: bool = False
 ) -> Dict[str, Any]:
     """
     Fast server-side indexed search against the genuine Angel One instruments catalog.
     Supports A-Z browsing, prefix matching, exchange filters, and segment isolation.
+    Decoupled from blocking quote enrichment for sub-100ms response times.
     """
     q = db.query(Instrument).filter(
         Instrument.is_active == True,
@@ -300,19 +302,28 @@ def search_instruments(
     if underlying:
         q = q.filter(Instrument.underlying_symbol.ilike(f"%{underlying.strip()}%"))
 
-    if query:
-        clean_q = query.strip()
-        q = q.filter(
-            or_(
-                Instrument.tradingsymbol.ilike(f"{clean_q}%"),
-                Instrument.tradingsymbol.ilike(f"%{clean_q}%"),
-                Instrument.name.ilike(f"%{clean_q}%"),
-                Instrument.underlying_symbol.ilike(f"{clean_q}%"),
-                Instrument.symbol_token == clean_q
-            )
-        )
+    clean_q = query.strip().upper() if query else None
+    base_q = clean_q.replace("-EQ", "").strip() if clean_q else None
 
-    total_count = q.count()
+    if clean_q:
+        or_clauses = [
+            Instrument.tradingsymbol == clean_q,
+            Instrument.tradingsymbol == f"{base_q}-EQ",
+            Instrument.symbol_token == clean_q,
+            Instrument.tradingsymbol.like(f"{clean_q}%"),
+            Instrument.tradingsymbol.like(f"{base_q}%"),
+            Instrument.underlying_symbol.like(f"{base_q}%"),
+            Instrument.tradingsymbol.like(f"%{clean_q}%"),
+            Instrument.name.ilike(f"%{clean_q}%")
+        ]
+
+        # Support common concatenated corporate names (e.g. TATAMOTORS -> TATA MOTORS, HDFCBANK -> HDFC BANK)
+        for suffix in ("MOTORS", "BANK", "FINANCE", "HOLDINGS", "PHARMA", "INDUSTRIES", "STEEL", "POWER"):
+            if clean_q.endswith(suffix) and len(clean_q) > len(suffix):
+                spaced = clean_q[:-len(suffix)] + " " + suffix
+                or_clauses.append(Instrument.name.ilike(f"%{spaced}%"))
+
+        q = q.filter(or_(*or_clauses))
 
     from sqlalchemy import case
 
@@ -325,17 +336,22 @@ def search_instruments(
         else_=6
     )
 
-    if query:
-        clean_q = query.strip()
-        exact_match = case((Instrument.tradingsymbol.ilike(clean_q), 1), else_=2)
+    if clean_q:
+        exact_match = case(
+            (Instrument.tradingsymbol == clean_q, 1),
+            (Instrument.tradingsymbol == f"{base_q}-EQ", 1),
+            (Instrument.symbol_token == clean_q, 1),
+            else_=2
+        )
         name_or_sym_prefix = case(
-            (Instrument.tradingsymbol.ilike(f"{clean_q}%"), 1),
-            (Instrument.name.ilike(f"{clean_q}%"), 1),
+            (Instrument.tradingsymbol.like(f"{clean_q}%"), 1),
+            (Instrument.tradingsymbol.like(f"{base_q}%"), 1),
+            (Instrument.underlying_symbol.like(f"{base_q}%"), 1),
             else_=2
         )
         instruments = q.order_by(
-            segment_priority.asc(),
             exact_match.asc(),
+            segment_priority.asc(),
             name_or_sym_prefix.asc(),
             Instrument.tradingsymbol.asc()
         ).offset(offset).limit(limit).all()
@@ -348,27 +364,34 @@ def search_instruments(
             Instrument.tradingsymbol.asc()
         ).offset(offset).limit(limit).all()
 
-    from app.services.smartapi_websocket import smartapi_ws_service
-    from app.services.smartapi_adapter import get_any_active_market_adapter
+    # Fast count calculation: avoid expensive table count when result set fits on the first page
+    if offset == 0 and len(instruments) < limit:
+        total_count = len(instruments)
+    else:
+        total_count = q.count()
 
-    # Auto-enrich returned instruments with live quotes from SmartAPI
+    from app.services.smartapi_websocket import smartapi_ws_service
+
+    # Auto-enrich returned instruments with live quotes from SmartAPI only if explicitly requested
     quote_cache_map: Dict[str, Dict[str, Any]] = {}
-    adapter = get_any_active_market_adapter(db)
-    if adapter and instruments:
-        exchange_tokens: Dict[str, List[str]] = {}
-        for inst in instruments:
-            if inst.symbol_token and inst.exchange:
-                exchange_tokens.setdefault(inst.exchange, []).append(str(inst.symbol_token).strip())
-        if exchange_tokens:
-            try:
-                batch_res = adapter.get_market_quotes_batch(exchange_tokens, mode="FULL")
-                if batch_res and batch_res.get("fetched"):
-                    for q_item in batch_res["fetched"]:
-                        tok = str(q_item.get("symbol_token") or "").strip()
-                        if tok:
-                            quote_cache_map[tok] = q_item
-            except Exception as e:
-                logger.debug(f"Auto quote enrichment error: {e}")
+    if enrich_quotes and instruments:
+        from app.services.smartapi_adapter import get_any_active_market_adapter
+        adapter = get_any_active_market_adapter(db)
+        if adapter:
+            exchange_tokens: Dict[str, List[str]] = {}
+            for inst in instruments:
+                if inst.symbol_token and inst.exchange:
+                    exchange_tokens.setdefault(inst.exchange, []).append(str(inst.symbol_token).strip())
+            if exchange_tokens:
+                try:
+                    batch_res = adapter.get_market_quotes_batch(exchange_tokens, mode="FULL")
+                    if batch_res and batch_res.get("fetched"):
+                        for q_item in batch_res["fetched"]:
+                            tok = str(q_item.get("symbol_token") or "").strip()
+                            if tok:
+                                quote_cache_map[tok] = q_item
+                except Exception as e:
+                    logger.debug(f"Auto quote enrichment error: {e}")
 
     items = []
     has_db_updates = False
@@ -406,7 +429,7 @@ def search_instruments(
             chg = round(ltp - p_close, 2)
             chg_pct = round((chg / p_close) * 100, 2) if p_close > 0 else 0.0
 
-        if ltp and inst.current_ltp != ltp:
+        if enrich_quotes and ltp and inst.current_ltp != ltp:
             inst.current_ltp = ltp
             if p_close:
                 inst.previous_close = p_close
@@ -442,7 +465,7 @@ def search_instruments(
             "last_sync_at": inst.last_sync_at.strftime("%Y-%m-%d %H:%M:%S IST") if inst.last_sync_at else None
         })
 
-    if has_db_updates:
+    if enrich_quotes and has_db_updates:
         try:
             db.commit()
         except Exception:
