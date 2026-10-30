@@ -25,6 +25,7 @@ from app.models.account import Account
 from app.models.ipo import IPO, Allotment
 from app.models.risk import RiskLimit
 from app.models.user import User
+from app.models.instrument import Instrument
 
 # In-memory test engine with StaticPool so all threads/sessions share the same memory DB
 test_engine = create_engine(
