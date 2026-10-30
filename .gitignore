@@ -63,3 +63,4 @@ Thumbs.db
 logs/
 .tempmediaStorage/
 *.zip
+!hostinger_frontend_upload.zip
