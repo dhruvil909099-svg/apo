@@ -1,21 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Suspense, lazy } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { DashboardView } from './views/DashboardView';
-import { AccountsView } from './views/AccountsView';
-import { IPOTrackerView } from './views/IPOTrackerView';
-import { MarketWatchView } from './views/MarketWatchView';
-import { PortfolioView } from './views/PortfolioView';
-import { BulkOrderView } from './views/BulkOrderView';
-import { OrdersView } from './views/OrdersView';
-import { RiskView } from './views/RiskView';
-import { AlertsView } from './views/AlertsView';
-import { SettingsView } from './views/SettingsView';
-import { SingleAccountTasksView } from './views/SingleAccountTasksView';
-import { BulkOperationsView } from './views/BulkOperationsView';
-import { StockExplorerView } from './views/StockExplorerView';
-import { ExportCenterView } from './views/ExportCenterView';
-import { AIChatView } from './views/AIChatView';
 import { DashboardSummary, Account, IPO, Order, MarketQuote } from './types';
 import { api, getWebSocketUrl } from './api';
 import { connectionManager, ConnectionState } from './services/backendConnectionManager';
@@ -23,6 +9,29 @@ import { refreshScheduler } from './services/refreshScheduler';
 import { accountReadCache } from './services/accountReadCache';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { LoginModal } from './components/LoginModal';
+
+// Route-level Code Splitting for heavy views
+const AccountsView = lazy(() => import('./views/AccountsView').then(m => ({ default: m.AccountsView })));
+const IPOTrackerView = lazy(() => import('./views/IPOTrackerView').then(m => ({ default: m.IPOTrackerView })));
+const MarketWatchView = lazy(() => import('./views/MarketWatchView').then(m => ({ default: m.MarketWatchView })));
+const PortfolioView = lazy(() => import('./views/PortfolioView').then(m => ({ default: m.PortfolioView })));
+const BulkOrderView = lazy(() => import('./views/BulkOrderView').then(m => ({ default: m.BulkOrderView })));
+const OrdersView = lazy(() => import('./views/OrdersView').then(m => ({ default: m.OrdersView })));
+const RiskView = lazy(() => import('./views/RiskView').then(m => ({ default: m.RiskView })));
+const AlertsView = lazy(() => import('./views/AlertsView').then(m => ({ default: m.AlertsView })));
+const SettingsView = lazy(() => import('./views/SettingsView').then(m => ({ default: m.SettingsView })));
+const SingleAccountTasksView = lazy(() => import('./views/SingleAccountTasksView').then(m => ({ default: m.SingleAccountTasksView })));
+const BulkOperationsView = lazy(() => import('./views/BulkOperationsView').then(m => ({ default: m.BulkOperationsView })));
+const StockExplorerView = lazy(() => import('./views/StockExplorerView').then(m => ({ default: m.StockExplorerView })));
+const ExportCenterView = lazy(() => import('./views/ExportCenterView').then(m => ({ default: m.ExportCenterView })));
+const AIChatView = lazy(() => import('./views/AIChatView').then(m => ({ default: m.AIChatView })));
+
+const ViewSuspenseFallback: React.FC = () => (
+  <div className="flex-1 flex flex-col items-center justify-center min-h-[400px] text-slate-400 bg-slate-50/50 rounded-xl">
+    <RefreshCw className="w-6 h-6 animate-spin text-[#5b7cfa] mb-2" />
+    <span className="text-xs font-medium text-slate-500">Loading module…</span>
+  </div>
+);
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
@@ -241,27 +250,57 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Live WebSocket Tick Streaming
+  const currentTabRef = useRef(currentTab);
+  currentTabRef.current = currentTab;
+  const pendingTicksRef = useRef<Record<string, { ltp: number; timestamp?: string }>>({});
+
+  // Scoped & Throttled Live WebSocket Tick Streaming
   useEffect(() => {
     const wsUrl = getWebSocketUrl();
     let ws: WebSocket;
+    let flushInterval: any = null;
 
     try {
       ws = new WebSocket(wsUrl);
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'TICK') {
-            setQuotes((prev) =>
-              prev.map((q) =>
-                q.symbol === msg.symbol ? { ...q, ltp: msg.ltp, timestamp: msg.timestamp } : q
-              )
-            );
+          if (msg.type === 'TICK' && msg.symbol && typeof msg.ltp === 'number') {
+            // Buffer tick without triggering root component re-renders
+            pendingTicksRef.current[msg.symbol] = { ltp: msg.ltp, timestamp: msg.timestamp };
           }
-        } catch (e) {
+        } catch {
           // ignore malformed tick
         }
       };
+
+      // Throttled flush: only re-render root quotes once every 1,500ms AND only when on dashboard/market-watch
+      flushInterval = setInterval(() => {
+        const symbols = Object.keys(pendingTicksRef.current);
+        if (!symbols.length) return;
+        const active = currentTabRef.current;
+        if (active !== 'dashboard' && active !== 'market-watch') {
+          // Inactive views do not re-render root App for ticker cards
+          return;
+        }
+
+        const buffer = { ...pendingTicksRef.current };
+        pendingTicksRef.current = {};
+
+        setQuotes((prev) => {
+          let changed = false;
+          const next = prev.map((q) => {
+            const update = buffer[q.symbol];
+            if (update && (update.ltp !== q.ltp || update.timestamp !== q.timestamp)) {
+              changed = true;
+              return { ...q, ltp: update.ltp, timestamp: update.timestamp || q.timestamp };
+            }
+            return q;
+          });
+          return changed ? next : prev;
+        });
+      }, 1500);
+
       ws.onopen = () => {
         const pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
@@ -270,11 +309,12 @@ export const App: React.FC = () => {
         }, 15000);
         ws.onclose = () => clearInterval(pingInterval);
       };
-    } catch (e) {
+    } catch {
       console.warn('[App] WebSocket connection skipped in current environment');
     }
 
     return () => {
+      if (flushInterval) clearInterval(flushInterval);
       if (ws) ws.close();
     };
   }, []);
@@ -355,100 +395,102 @@ export const App: React.FC = () => {
         {/* Tab Content Container */}
         <main className="flex-1 overflow-y-auto p-6">
           <div className="max-w-7xl mx-auto">
-            {currentTab === 'dashboard' && (
-              <DashboardView
-                summary={summary}
-                ipos={ipos}
-                orders={orders}
-                accounts={accounts}
-                onNavigate={(tab) => setCurrentTab(tab)}
-                onRefresh={handleManualRefresh}
-                lastUpdated={lastUpdated}
-              />
-            )}
-            {currentTab === 'accounts' && (
-              <AccountsView
-                accounts={accounts}
-                onRefresh={handleManualRefresh}
-                targetAccountNavigation={targetAccountNavigation}
-                onClearTargetNavigation={() => setTargetAccountNavigation(null)}
-              />
-            )}
-            {currentTab === 'ipo-tracker' && (
-              <IPOTrackerView ipos={ipos} accounts={accounts} onRefresh={handleManualRefresh} />
-            )}
-            {currentTab === 'market-watch' && (
-              <MarketWatchView quotes={quotes} onRefresh={handleManualRefresh} />
-            )}
-            {currentTab === 'portfolio' && (
-              <PortfolioView
-                batchContext={targetPortfolioBatch}
-                onClearBatchContext={() => setTargetPortfolioBatch(null)}
-                onNavigateToAccount={(accId, tab, sym) => {
-                  setTargetAccountNavigation({
-                    accountId: accId,
-                    initialTab: tab,
-                    highlightSymbol: sym
-                  });
-                  setCurrentTab('accounts');
-                }}
-              />
-            )}
-            {currentTab === 'stock-explorer' && (
-              <StockExplorerView
-                ipos={ipos}
-                quotes={quotes}
-                onNavigateToBulkOrders={() => setCurrentTab('bulk-orders')}
-                onNavigateToAccount={(nav) => {
-                  setTargetAccountNavigation(nav);
-                  setCurrentTab('accounts');
-                }}
-                onNavigateToPortfolioBatch={(batch) => {
-                  setTargetPortfolioBatch(batch);
-                  setCurrentTab('portfolio');
-                }}
-              />
-            )}
-            {currentTab === 'single-account-tasks' && (
-              <SingleAccountTasksView
-                accounts={accounts}
-                ipos={ipos}
-                onRefresh={handleManualRefresh}
-              />
-            )}
-            {currentTab === 'bulk-operations' && (
-              <BulkOperationsView
-                accounts={accounts}
-                ipos={ipos}
-                onRefresh={handleManualRefresh}
-                onNavigateToBulkOrders={() => setCurrentTab('bulk-orders')}
-              />
-            )}
-            {currentTab === 'bulk-orders' && (
-              <BulkOrderView
-                ipos={ipos}
-                accounts={accounts}
-                onOrderPlaced={handleManualRefresh}
-                onNavigateToBatchActivity={(batch) => {
-                  setTargetPortfolioBatch(batch);
-                  setCurrentTab('portfolio');
-                }}
-              />
-            )}
-            {currentTab === 'orders' && (
-              <OrdersView orders={orders} accounts={accounts} onRefresh={handleManualRefresh} />
-            )}
-            {currentTab === 'reports' && (
-              <ExportCenterView
-                accounts={accounts}
-                ipos={ipos}
-                orders={orders}
-              />
-            )}
-            {currentTab === 'risk' && <RiskView onRefresh={handleManualRefresh} />}
-            {currentTab === 'alerts' && <AlertsView />}
-            {currentTab === 'ai-chat' && <AIChatView />}
-            {currentTab === 'settings' && <SettingsView summary={summary} />}
+            <Suspense fallback={<ViewSuspenseFallback />}>
+              {currentTab === 'dashboard' && (
+                <DashboardView
+                  summary={summary}
+                  ipos={ipos}
+                  orders={orders}
+                  accounts={accounts}
+                  onNavigate={(tab) => setCurrentTab(tab)}
+                  onRefresh={handleManualRefresh}
+                  lastUpdated={lastUpdated}
+                />
+              )}
+              {currentTab === 'accounts' && (
+                <AccountsView
+                  accounts={accounts}
+                  onRefresh={handleManualRefresh}
+                  targetAccountNavigation={targetAccountNavigation}
+                  onClearTargetNavigation={() => setTargetAccountNavigation(null)}
+                />
+              )}
+              {currentTab === 'ipo-tracker' && (
+                <IPOTrackerView ipos={ipos} accounts={accounts} onRefresh={handleManualRefresh} />
+              )}
+              {currentTab === 'market-watch' && (
+                <MarketWatchView quotes={quotes} onRefresh={handleManualRefresh} />
+              )}
+              {currentTab === 'portfolio' && (
+                <PortfolioView
+                  batchContext={targetPortfolioBatch}
+                  onClearBatchContext={() => setTargetPortfolioBatch(null)}
+                  onNavigateToAccount={(accId, tab, sym) => {
+                    setTargetAccountNavigation({
+                      accountId: accId,
+                      initialTab: tab,
+                      highlightSymbol: sym
+                    });
+                    setCurrentTab('accounts');
+                  }}
+                />
+              )}
+              {currentTab === 'stock-explorer' && (
+                <StockExplorerView
+                  ipos={ipos}
+                  quotes={quotes}
+                  onNavigateToBulkOrders={() => setCurrentTab('bulk-orders')}
+                  onNavigateToAccount={(nav) => {
+                    setTargetAccountNavigation(nav);
+                    setCurrentTab('accounts');
+                  }}
+                  onNavigateToPortfolioBatch={(batch) => {
+                    setTargetPortfolioBatch(batch);
+                    setCurrentTab('portfolio');
+                  }}
+                />
+              )}
+              {currentTab === 'single-account-tasks' && (
+                <SingleAccountTasksView
+                  accounts={accounts}
+                  ipos={ipos}
+                  onRefresh={handleManualRefresh}
+                />
+              )}
+              {currentTab === 'bulk-operations' && (
+                <BulkOperationsView
+                  accounts={accounts}
+                  ipos={ipos}
+                  onRefresh={handleManualRefresh}
+                  onNavigateToBulkOrders={() => setCurrentTab('bulk-orders')}
+                />
+              )}
+              {currentTab === 'bulk-orders' && (
+                <BulkOrderView
+                  ipos={ipos}
+                  accounts={accounts}
+                  onOrderPlaced={handleManualRefresh}
+                  onNavigateToBatchActivity={(batch) => {
+                    setTargetPortfolioBatch(batch);
+                    setCurrentTab('portfolio');
+                  }}
+                />
+              )}
+              {currentTab === 'orders' && (
+                <OrdersView orders={orders} accounts={accounts} onRefresh={handleManualRefresh} />
+              )}
+              {currentTab === 'reports' && (
+                <ExportCenterView
+                  accounts={accounts}
+                  ipos={ipos}
+                  orders={orders}
+                />
+              )}
+              {currentTab === 'risk' && <RiskView onRefresh={handleManualRefresh} />}
+              {currentTab === 'alerts' && <AlertsView />}
+              {currentTab === 'ai-chat' && <AIChatView />}
+              {currentTab === 'settings' && <SettingsView summary={summary} />}
+            </Suspense>
           </div>
         </main>
       </div>
